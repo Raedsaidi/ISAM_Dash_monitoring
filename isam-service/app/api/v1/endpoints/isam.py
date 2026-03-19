@@ -1327,7 +1327,7 @@ def get_lt_slots(
 
 
 @router.get(
-    "/instances/{instance_id}/lt-slots/{slot_id}/ports",
+    "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
     response_model=LTPortsResponse,
 )
 def get_lt_slot_ports(
@@ -1336,22 +1336,12 @@ def get_lt_slot_ports(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Récupère les ports d'un slot LT spécifique avec snapshot en cache.
-    
-    Inclut le status de lock pour chaque port.
-    
-    Admin/SuperAdmin only.
-    """
-    # ✅ IMPORTANT: Décoder le slot_id (car il peut contenir des caractères spéciaux)
     slot_id = unquote(slot_id)
-    
+
     inst = get_instance_or_404(db, instance_id)
 
-    # Charger le cache des ports
     cached = load_cached_lt_ports(db, instance_id, slot_id)
 
-    # Charger les locks pour ce slot
     locks_dict = {}
     locks = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
@@ -1361,7 +1351,6 @@ def get_lt_slot_ports(
     for lock in locks:
         locks_dict[lock.port_id] = lock
 
-    # Ajouter le status locked à chaque port
     ports_with_lock = []
     for port in cached["ports"]:
         port_id = port.get("port_id")
@@ -1384,7 +1373,6 @@ def get_lt_slot_ports(
         last_refresh_success=cached["last_refresh_success"],
         last_refresh_error=cached["last_refresh_error"],
     )
-
 
 @router.get(
     "/instances/{instance_id}/ports/{port_id:path}/lock-status",
