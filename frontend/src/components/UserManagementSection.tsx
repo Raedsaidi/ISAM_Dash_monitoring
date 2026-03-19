@@ -19,6 +19,10 @@ import {
   UserCog,
   Mail,
   ChevronDown,
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  RefreshCcw,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -80,7 +84,9 @@ const EMPTY_CONFIRM_DIALOG: ConfirmDialogState = {
   loading: false,
 };
 
-/* ---------- helpers ---------- */
+/* ================================================================
+   Helpers
+   ================================================================ */
 
 function getUserPorts(u: UserAdminRead): UserPort[] {
   if (u.ports && u.ports.length > 0) return u.ports;
@@ -99,43 +105,263 @@ function getInitials(name: string) {
     .join("");
 }
 
-/* ---------- role style map ---------- */
+function roleToBadgeVariant(role: UserRole): BadgeProps["variant"] {
+  if (role === "SUPER_ADMIN") return "danger";
+  if (role === "ADMIN") return "warning";
+  return "success";
+}
 
-const ROLE_STYLES: Record<
-  UserRole,
-  { bg: string; text: string; ring: string }
-> = {
-  SUPER_ADMIN: {
-    bg: "bg-red-100",
-    text: "text-red-700",
-    ring: "focus:ring-red-400",
-  },
-  ADMIN: {
-    bg: "bg-amber-100",
-    text: "text-amber-700",
-    ring: "focus:ring-amber-400",
-  },
-  USER: {
-    bg: "bg-emerald-100",
-    text: "text-emerald-700",
-    ring: "focus:ring-emerald-400",
-  },
+/* ================================================================
+   UI Primitives — Enterprise (same style as your “B”)
+   ================================================================ */
+
+type BadgeProps = {
+  children: React.ReactNode;
+  variant?: "default" | "info" | "success" | "warning" | "danger" | "purple";
+  className?: string;
 };
 
-/* ---------- small components ---------- */
+function Badge({ children, variant = "default", className }: BadgeProps) {
+  const variants = {
+    default: "bg-slate-100 text-slate-700 border-slate-200",
+    info: "bg-sky-50 text-sky-700 border-sky-200",
+    success: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    warning: "bg-amber-50 text-amber-700 border-amber-200",
+    danger: "bg-red-50 text-red-700 border-red-200",
+    purple: "bg-violet-50 text-violet-700 border-violet-200",
+  };
 
-function RoleBadge({ role }: { role: UserRole }) {
-  const s = ROLE_STYLES[role] ?? ROLE_STYLES.USER;
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide",
-        s.bg,
-        s.text,
+        "inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+        variants[variant],
+        className,
       )}
     >
-      {role}
+      {children}
     </span>
+  );
+}
+
+function Btn({
+  children,
+  className,
+  variant = "outline",
+  size = "md",
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "outline" | "subtle" | "danger" | "ghost";
+  size?: "sm" | "md";
+}) {
+  const variants = {
+    primary:
+      "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
+    outline: "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
+    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
+    danger: "bg-white text-red-600 hover:bg-red-50 border-red-200",
+    ghost: "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
+  };
+
+  const sizes = {
+    sm: "px-2.5 py-1.5 text-xs gap-1.5",
+    md: "px-3.5 py-2 text-sm gap-2",
+  };
+
+  return (
+    <button
+      {...props}
+      className={cn(
+        "inline-flex items-center justify-center rounded-lg border font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        variants[variant],
+        sizes[size],
+        className,
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Input({
+  className,
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      {...props}
+      className={cn(
+        "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-colors focus:border-slate-400 focus:ring-1 focus:ring-slate-300",
+        className,
+      )}
+    />
+  );
+}
+
+function Select({
+  className,
+  children,
+  ...props
+}: React.SelectHTMLAttributes<HTMLSelectElement> & {
+  children: React.ReactNode;
+}) {
+  return (
+    <select
+      {...props}
+      className={cn(
+        "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-1 focus:ring-slate-300",
+        className,
+      )}
+    >
+      {children}
+    </select>
+  );
+}
+
+function FieldLabel({
+  children,
+  required,
+}: {
+  children: React.ReactNode;
+  required?: boolean;
+}) {
+  return (
+    <label className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+      {children}
+      {required && <span className="text-red-500">*</span>}
+    </label>
+  );
+}
+
+function SectionTitle({
+  icon: Icon,
+  title,
+  description,
+  badge,
+}: {
+  icon?: React.ElementType;
+  title: string;
+  description?: string;
+  badge?: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      {Icon && (
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600">
+          <Icon size={16} />
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          {badge}
+        </div>
+        {description && (
+          <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AlertBanner({
+  children,
+  variant = "info",
+}: {
+  children: React.ReactNode;
+  variant?: "info" | "warning" | "error" | "success";
+}) {
+  const variants = {
+    info: "border-sky-200 bg-sky-50 text-sky-700",
+    warning: "border-amber-200 bg-amber-50 text-amber-700",
+    error: "border-red-200 bg-red-50 text-red-700",
+    success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  };
+
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-xs",
+        variants[variant],
+      )}
+    >
+      {variant === "error" && (
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+      )}
+      {variant === "success" && (
+        <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
+      )}
+      {variant === "warning" && (
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+      )}
+      {variant === "info" && (
+        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+      )}
+      <div>{children}</div>
+    </div>
+  );
+}
+
+/* ================================================================
+   Small UI parts
+   ================================================================ */
+
+function StatusBadge({ active }: { active: boolean }) {
+  return (
+    <Badge variant={active ? "success" : "default"}>
+      {active ? "Active" : "Inactive"}
+    </Badge>
+  );
+}
+
+function RoleBadge({ role }: { role: UserRole }) {
+  return <Badge variant={roleToBadgeVariant(role)}>{role}</Badge>;
+}
+
+function AvatarCircle({
+  name,
+  username,
+}: {
+  name: string;
+  username: string;
+}) {
+  const initials = getInitials(name || username || "U");
+  return (
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-xs font-bold text-slate-700">
+      {initials || "U"}
+    </div>
+  );
+}
+
+function SegmentedFilter({
+  value,
+  onChange,
+  items,
+}: {
+  value: RoleFilter;
+  onChange: (v: RoleFilter) => void;
+  items: RoleFilter[];
+}) {
+  return (
+    <div className="inline-flex flex-wrap items-center gap-2">
+      {items.map((it) => {
+        const active = it === value;
+        return (
+          <button
+            key={it}
+            onClick={() => onChange(it)}
+            className={cn(
+              "rounded-full px-3 py-1.5 text-xs font-semibold transition-colors border",
+              active
+                ? "bg-slate-900 text-white border-slate-900"
+                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50",
+            )}
+          >
+            {it === "ALL" ? "All roles" : it}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -148,8 +374,6 @@ function RoleSelector({
   busy: boolean;
   onChange: (newRole: UserRole) => void;
 }) {
-  const s = ROLE_STYLES[currentRole] ?? ROLE_STYLES.USER;
-
   return (
     <div className="relative inline-flex items-center">
       <select
@@ -157,48 +381,27 @@ function RoleSelector({
         disabled={busy}
         onChange={(e) => onChange(e.target.value as UserRole)}
         className={cn(
-          "appearance-none rounded-full pl-2.5 pr-7 py-1 text-[11px] font-semibold uppercase tracking-wide",
-          "cursor-pointer border-0 focus:outline-none focus:ring-2",
+          "appearance-none rounded-lg border border-slate-300 bg-white pl-3 pr-8 py-2 text-xs font-semibold uppercase tracking-wide text-slate-800",
+          "outline-none focus:ring-1 focus:ring-slate-300 focus:border-slate-400",
           "disabled:opacity-50 disabled:cursor-wait",
-          s.bg,
-          s.text,
-          s.ring,
         )}
       >
         <option value="ADMIN">ADMIN</option>
         <option value="USER">USER</option>
       </select>
+
       {busy ? (
         <Loader2
-          size={10}
-          className={cn(
-            "absolute right-2 top-1/2 -translate-y-1/2 animate-spin",
-            s.text,
-          )}
+          size={14}
+          className="absolute right-2 top-1/2 -translate-y-1/2 animate-spin text-slate-500"
         />
       ) : (
         <ChevronDown
-          size={10}
-          className={cn(
-            "absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none",
-            s.text,
-          )}
+          size={14}
+          className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500"
         />
       )}
     </div>
-  );
-}
-
-function StatusBadge({ active }: { active: boolean }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium",
-        active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600",
-      )}
-    >
-      {active ? "Active" : "Inactive"}
-    </span>
   );
 }
 
@@ -207,29 +410,45 @@ function StatCard({
   value,
   subtitle,
   icon,
-  color,
+  tone = "default",
 }: {
   title: string;
   value: string | number;
   subtitle: string;
   icon: React.ReactNode;
-  color: string;
+  tone?: "default" | "info" | "warning" | "success" | "purple";
 }) {
+  const tones = {
+    default: "bg-white",
+    info: "bg-sky-50/60",
+    warning: "bg-amber-50/60",
+    success: "bg-emerald-50/60",
+    purple: "bg-violet-50/60",
+  };
+
   return (
-    <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-      <div className="flex items-start justify-between">
-        <div>
-          <p className="text-sm font-medium text-slate-500">{title}</p>
-          <p className="mt-1 text-2xl font-bold text-slate-900">{value}</p>
-          <p className="mt-1 text-xs text-slate-400">{subtitle}</p>
+    <div className={cn("rounded-xl border border-slate-200 shadow-sm", tones[tone])}>
+      <div className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+              {title}
+            </div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">{value}</div>
+            <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
+          </div>
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700">
+            {icon}
+          </div>
         </div>
-        <div className={cn("p-3 rounded-xl", color)}>{icon}</div>
       </div>
     </div>
   );
 }
 
-/* ========== MAIN COMPONENT ========== */
+/* ================================================================
+   MAIN COMPONENT
+   ================================================================ */
 
 export default function UserManagementSection() {
   const { user, authFetch } = useAuth();
@@ -264,8 +483,6 @@ export default function UserManagementSection() {
 
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* ---------- authFetchJson using authFetch from context ---------- */
-
   async function authFetchJson<T>(
     url: string,
     options: RequestInit = {},
@@ -290,8 +507,6 @@ export default function UserManagementSection() {
 
     return data as T;
   }
-
-  /* ---------- dialog helpers ---------- */
 
   function closeConfirmDialog() {
     if (confirmDialog.loading) return;
@@ -318,12 +533,11 @@ export default function UserManagementSection() {
     });
   }
 
-  /* ---------- load users from backend ---------- */
-
   const loadUsers = useCallback(
     async (search?: string, role?: RoleFilter) => {
       setLoading(true);
       setGlobalError(null);
+
       try {
         const params = new URLSearchParams();
         const q = (search ?? searchTerm).trim();
@@ -351,7 +565,6 @@ export default function UserManagementSection() {
     [authFetch, searchTerm, roleFilter],
   );
 
-  /* Initial load */
   useEffect(() => {
     loadUsers("", "ALL");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -359,34 +572,23 @@ export default function UserManagementSection() {
 
   useEffect(() => {
     return () => {
-      if (searchTimerRef.current) {
-        clearTimeout(searchTimerRef.current);
-      }
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
   }, []);
 
-  /* ---------- debounced search ---------- */
-
   function handleSearchChange(value: string) {
     setSearchTerm(value);
-
-    if (searchTimerRef.current) {
-      clearTimeout(searchTimerRef.current);
-    }
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
 
     searchTimerRef.current = setTimeout(() => {
       loadUsers(value, roleFilter);
     }, 400);
   }
 
-  /* ---------- role filter change ---------- */
-
   function handleRoleFilterChange(role: RoleFilter) {
     setRoleFilter(role);
     loadUsers(searchTerm, role);
   }
-
-  /* ---------- change role ---------- */
 
   function handleChangeRole(target: UserAdminRead, newRole: UserRole) {
     if (newRole === target.role) return;
@@ -404,42 +606,30 @@ export default function UserManagementSection() {
     openRoleChangeDialog(target, newRole);
   }
 
-  /* ---------- create user ---------- */
-
   function validateForm(): boolean {
     const e: Record<string, string> = {};
 
-    if (!form.username.trim()) {
-      e.username = "Username is required.";
-    } else if (form.username.length < 3 || form.username.length > 32) {
+    if (!form.username.trim()) e.username = "Username is required.";
+    else if (form.username.length < 3 || form.username.length > 32)
       e.username = "Username must be between 3 and 32 characters.";
-    }
 
-    if (!form.email.trim()) {
-      e.email = "Email is required.";
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) {
+    if (!form.email.trim()) e.email = "Email is required.";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
       e.email = "Invalid email format.";
-    }
 
-    if (!form.full_name.trim()) {
-      e.full_name = "Full name is required.";
-    } else if (form.full_name.length < 3) {
+    if (!form.full_name.trim()) e.full_name = "Full name is required.";
+    else if (form.full_name.length < 3)
       e.full_name = "Full name must be at least 3 characters.";
-    }
 
-    if (!form.password) {
-      e.password = "Password is required.";
-    } else if (form.password.length < 8) {
+    if (!form.password) e.password = "Password is required.";
+    else if (form.password.length < 8)
       e.password = "Password must be at least 8 characters.";
-    }
 
     if (!form.ports || form.ports.length === 0) {
       e.ports = "At least one port is required.";
     } else {
       form.ports.forEach((p, index) => {
-        if (!p.value.trim()) {
-          e[`ports.${index}.value`] = "Port value is required.";
-        }
+        if (!p.value.trim()) e[`ports.${index}.value`] = "Port value is required.";
       });
     }
 
@@ -453,6 +643,7 @@ export default function UserManagementSection() {
     if (!validateForm()) return;
 
     setSubmitting(true);
+
     try {
       await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users`, {
         method: "POST",
@@ -471,16 +662,13 @@ export default function UserManagementSection() {
       });
 
       await loadUsers(searchTerm, roleFilter);
-
-      toast.success("The user has been created successfully.");
+      toast.success("User created successfully.");
     } catch (err: any) {
       setFormErrors({ general: err.message || "Failed to create user." });
     } finally {
       setSubmitting(false);
     }
   }
-
-  /* ---------- delete user ---------- */
 
   function handleDeleteUser(target: UserAdminRead) {
     if (target.role === "SUPER_ADMIN") {
@@ -496,11 +684,8 @@ export default function UserManagementSection() {
     openDeleteDialog(target);
   }
 
-  /* ---------- confirm dialog action ---------- */
-
   async function handleConfirmDialog() {
     const { type, target, newRole } = confirmDialog;
-
     if (!type || !target) return;
 
     setConfirmDialog((prev) => ({ ...prev, loading: true }));
@@ -510,35 +695,25 @@ export default function UserManagementSection() {
       const toastId = toast.loading("Updating role...");
 
       try {
-        await authFetchJson(
-          `${AUTH_BASE_URL}/api/v1/auth/users/${target.id}/role`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ role: newRole }),
-          },
-        );
+        await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${target.id}/role`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ role: newRole }),
+        });
 
         await loadUsers(searchTerm, roleFilter);
-
-        toast.success(`${target.username} is now ${newRole}.`, {
-          id: toastId,
-        });
+        toast.success(`${target.username} is now ${newRole}.`, { id: toastId });
       } catch (err: any) {
         try {
           await loadUsers(searchTerm, roleFilter);
         } catch {
-          // ignore reload error here
+          // ignore
         }
-
-        toast.error(err.message || "Failed to change user role.", {
-          id: toastId,
-        });
+        toast.error(err.message || "Failed to change user role.", { id: toastId });
       } finally {
         setChangingRoleFor(null);
         setConfirmDialog(EMPTY_CONFIRM_DIALOG);
       }
-
       return;
     }
 
@@ -552,22 +727,15 @@ export default function UserManagementSection() {
         });
 
         await loadUsers(searchTerm, roleFilter);
-
-        toast.success("The user has been deleted successfully.", {
-          id: toastId,
-        });
+        toast.success("User deleted successfully.", { id: toastId });
       } catch (err: any) {
-        toast.error(err.message || "Failed to delete user.", {
-          id: toastId,
-        });
+        toast.error(err.message || "Failed to delete user.", { id: toastId });
       } finally {
         setDeletingUserId(null);
         setConfirmDialog(EMPTY_CONFIRM_DIALOG);
       }
     }
   }
-
-  /* ---------- port rows ---------- */
 
   function addPortRow() {
     setForm((f) => ({ ...f, ports: [...f.ports, { label: "", value: "" }] }));
@@ -594,18 +762,13 @@ export default function UserManagementSection() {
     });
   }
 
-  /* ---------- stats ---------- */
-
   const stats = useMemo(() => {
     const totalUsers = users.length;
     const totalAdmins = users.filter(
       (u) => u.role === "ADMIN" || u.role === "SUPER_ADMIN",
     ).length;
     const totalStandardUsers = users.filter((u) => u.role === "USER").length;
-    const totalPorts = users.reduce(
-      (acc, u) => acc + getUserPorts(u).length,
-      0,
-    );
+    const totalPorts = users.reduce((acc, u) => acc + getUserPorts(u).length, 0);
     return { totalUsers, totalAdmins, totalStandardUsers, totalPorts };
   }, [users]);
 
@@ -618,172 +781,164 @@ export default function UserManagementSection() {
 
   const confirmText =
     confirmDialog.type === "change-role"
-      ? "Yes, change role"
+      ? "Change role"
       : confirmDialog.type === "delete-user"
-        ? "Yes, delete"
+        ? "Delete"
         : "Confirm";
 
   const confirmVariant =
     confirmDialog.type === "delete-user" ? "danger" : "primary";
 
-  /* ========== RENDER ========== */
-
   return (
     <>
-      <div className="space-y-6">
+      <div className="space-y-5">
         {/* Header */}
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-900">
-              User Management
-            </h2>
-            <p className="text-sm text-slate-500">
-              Create and manage users, roles and assigned ports.
-            </p>
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-slate-900">
+                  User Management
+                </h2>
+                <Badge variant="info">Admin Console</Badge>
+              </div>
+              <p className="mt-1 text-sm text-slate-500">
+                Create and manage users, roles and assigned ports.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Btn variant="outline" onClick={() => loadUsers(searchTerm, roleFilter)} disabled={loading}>
+                {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+                Refresh
+              </Btn>
+
+              <Btn variant="primary" onClick={() => setShowAdd(true)}>
+                <Plus size={16} />
+                Add User
+              </Btn>
+            </div>
           </div>
-          <button
-            onClick={() => setShowAdd(true)}
-            className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-medium transition-colors shadow-sm"
-          >
-            <Plus size={16} />
-            Add User
-          </button>
+
+          <div className="border-t border-slate-200 bg-slate-50/70 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="relative w-full lg:max-w-sm">
+                <Search
+                  size={14}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                />
+                <Input
+                  value={searchTerm}
+                  onChange={(e) => handleSearchChange(e.target.value)}
+                  placeholder="Search by username, email, full name..."
+                  className="pl-9"
+                />
+              </div>
+
+              <SegmentedFilter
+                value={roleFilter}
+                onChange={handleRoleFilterChange}
+                items={["ALL", "SUPER_ADMIN", "ADMIN", "USER"]}
+              />
+            </div>
+          </div>
         </div>
 
+        {globalError && <AlertBanner variant="error">{globalError}</AlertBanner>}
+
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Total Users"
             value={stats.totalUsers}
-            subtitle="All registered accounts"
-            icon={<Users size={20} className="text-blue-600" />}
-            color="bg-blue-50"
+            subtitle="All accounts"
+            icon={<Users size={18} />}
+            tone="info"
           />
           <StatCard
             title="Admins"
             value={stats.totalAdmins}
             subtitle="ADMIN + SUPER_ADMIN"
-            icon={<ShieldCheck size={20} className="text-amber-600" />}
-            color="bg-amber-50"
+            icon={<ShieldCheck size={18} />}
+            tone="warning"
           />
           <StatCard
             title="Standard Users"
             value={stats.totalStandardUsers}
-            subtitle="Users with USER role"
-            icon={<UserCog size={20} className="text-emerald-600" />}
-            color="bg-emerald-50"
+            subtitle="Role USER"
+            icon={<UserCog size={18} />}
+            tone="success"
           />
           <StatCard
             title="Assigned Ports"
             value={stats.totalPorts}
-            subtitle="Ports linked to all users"
-            icon={<Cable size={20} className="text-purple-600" />}
-            color="bg-purple-50"
+            subtitle="Sum of all user ports"
+            icon={<Cable size={18} />}
+            tone="purple"
           />
         </div>
 
-        {/* Filters */}
-        <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-          <div className="flex flex-col lg:flex-row gap-3 lg:items-center lg:justify-between">
-            <div className="relative w-full lg:max-w-sm">
-              <Search
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-              />
-              <input
-                type="text"
-                placeholder="Search by username, email or full name..."
-                value={searchTerm}
-                onChange={(e) => handleSearchChange(e.target.value)}
-                className="w-full pl-9 pr-4 py-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="flex items-center gap-2 flex-wrap">
-              {(["ALL", "SUPER_ADMIN", "ADMIN", "USER"] as RoleFilter[]).map(
-                (role) => (
-                  <button
-                    key={role}
-                    onClick={() => handleRoleFilterChange(role)}
-                    className={cn(
-                      "px-3 py-1.5 text-xs font-medium rounded-full transition-colors",
-                      roleFilter === role
-                        ? "bg-blue-600 text-white"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200",
-                    )}
-                  >
-                    {role === "ALL" ? "All roles" : role}
-                  </button>
-                ),
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Error */}
-        {globalError && (
-          <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
-            {globalError}
-          </div>
-        )}
-
         {/* Table */}
-        {loading ? (
-          <div className="bg-white rounded-2xl border border-slate-200 p-8 shadow-sm flex items-center justify-center">
-            <div className="flex items-center gap-2 text-sm text-slate-500">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/70 px-5 py-3">
+            <SectionTitle
+              icon={Users}
+              title="Users"
+              description={`${users.length} user(s) displayed`}
+              badge={
+                isSuperAdmin ? (
+                  <Badge variant="info">
+                    <ShieldCheck size={12} />
+                    Role changes enabled
+                  </Badge>
+                ) : (
+                  <Badge variant="default">Read / Limited actions</Badge>
+                )
+              }
+            />
+
+            <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-500">
+              <Clock size={12} />
+              Live data
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 p-10 text-sm text-slate-500">
               <Loader2 size={16} className="animate-spin" />
               Loading users...
             </div>
-          </div>
-        ) : (
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 bg-slate-50/70">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-900">
-                    Users List
-                  </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {users.length} user(s) displayed
-                  </p>
-                </div>
-                {isSuperAdmin && (
-                  <p className="text-[11px] text-slate-400 italic">
-                    Use the role dropdown to change a user's role
-                  </p>
-                )}
-              </div>
-            </div>
-
+          ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
-                    <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
                       User
                     </th>
-                    <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
                       Contact
                     </th>
-                    <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
                       Role
                     </th>
-                    <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
                       Status
                     </th>
-                    <th className="px-5 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
                       Ports
                     </th>
-                    <th className="px-5 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="px-5 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-slate-500">
                       Actions
                     </th>
                   </tr>
                 </thead>
 
-                <tbody>
+                <tbody className="divide-y divide-slate-100">
                   {users.map((u) => {
                     const ports = getUserPorts(u);
                     const isCurrentUser = user?.username === u.username;
+
                     const isChangingRole = changingRoleFor === u.id;
                     const isDeleting = deletingUserId === u.id;
 
@@ -796,33 +951,28 @@ export default function UserManagementSection() {
                       !(isAdmin && u.role === "ADMIN");
 
                     return (
-                      <tr
-                        key={u.id}
-                        className="border-b border-slate-100 hover:bg-slate-50/70 transition-colors"
-                      >
+                      <tr key={u.id} className="hover:bg-slate-50/70">
+                        {/* User */}
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-3">
-                            <div className="h-10 w-10 shrink-0 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-bold">
-                              {getInitials(u.full_name || u.username)}
-                            </div>
+                            <AvatarCircle name={u.full_name} username={u.username} />
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <div className="font-semibold text-slate-900 font-mono">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-semibold text-slate-900 font-mono">
                                   {u.username}
-                                </div>
+                                </span>
                                 {isCurrentUser && (
-                                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">
-                                    You
-                                  </span>
+                                  <Badge variant="info">You</Badge>
                                 )}
                               </div>
-                              <div className="text-xs text-slate-500 mt-0.5">
+                              <div className="mt-0.5 text-xs text-slate-500">
                                 {u.full_name}
                               </div>
                             </div>
                           </div>
                         </td>
 
+                        {/* Contact */}
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-2 text-slate-700">
                             <Mail size={14} className="mt-0.5 text-slate-400" />
@@ -830,6 +980,7 @@ export default function UserManagementSection() {
                           </div>
                         </td>
 
+                        {/* Role */}
                         <td className="px-5 py-4 align-top">
                           {canChangeRole ? (
                             <RoleSelector
@@ -838,46 +989,47 @@ export default function UserManagementSection() {
                               onChange={(newRole) => handleChangeRole(u, newRole)}
                             />
                           ) : (
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
                               <RoleBadge role={u.role} />
-                              {isCurrentUser && (isSuperAdmin || isAdmin) && (
+                              {u.role === "SUPER_ADMIN" && !isCurrentUser && (
                                 <span className="text-[10px] text-slate-400 italic">
-                                  (you)
-                                </span>
-                              )}
-                              {!isCurrentUser && u.role === "SUPER_ADMIN" && (
-                                <span className="text-[10px] text-slate-400 italic">
-                                  (protected)
+                                  protected
                                 </span>
                               )}
                             </div>
                           )}
                         </td>
 
+                        {/* Status */}
                         <td className="px-5 py-4 align-top">
                           <StatusBadge active={u.is_active} />
                         </td>
 
+                        {/* Ports */}
                         <td className="px-5 py-4 align-top">
                           {ports.length > 0 ? (
                             <div className="space-y-2">
                               <div className="text-xs text-slate-500">
                                 {ports.length} port(s)
                               </div>
-                              <div className="flex flex-wrap gap-1.5 max-w-[360px]">
+                              <div className="flex flex-wrap gap-1.5 max-w-[420px]">
                                 {ports.slice(0, 4).map((p, index) => (
                                   <span
                                     key={`${p.id}-${index}-${p.value}`}
-                                    className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] text-slate-700"
+                                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700"
                                   >
-                                    {p.label ? <span>{p.label}</span> : null}
+                                    {p.label ? (
+                                      <span className="text-slate-500">
+                                        {p.label}:
+                                      </span>
+                                    ) : null}
                                     <span className="font-mono">{p.value}</span>
                                   </span>
                                 ))}
                                 {ports.length > 4 && (
-                                  <span className="inline-flex items-center rounded-full bg-blue-50 px-2.5 py-1 text-[11px] text-blue-700">
+                                  <Badge variant="info">
                                     +{ports.length - 4} more
-                                  </span>
+                                  </Badge>
                                 )}
                               </div>
                             </div>
@@ -888,10 +1040,12 @@ export default function UserManagementSection() {
                           )}
                         </td>
 
+                        {/* Actions */}
                         <td className="px-5 py-4 align-top text-right">
-                          <button
+                          <Btn
+                            variant="danger"
+                            size="sm"
                             onClick={() => handleDeleteUser(u)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                             disabled={!canDelete || isDeleting}
                             title={
                               isCurrentUser
@@ -909,7 +1063,7 @@ export default function UserManagementSection() {
                               <Trash2 size={14} />
                             )}
                             Delete
-                          </button>
+                          </Btn>
                         </td>
                       </tr>
                     );
@@ -919,7 +1073,7 @@ export default function UserManagementSection() {
                     <tr>
                       <td
                         colSpan={6}
-                        className="px-5 py-10 text-center text-sm text-slate-500"
+                        className="px-5 py-12 text-center text-sm text-slate-500"
                       >
                         No users found for the current filters.
                       </td>
@@ -928,25 +1082,23 @@ export default function UserManagementSection() {
                 </tbody>
               </table>
             </div>
-          </div>
-        )}
+          )}
+        </div>
 
-        {/* ---- Add User Modal ---- */}
+        {/* Add User Modal */}
         {showAdd && (
-          <div className="fixed inset-0 bg-black/30 backdrop-blur-[2px] flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl border border-slate-200 overflow-hidden">
-              <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-900">
-                    Add User
-                  </h3>
-                  <p className="text-sm text-slate-500">
-                    Create a new user and assign one or more ports.
-                  </p>
-                </div>
+          <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4">
+            <div className="mx-auto max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+              <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4">
+                <SectionTitle
+                  icon={Plus}
+                  title="Add User"
+                  description="Create a new user and assign one or more ports."
+                  badge={<Badge variant="info">Create</Badge>}
+                />
                 <button
                   onClick={() => setShowAdd(false)}
-                  className="h-9 w-9 rounded-full border border-slate-200 flex items-center justify-center text-slate-500 hover:bg-slate-100"
+                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
                 >
                   <X size={16} />
                 </button>
@@ -954,54 +1106,39 @@ export default function UserManagementSection() {
 
               <div className="p-6">
                 {formErrors.general && (
-                  <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
-                    {formErrors.general}
-                  </div>
+                  <AlertBanner variant="error">{formErrors.general}</AlertBanner>
                 )}
 
-                <form onSubmit={handleCreateUser} className="space-y-5 text-sm">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <form onSubmit={handleCreateUser} className="mt-4 space-y-5">
+                  {/* Identity */}
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
-                      <label className="block font-medium text-slate-700 mb-1.5">
-                        Username
-                      </label>
-                      <input
+                      <FieldLabel required>Username</FieldLabel>
+                      <Input
                         value={form.username}
                         onChange={(e) =>
                           setForm((f) => ({ ...f, username: e.target.value }))
                         }
-                        className={cn(
-                          "w-full border rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2",
-                          formErrors.username
-                            ? "border-red-400 focus:ring-red-500"
-                            : "border-slate-300 focus:ring-blue-500",
-                        )}
+                        className={cn(formErrors.username && "border-red-400 focus:ring-red-300 focus:border-red-400")}
                       />
                       {formErrors.username && (
-                        <div className="text-xs text-red-500 mt-1">
+                        <div className="mt-1 text-xs text-red-600">
                           {formErrors.username}
                         </div>
                       )}
                     </div>
 
                     <div>
-                      <label className="block font-medium text-slate-700 mb-1.5">
-                        Email
-                      </label>
-                      <input
+                      <FieldLabel required>Email</FieldLabel>
+                      <Input
                         value={form.email}
                         onChange={(e) =>
                           setForm((f) => ({ ...f, email: e.target.value }))
                         }
-                        className={cn(
-                          "w-full border rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2",
-                          formErrors.email
-                            ? "border-red-400 focus:ring-red-500"
-                            : "border-slate-300 focus:ring-blue-500",
-                        )}
+                        className={cn(formErrors.email && "border-red-400 focus:ring-red-300 focus:border-red-400")}
                       />
                       {formErrors.email && (
-                        <div className="text-xs text-red-500 mt-1">
+                        <div className="mt-1 text-xs text-red-600">
                           {formErrors.email}
                         </div>
                       )}
@@ -1009,58 +1146,43 @@ export default function UserManagementSection() {
                   </div>
 
                   <div>
-                    <label className="block font-medium text-slate-700 mb-1.5">
-                      Full name
-                    </label>
-                    <input
+                    <FieldLabel required>Full name</FieldLabel>
+                    <Input
                       value={form.full_name}
                       onChange={(e) =>
                         setForm((f) => ({ ...f, full_name: e.target.value }))
                       }
-                      className={cn(
-                        "w-full border rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2",
-                        formErrors.full_name
-                          ? "border-red-400 focus:ring-red-500"
-                          : "border-slate-300 focus:ring-blue-500",
-                      )}
+                      className={cn(formErrors.full_name && "border-red-400 focus:ring-red-300 focus:border-red-400")}
                     />
                     {formErrors.full_name && (
-                      <div className="text-xs text-red-500 mt-1">
+                      <div className="mt-1 text-xs text-red-600">
                         {formErrors.full_name}
                       </div>
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Password / Role */}
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                     <div>
-                      <label className="block font-medium text-slate-700 mb-1.5">
-                        Password
-                      </label>
-                      <input
+                      <FieldLabel required>Password</FieldLabel>
+                      <Input
                         type="password"
                         value={form.password}
                         onChange={(e) =>
                           setForm((f) => ({ ...f, password: e.target.value }))
                         }
-                        className={cn(
-                          "w-full border rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2",
-                          formErrors.password
-                            ? "border-red-400 focus:ring-red-500"
-                            : "border-slate-300 focus:ring-blue-500",
-                        )}
+                        className={cn(formErrors.password && "border-red-400 focus:ring-red-300 focus:border-red-400")}
                       />
                       {formErrors.password && (
-                        <div className="text-xs text-red-500 mt-1">
+                        <div className="mt-1 text-xs text-red-600">
                           {formErrors.password}
                         </div>
                       )}
                     </div>
 
                     <div>
-                      <label className="block font-medium text-slate-700 mb-1.5">
-                        Role
-                      </label>
-                      <select
+                      <FieldLabel>Role</FieldLabel>
+                      <Select
                         value={form.role}
                         onChange={(e) =>
                           setForm((f) => ({
@@ -1068,7 +1190,6 @@ export default function UserManagementSection() {
                             role: e.target.value as UserRole,
                           }))
                         }
-                        className="w-full border border-slate-300 rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
                         {isSuperAdmin && (
                           <>
@@ -1077,112 +1198,111 @@ export default function UserManagementSection() {
                           </>
                         )}
                         <option value="USER">USER</option>
-                      </select>
+                      </Select>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        {isSuperAdmin
+                          ? "SUPER_ADMIN can create admins and super admins."
+                          : "Admins typically create standard users."}
+                      </div>
                     </div>
                   </div>
 
                   {/* Ports */}
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-                    <div className="flex items-center justify-between mb-3">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/60">
+                    <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
                       <div>
-                        <label className="block font-medium text-slate-800">
+                        <div className="text-sm font-semibold text-slate-900">
                           Assigned Ports
-                        </label>
-                        <p className="text-xs text-slate-500">
+                        </div>
+                        <div className="mt-0.5 text-xs text-slate-500">
                           Add one or more ports for this user.
-                        </p>
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={addPortRow}
-                        className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-600 hover:text-blue-800"
-                      >
-                        <Plus size={13} />
+
+                      <Btn type="button" size="sm" variant="outline" onClick={addPortRow}>
+                        <Plus size={14} />
                         Add port
-                      </button>
+                      </Btn>
                     </div>
 
-                    {formErrors.ports && (
-                      <div className="text-xs text-red-500 mb-2">
-                        {formErrors.ports}
-                      </div>
-                    )}
+                    <div className="p-4 space-y-3">
+                      {formErrors.ports && (
+                        <AlertBanner variant="error">{formErrors.ports}</AlertBanner>
+                      )}
 
-                    <div className="space-y-3">
                       {form.ports.map((p, index) => (
                         <div
                           key={index}
-                          className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-start bg-white border border-slate-200 rounded-xl p-3"
+                          className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-4 md:grid-cols-[1fr_1fr_auto]"
                         >
                           <div>
-                            <label className="block text-xs text-slate-500 mb-1">
-                              Label
-                            </label>
-                            <input
+                            <FieldLabel>Label</FieldLabel>
+                            <Input
                               value={p.label}
                               onChange={(e) =>
                                 updatePortRow(index, "label", e.target.value)
                               }
-                              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                               placeholder="ex: Client A"
                             />
                           </div>
 
                           <div>
-                            <label className="block text-xs text-slate-500 mb-1">
-                              Port value
-                            </label>
-                            <input
+                            <FieldLabel required>Port value</FieldLabel>
+                            <Input
                               value={p.value}
                               onChange={(e) =>
                                 updatePortRow(index, "value", e.target.value)
                               }
-                              className={cn(
-                                "w-full border rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-2",
-                                formErrors[`ports.${index}.value`]
-                                  ? "border-red-400 focus:ring-red-500"
-                                  : "border-slate-300 focus:ring-blue-500",
-                              )}
                               placeholder="ex: 1/1/7/3/95"
+                              className={cn(
+                                formErrors[`ports.${index}.value`] &&
+                                  "border-red-400 focus:ring-red-300 focus:border-red-400",
+                                "font-mono",
+                              )}
                             />
                             {formErrors[`ports.${index}.value`] && (
-                              <div className="text-xs text-red-500 mt-1">
+                              <div className="mt-1 text-xs text-red-600">
                                 {formErrors[`ports.${index}.value`]}
                               </div>
                             )}
                           </div>
 
-                          <div className="md:pt-6">
-                            <button
+                          <div className="md:pt-7">
+                            <Btn
                               type="button"
+                              variant="ghost"
+                              size="sm"
                               onClick={() => removePortRow(index)}
                               disabled={form.ports.length === 1}
-                              className="h-9 w-9 flex items-center justify-center rounded-full border border-slate-300 text-slate-500 hover:bg-red-50 hover:text-red-600 hover:border-red-300 disabled:opacity-40 disabled:cursor-not-allowed"
                               title="Remove this port"
+                              className="border border-slate-200"
                             >
                               <X size={14} />
-                            </button>
+                            </Btn>
                           </div>
                         </div>
                       ))}
                     </div>
                   </div>
 
-                  <div className="flex justify-end gap-2 pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setShowAdd(false)}
-                      className="px-4 py-2.5 text-sm text-slate-600 hover:bg-slate-100 rounded-xl"
-                    >
+                  {/* Actions */}
+                  <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
+                    <Btn type="button" variant="outline" onClick={() => setShowAdd(false)}>
                       Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="px-4 py-2.5 text-sm font-semibold bg-blue-600 text-white rounded-xl hover:bg-blue-700 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {submitting ? "Creating..." : "Create user"}
-                    </button>
+                    </Btn>
+                    <Btn type="submit" variant="primary" disabled={submitting}>
+                      {submitting ? (
+                        <>
+                          <Loader2 size={14} className="animate-spin" />
+                          Creating...
+                        </>
+                      ) : (
+                        <>
+                          <Plus size={16} />
+                          Create user
+                        </>
+                      )}
+                    </Btn>
                   </div>
                 </form>
               </div>
@@ -1191,6 +1311,7 @@ export default function UserManagementSection() {
         )}
       </div>
 
+      {/* Confirm Dialog */}
       <ConfirmDialog
         open={confirmDialog.open}
         title={confirmTitle}
@@ -1221,14 +1342,14 @@ export default function UserManagementSection() {
 
               <div className="grid grid-cols-[90px_1fr] gap-3">
                 <span className="text-slate-500">New role</span>
-                <span className="font-semibold text-blue-700">
-                  {confirmDialog.newRole}
+                <span className="font-semibold text-slate-900">
+                  <RoleBadge role={confirmDialog.newRole} />
                 </span>
               </div>
 
-              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                This will immediately change the user's permissions.
-              </div>
+              <AlertBanner variant="warning">
+                This change is immediate and impacts user permissions.
+              </AlertBanner>
             </div>
           )}
 
@@ -1262,9 +1383,9 @@ export default function UserManagementSection() {
               </span>
             </div>
 
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <AlertBanner variant="error">
               This action is irreversible.
-            </div>
+            </AlertBanner>
           </div>
         )}
       </ConfirmDialog>
@@ -1272,7 +1393,9 @@ export default function UserManagementSection() {
   );
 }
 
-/* ---------- Confirm Dialog ---------- */
+/* ================================================================
+   Confirm Dialog — Enterprise (with loading + Btn)
+   ================================================================ */
 
 function ConfirmDialog({
   open,
@@ -1299,7 +1422,7 @@ function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[80] bg-black/30 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[80] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={() => {
         if (!loading) onCancel();
       }}
@@ -1307,39 +1430,32 @@ function ConfirmDialog({
       <div
         role="dialog"
         aria-modal="true"
-        className="w-full max-w-md rounded-xl bg-white border border-slate-200 shadow-xl"
+        className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="p-6">
-          <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
+        <div className="border-b border-slate-200 px-6 py-4">
+          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+        </div>
 
-          <div className="mt-3">{children}</div>
+        <div className="px-6 py-4">{children}</div>
 
-          <div className="mt-6 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={loading}
-              className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50"
-            >
-              {cancelText}
-            </button>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-3 rounded-b-xl">
+          <Btn variant="outline" size="sm" onClick={onCancel} disabled={loading}>
+            {cancelText}
+          </Btn>
 
-            <button
-              type="button"
-              onClick={onConfirm}
-              disabled={loading}
-              className={cn(
-                "px-4 py-2 text-sm font-semibold text-white rounded-lg disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2",
-                variant === "danger"
-                  ? "bg-red-600 hover:bg-red-700"
-                  : "bg-blue-600 hover:bg-blue-700",
-              )}
-            >
-              {loading && <Loader2 size={14} className="animate-spin" />}
-              {confirmText}
-            </button>
-          </div>
+          <Btn
+            variant="primary"
+            size="sm"
+            onClick={onConfirm}
+            disabled={loading}
+            className={cn(
+              variant === "danger" && "bg-red-600 hover:bg-red-700 border-red-600",
+            )}
+          >
+            {loading && <Loader2 size={14} className="animate-spin" />}
+            {confirmText}
+          </Btn>
         </div>
       </div>
     </div>

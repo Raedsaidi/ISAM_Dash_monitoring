@@ -1,11 +1,9 @@
-import json
 import logging
 from datetime import datetime
 from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 
-from app.models.isam_data import ISAMData, ISAMDataType
 from app.models.isam_instance import ISAMInstance
 from app.models.isam_lt_slot import ISAMLTSlot
 from app.models.isam_lt_port import ISAMLTPort
@@ -14,112 +12,84 @@ from app.services.isam_lt_slots_service import ISAMLTSlotsService
 logger = logging.getLogger(__name__)
 
 
-def get_or_create_isam_data_row(
-    db: Session,
-    instance_id: int,
-    data_type: ISAMDataType,
-) -> ISAMData:
-    """Récupère ou crée une ligne ISAMData."""
-    row = (
-        db.query(ISAMData)
-        .filter(
-            ISAMData.isam_instance_id == instance_id,
-            ISAMData.data_type == data_type.value,
-        )
-        .first()
-    )
-    if row is not None:
-        return row
-
-    now = datetime.utcnow()
-    row = ISAMData(
-        isam_instance_id=instance_id,
-        data_type=data_type.value,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
-def upsert_lt_slots_snapshot(
+def _replace_lt_slots_for_instance(
     db: Session,
     *,
     instance_id: int,
-    refresh_success: bool,
-    protocol_used: str | None,
-    raw_output: str | None,
-    slots_data: list | None,
-    error_message: str | None,
+    slots_data: list[dict],
 ) -> None:
     """
-    Upsert le snapshot des LT slots.
+    Remplace complètement les slots LT d'une instance
+    par le dernier snapshot réussi.
     """
-    row = get_or_create_isam_data_row(db, instance_id, ISAMDataType.LT_SLOTS)
     now = datetime.utcnow()
 
-    row.last_refresh_at = now
-    row.last_refresh_success = refresh_success
-    row.last_refresh_error = None if refresh_success else (error_message or "Unknown error")
-    row.updated_at = now
+    db.query(ISAMLTSlot).filter(
+        ISAMLTSlot.isam_instance_id == instance_id
+    ).delete(synchronize_session=False)
 
-    if refresh_success:
-        row.raw_output = raw_output or ""
-        row.parsed_data = json.dumps(
-            {
-                "slots": slots_data or [],
-                "slot_count": len(slots_data or []),
-            },
-            ensure_ascii=False,
+    for slot in slots_data:
+        db.add(
+            ISAMLTSlot(
+                isam_instance_id=instance_id,
+                slot_id=slot["slot_id"],
+                board=slot["board"],
+                admin_state=slot["admin_state"],
+                link_state=slot["link_state"],
+                port_state=slot["port_state"],
+                cfg_mtu=slot["cfg_mtu"],
+                oper_mtu=slot["oper_mtu"],
+                lag_bndl=slot["lag_bndl"],
+                mode=slot["mode"],
+                encap=slot["encap"],
+                port_type=slot["port_type"],
+                last_success_at=now,
+                created_at=now,
+                updated_at=now,
+            )
         )
-        row.protocol_used = protocol_used
-        row.last_success_at = now
-
-    db.add(row)
-    logger.debug(f"[CACHE-LT-SLOTS] Snapshot upserted for instance #{instance_id}")
 
 
-def upsert_lt_ports_snapshot(
+def _replace_lt_ports_for_slot(
     db: Session,
     *,
     instance_id: int,
     slot_id: str,
-    refresh_success: bool,
-    protocol_used: str | None,
-    raw_output: str | None,
-    ports_data: list | None,
-    error_message: str | None,
+    ports_data: list[dict],
 ) -> None:
     """
-    Upsert le snapshot des ports LT (par slot).
-    
-    Note: On stocke tout dans ISAMData avec data_type="lt_ports"
-    et on inclut le slot_id dans le JSON.
+    Remplace complètement les ports d'un slot donné
+    par le dernier snapshot réussi.
     """
-    row = get_or_create_isam_data_row(db, instance_id, ISAMDataType.LT_PORTS)
     now = datetime.utcnow()
 
-    row.last_refresh_at = now
-    row.last_refresh_success = refresh_success
-    row.last_refresh_error = None if refresh_success else (error_message or "Unknown error")
-    row.updated_at = now
+    db.query(ISAMLTPort).filter(
+        ISAMLTPort.isam_instance_id == instance_id,
+        ISAMLTPort.slot_id == slot_id,
+    ).delete(synchronize_session=False)
 
-    if refresh_success:
-        row.raw_output = raw_output or ""
-        row.parsed_data = json.dumps(
-            {
-                "slot_id": slot_id,
-                "ports": ports_data or [],
-                "port_count": len(ports_data or []),
-            },
-            ensure_ascii=False,
+    for port in ports_data:
+        db.add(
+            ISAMLTPort(
+                isam_instance_id=instance_id,
+                slot_id=slot_id,
+                port_id=port["port_id"],
+                port_type=port["port_type"],
+                admin_state=port["admin_state"],
+                link_state=port["link_state"],
+                port_state=port["port_state"],
+                cfg_mtu=port["cfg_mtu"],
+                oper_mtu=port["oper_mtu"],
+                lag_bndl=port["lag_bndl"],
+                mode=port["mode"],
+                encap=port["encap"],
+                board=port["board"],
+                raw_line=port.get("raw_line"),
+                last_success_at=now,
+                created_at=now,
+                updated_at=now,
+            )
         )
-        row.protocol_used = protocol_used
-        row.last_success_at = now
-
-    db.add(row)
-    logger.debug(f"[CACHE-LT-PORTS] Snapshot upserted for instance #{instance_id}, slot {slot_id}")
 
 
 def refresh_lt_slots_snapshot(
@@ -128,7 +98,15 @@ def refresh_lt_slots_snapshot(
     timeout: int = 30,
 ) -> None:
     """
-    Refresh le snapshot des LT slots.
+    Refresh complet :
+    1. récupère les slots LT
+    2. remplace les slots en base si succès
+    3. récupère les ports de chaque slot
+    4. remplace les ports slot par slot si succès
+
+    Important :
+    - si la récupération des slots échoue -> on garde l'ancien snapshot
+    - si la récupération des ports d'un slot échoue -> on garde les anciens ports de ce slot
     """
     logger.info(f"[CACHE-LT] Refreshing LT slots for instance #{instance.id} ({instance.name})")
 
@@ -137,68 +115,92 @@ def refresh_lt_slots_snapshot(
     try:
         success, proto, raw_output, slots, msg = service.get_lt_slots(timeout=timeout)
 
-        upsert_lt_slots_snapshot(
+        if not success:
+            logger.warning(
+                f"[CACHE-LT] LT slots refresh failed for instance #{instance.id}: {msg}"
+            )
+            db.rollback()
+            return
+
+        # 1) Remplacer les slots
+        _replace_lt_slots_for_instance(
             db,
             instance_id=instance.id,
-            refresh_success=success,
-            protocol_used=proto,
-            raw_output=raw_output,
             slots_data=slots,
-            error_message=msg if not success else None,
         )
 
-        # Si on a les slots, récupérer les ports pour chaque slot
-        if success and slots:
-            for slot in slots:
-                slot_id = slot.get("slot_id")
-                port_type = slot.get("port_type")
+        # 2) Supprimer les ports des slots qui n'existent plus
+        current_slot_ids = [slot["slot_id"] for slot in slots if slot.get("slot_id")]
 
-                if not slot_id or not port_type:
-                    logger.warning(f"[CACHE-LT] Slot sans slot_id ou port_type: {slot}")
-                    continue
+        if current_slot_ids:
+            db.query(ISAMLTPort).filter(
+                ISAMLTPort.isam_instance_id == instance.id,
+                ~ISAMLTPort.slot_id.in_(current_slot_ids),
+            ).delete(synchronize_session=False)
+        else:
+            db.query(ISAMLTPort).filter(
+                ISAMLTPort.isam_instance_id == instance.id
+            ).delete(synchronize_session=False)
 
-                try:
-                    ports_success, ports_proto, ports_raw, ports_list, ports_msg = service.get_slot_ports(
-                        slot_id=slot_id,
-                        port_type=port_type,
-                        timeout=timeout,
-                    )
+        # 3) Refresh ports slot par slot
+        for slot in slots:
+            slot_id = slot.get("slot_id")
+            port_type = slot.get("port_type")
 
-                    upsert_lt_ports_snapshot(
+            if not slot_id or not port_type:
+                logger.warning(f"[CACHE-LT] Invalid slot data: {slot}")
+                continue
+
+            try:
+                ports_success, ports_proto, ports_raw, ports_list, ports_msg = service.get_slot_ports(
+                    slot_id=slot_id,
+                    port_type=port_type,
+                    timeout=timeout,
+                )
+
+                if ports_success:
+                    _replace_lt_ports_for_slot(
                         db,
                         instance_id=instance.id,
                         slot_id=slot_id,
-                        refresh_success=ports_success,
-                        protocol_used=ports_proto,
-                        raw_output=ports_raw,
                         ports_data=ports_list,
-                        error_message=ports_msg if not ports_success else None,
                     )
+                    logger.info(
+                        f"[CACHE-LT] Stored {len(ports_list)} ports for slot {slot_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"[CACHE-LT] Failed to refresh ports for slot {slot_id}: {ports_msg}"
+                    )
+                    # On garde l'ancien snapshot de ce slot
 
-                except Exception:
-                    logger.exception(f"[CACHE-LT] Error refreshing ports for slot {slot_id}")
+            except Exception:
+                logger.exception(f"[CACHE-LT] Error refreshing ports for slot {slot_id}")
+                # On garde l'ancien snapshot de ce slot
 
         db.commit()
-        logger.info(f"[CACHE-LT] LT slots and ports snapshot updated for instance #{instance.id}")
+        logger.info(f"[CACHE-LT] LT snapshot updated for instance #{instance.id}")
 
     except Exception:
         db.rollback()
-        logger.exception(f"[CACHE-LT] Error while refreshing LT slots snapshot for instance #{instance.id}")
+        logger.exception(
+            f"[CACHE-LT] Error while refreshing LT snapshot for instance #{instance.id}"
+        )
         raise
 
 
 def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
-    """Charge les slots LT en cache."""
-    row = (
-        db.query(ISAMData)
-        .filter(
-            ISAMData.isam_instance_id == instance_id,
-            ISAMData.data_type == ISAMDataType.LT_SLOTS.value,
-        )
-        .first()
+    """
+    Charge les slots LT depuis la table dédiée ISAMLTSlot.
+    """
+    rows = (
+        db.query(ISAMLTSlot)
+        .filter(ISAMLTSlot.isam_instance_id == instance_id)
+        .order_by(ISAMLTSlot.slot_id.asc())
+        .all()
     )
 
-    if row is None or not row.parsed_data:
+    if not rows:
         return {
             "slots": [],
             "slot_count": 0,
@@ -208,38 +210,59 @@ def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
             "last_refresh_error": None,
             "protocol_used": None,
             "raw_output": "",
+            "message": "No snapshot available yet",
         }
 
-    try:
-        parsed = json.loads(row.parsed_data)
-    except Exception:
-        logger.exception("[CACHE-LT] Error parsing cached LT slots")
-        parsed = {"slots": [], "slot_count": 0}
+    last_success_at = max(
+        (row.last_success_at for row in rows if row.last_success_at is not None),
+        default=None,
+    )
+
+    slots = [
+        {
+            "slot_id": row.slot_id,
+            "board": row.board,
+            "admin_state": row.admin_state,
+            "link_state": row.link_state,
+            "port_state": row.port_state,
+            "cfg_mtu": row.cfg_mtu,
+            "oper_mtu": row.oper_mtu,
+            "lag_bndl": row.lag_bndl,
+            "mode": row.mode,
+            "encap": row.encap,
+            "port_type": row.port_type,
+        }
+        for row in rows
+    ]
 
     return {
-        "slots": parsed.get("slots", []),
-        "slot_count": parsed.get("slot_count", 0),
-        "last_success_at": row.last_success_at,
-        "last_refresh_at": row.last_refresh_at,
-        "last_refresh_success": row.last_refresh_success,
-        "last_refresh_error": row.last_refresh_error,
-        "protocol_used": row.protocol_used,
-        "raw_output": row.raw_output or "",
+        "slots": slots,
+        "slot_count": len(slots),
+        "last_success_at": last_success_at,
+        "last_refresh_at": last_success_at,
+        "last_refresh_success": True,
+        "last_refresh_error": None,
+        "protocol_used": None,
+        "raw_output": "",
+        "message": "OK",
     }
 
 
-def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str | None = None) -> Dict[str, Any]:
-    """Charge les ports LT en cache."""
-    row = (
-        db.query(ISAMData)
+def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[str, Any]:
+    """
+    Charge les ports LT d'un slot précis depuis la table dédiée ISAMLTPort.
+    """
+    rows = (
+        db.query(ISAMLTPort)
         .filter(
-            ISAMData.isam_instance_id == instance_id,
-            ISAMData.data_type == ISAMDataType.LT_PORTS.value,
+            ISAMLTPort.isam_instance_id == instance_id,
+            ISAMLTPort.slot_id == slot_id,
         )
-        .first()
+        .order_by(ISAMLTPort.port_id.asc())
+        .all()
     )
 
-    if row is None or not row.parsed_data:
+    if not rows:
         return {
             "ports": [],
             "port_count": 0,
@@ -250,22 +273,41 @@ def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str | None = No
             "last_refresh_error": None,
             "protocol_used": None,
             "raw_output": "",
+            "message": "No snapshot available yet for this slot",
         }
 
-    try:
-        parsed = json.loads(row.parsed_data)
-    except Exception:
-        logger.exception("[CACHE-LT] Error parsing cached LT ports")
-        parsed = {"ports": [], "port_count": 0}
+    last_success_at = max(
+        (row.last_success_at for row in rows if row.last_success_at is not None),
+        default=None,
+    )
+
+    ports = [
+        {
+            "port_id": row.port_id,
+            "slot_id": row.slot_id,
+            "port_type": row.port_type,
+            "admin_state": row.admin_state,
+            "link_state": row.link_state,
+            "port_state": row.port_state,
+            "cfg_mtu": row.cfg_mtu,
+            "oper_mtu": row.oper_mtu,
+            "lag_bndl": row.lag_bndl,
+            "mode": row.mode,
+            "encap": row.encap,
+            "board": row.board,
+        }
+        for row in rows
+    ]
 
     return {
-        "ports": parsed.get("ports", []),
-        "port_count": parsed.get("port_count", 0),
-        "slot_id": parsed.get("slot_id", slot_id),
-        "last_success_at": row.last_success_at,
-        "last_refresh_at": row.last_refresh_at,
-        "last_refresh_success": row.last_refresh_success,
-        "last_refresh_error": row.last_refresh_error,
-        "protocol_used": row.protocol_used,
-        "raw_output": row.raw_output or "",
+        "ports": ports,
+        "port_count": len(ports),
+        "slot_id": slot_id,
+        "last_success_at": last_success_at,
+        "last_refresh_at": last_success_at,
+        "last_refresh_success": True,
+        "last_refresh_error": None,
+        "protocol_used": None,
+        "raw_output": "",
+        "message": "OK",
     }

@@ -1297,17 +1297,8 @@ def get_lt_slots(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Récupère les slots LT avec snapshot en cache.
-    
-    Si pas de cache encore, retourne snapshot vide avec message.
-    Si erreur au dernier refresh, retourne dernier snapshot valide.
-    
-    Admin/SuperAdmin only.
-    """
-    inst = get_instance_or_404(db, instance_id)
+    _ = get_instance_or_404(db, instance_id)
 
-    # Charger le cache
     cached = load_cached_lt_slots(db, instance_id)
 
     return LTSlotsResponse(
@@ -1316,15 +1307,12 @@ def get_lt_slots(
         slot_count=cached["slot_count"],
         slots=[LTSlotItem(**slot) for slot in cached["slots"]],
         raw_output=cached["raw_output"],
-        message="OK" if cached["last_refresh_success"] else 
-                "No snapshot available yet" if not cached["last_success_at"] else 
-                "Showing last successful snapshot (latest refresh failed)",
+        message=cached["message"],
         cached_at=cached["last_success_at"],
         last_refresh_at=cached["last_refresh_at"],
         last_refresh_success=cached["last_refresh_success"],
         last_refresh_error=cached["last_refresh_error"],
     )
-
 
 @router.get(
     "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
