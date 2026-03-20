@@ -1,4 +1,4 @@
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -119,7 +119,7 @@ def login(
 
     refresh_token = create_refresh_token_for_user(db, user)
 
-    user.last_login_at = datetime.utcnow()
+    user.last_login_at = datetime.now(timezone.utc)
     db.add(user)
     db.commit()
 
@@ -148,7 +148,7 @@ def refresh_access_token(
             detail="Refresh token invalide.",
         )
 
-    if stored.expires_at < datetime.utcnow():
+    if stored.expires_at < datetime.now(timezone.utc):
         revoke_refresh_token(db, stored)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

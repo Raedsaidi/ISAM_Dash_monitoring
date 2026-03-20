@@ -85,6 +85,61 @@ const EMPTY_CONFIRM_DIALOG: ConfirmDialogState = {
 };
 
 /* ================================================================
+   FIX: parse FastAPI/Pydantic errors (avoid [object Object])
+   ================================================================ */
+
+class ApiError extends Error {
+  fieldErrors?: Record<string, string>;
+  constructor(message: string, fieldErrors?: Record<string, string>) {
+    super(message);
+    this.name = "ApiError";
+    this.fieldErrors = fieldErrors;
+    Object.setPrototypeOf(this, ApiError.prototype);
+  }
+}
+
+function cleanMsg(msg: string) {
+  // Pydantic often prefixes: "Value error, ..."
+  return msg.replace(/^Value error,\s*/i, "");
+}
+
+function locToKey(loc: any): string {
+  if (!Array.isArray(loc)) return "general";
+  // ["body","ports",0,"value"] => "ports.0.value"
+  const cleaned = loc.filter(
+    (p) => !["body", "query", "path", "header"].includes(String(p)),
+  );
+  return cleaned.map(String).join(".") || "general";
+}
+
+function parseFastApiError(data: any, fallback = "Unknown error") {
+  if (Array.isArray(data?.detail)) {
+    const fieldErrors: Record<string, string> = {};
+    const messages: string[] = [];
+
+    for (const err of data.detail) {
+      const key = locToKey(err?.loc);
+      const raw = typeof err?.msg === "string" ? err.msg : fallback;
+      const msg = cleanMsg(raw);
+
+      if (!fieldErrors[key]) fieldErrors[key] = msg;
+      messages.push(msg);
+    }
+
+    return {
+      message: messages.join("\n"),
+      fieldErrors,
+    };
+  }
+
+  if (typeof data?.detail === "string") return { message: data.detail as string };
+  if (typeof data?.message === "string")
+    return { message: data.message as string };
+
+  return { message: fallback };
+}
+
+/* ================================================================
    Helpers
    ================================================================ */
 
@@ -105,6 +160,12 @@ function getInitials(name: string) {
     .join("");
 }
 
+type BadgeProps = {
+  children: React.ReactNode;
+  variant?: "default" | "info" | "success" | "warning" | "danger" | "purple";
+  className?: string;
+};
+
 function roleToBadgeVariant(role: UserRole): BadgeProps["variant"] {
   if (role === "SUPER_ADMIN") return "danger";
   if (role === "ADMIN") return "warning";
@@ -112,14 +173,8 @@ function roleToBadgeVariant(role: UserRole): BadgeProps["variant"] {
 }
 
 /* ================================================================
-   UI Primitives — Enterprise (same style as your “B”)
+   UI Primitives
    ================================================================ */
-
-type BadgeProps = {
-  children: React.ReactNode;
-  variant?: "default" | "info" | "success" | "warning" | "danger" | "purple";
-  className?: string;
-};
 
 function Badge({ children, variant = "default", className }: BadgeProps) {
   const variants = {
@@ -297,7 +352,9 @@ function AlertBanner({
       {variant === "info" && (
         <AlertCircle size={14} className="mt-0.5 shrink-0" />
       )}
-      <div>{children}</div>
+
+      {/* pre-wrap => affiche les \n */}
+      <div style={{ whiteSpace: "pre-wrap" }}>{children}</div>
     </div>
   );
 }
@@ -427,14 +484,21 @@ function StatCard({
   };
 
   return (
-    <div className={cn("rounded-xl border border-slate-200 shadow-sm", tones[tone])}>
+    <div
+      className={cn(
+        "rounded-xl border border-slate-200 shadow-sm",
+        tones[tone],
+      )}
+    >
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               {title}
             </div>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{value}</div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">
+              {value}
+            </div>
             <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
           </div>
           <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700">
@@ -483,6 +547,7 @@ export default function UserManagementSection() {
 
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // FIXED authFetchJson: uses parseFastApiError (no [object Object])
   async function authFetchJson<T>(
     url: string,
     options: RequestInit = {},
@@ -497,12 +562,8 @@ export default function UserManagementSection() {
     }
 
     if (!res.ok) {
-      const detail =
-        data?.detail ||
-        data?.message ||
-        (Array.isArray(data) && data[0]?.msg) ||
-        "Unknown error";
-      throw new Error(detail);
+      const parsed = parseFastApiError(data, `Request failed (HTTP ${res.status})`);
+      throw new ApiError(parsed.message, parsed.fieldErrors);
     }
 
     return data as T;
@@ -609,27 +670,43 @@ export default function UserManagementSection() {
   function validateForm(): boolean {
     const e: Record<string, string> = {};
 
+    // username: accept all, but basic rules + not only digits
     if (!form.username.trim()) e.username = "Username is required.";
     else if (form.username.length < 3 || form.username.length > 32)
       e.username = "Username must be between 3 and 32 characters.";
+    else {
+      const compact = form.username.replace(/\s+/g, "");
+      if (compact && /^\d+$/.test(compact)) {
+        e.username = "Username cannot be only digits.";
+      }
+    }
 
     if (!form.email.trim()) e.email = "Email is required.";
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
       e.email = "Invalid email format.";
 
+    // full_name: letters + spaces only (simple client check)
     if (!form.full_name.trim()) e.full_name = "Full name is required.";
-    else if (form.full_name.length < 3)
-      e.full_name = "Full name must be at least 3 characters.";
+    else if (form.full_name.trim().length < 2)
+      e.full_name = "Full name must be at least 2 characters.";
+    else if (!/^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)*$/.test(form.full_name.trim()))
+      e.full_name = "Full name must contain only letters and spaces.";
 
     if (!form.password) e.password = "Password is required.";
     else if (form.password.length < 8)
       e.password = "Password must be at least 8 characters.";
 
+    // ports value: digits separated by "/"
     if (!form.ports || form.ports.length === 0) {
       e.ports = "At least one port is required.";
     } else {
       form.ports.forEach((p, index) => {
-        if (!p.value.trim()) e[`ports.${index}.value`] = "Port value is required.";
+        const v = p.value.trim();
+        if (!v) e[`ports.${index}.value`] = "Port value is required.";
+        else if (/\s/.test(v))
+          e[`ports.${index}.value`] = "Port value must not contain spaces.";
+        else if (!/^\d+(\/\d+)*$/.test(v))
+          e[`ports.${index}.value`] = "Invalid format. Example: 1/1/7/3";
       });
     }
 
@@ -637,8 +714,8 @@ export default function UserManagementSection() {
     return Object.keys(e).length === 0;
   }
 
-  async function handleCreateUser(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleCreateUser(e?: any) {
+    e?.preventDefault?.();
     setFormErrors({});
     if (!validateForm()) return;
 
@@ -664,7 +741,16 @@ export default function UserManagementSection() {
       await loadUsers(searchTerm, roleFilter);
       toast.success("User created successfully.");
     } catch (err: any) {
-      setFormErrors({ general: err.message || "Failed to create user." });
+      // FIX: show readable errors + per-field errors
+      if (err instanceof ApiError) {
+        if (err.fieldErrors && Object.keys(err.fieldErrors).length > 0) {
+          setFormErrors(err.fieldErrors);
+        } else {
+          setFormErrors({ general: err.message || "Failed to create user." });
+        }
+      } else {
+        setFormErrors({ general: err?.message || "Failed to create user." });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -695,11 +781,14 @@ export default function UserManagementSection() {
       const toastId = toast.loading("Updating role...");
 
       try {
-        await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${target.id}/role`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: newRole }),
-        });
+        await authFetchJson(
+          `${AUTH_BASE_URL}/api/v1/auth/users/${target.id}/role`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role: newRole }),
+          },
+        );
 
         await loadUsers(searchTerm, roleFilter);
         toast.success(`${target.username} is now ${newRole}.`, { id: toastId });
@@ -709,7 +798,9 @@ export default function UserManagementSection() {
         } catch {
           // ignore
         }
-        toast.error(err.message || "Failed to change user role.", { id: toastId });
+        toast.error(err.message || "Failed to change user role.", {
+          id: toastId,
+        });
       } finally {
         setChangingRoleFor(null);
         setConfirmDialog(EMPTY_CONFIRM_DIALOG);
@@ -808,8 +899,16 @@ export default function UserManagementSection() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <Btn variant="outline" onClick={() => loadUsers(searchTerm, roleFilter)} disabled={loading}>
-                {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+              <Btn
+                variant="outline"
+                onClick={() => loadUsers(searchTerm, roleFilter)}
+                disabled={loading}
+              >
+                {loading ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <RefreshCcw size={14} />
+                )}
                 Refresh
               </Btn>
 
@@ -955,15 +1054,16 @@ export default function UserManagementSection() {
                         {/* User */}
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-3">
-                            <AvatarCircle name={u.full_name} username={u.username} />
+                            <AvatarCircle
+                              name={u.full_name}
+                              username={u.username}
+                            />
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-semibold text-slate-900 font-mono">
                                   {u.username}
                                 </span>
-                                {isCurrentUser && (
-                                  <Badge variant="info">You</Badge>
-                                )}
+                                {isCurrentUser && <Badge variant="info">You</Badge>}
                               </div>
                               <div className="mt-0.5 text-xs text-slate-500">
                                 {u.full_name}
@@ -975,7 +1075,10 @@ export default function UserManagementSection() {
                         {/* Contact */}
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-2 text-slate-700">
-                            <Mail size={14} className="mt-0.5 text-slate-400" />
+                            <Mail
+                              size={14}
+                              className="mt-0.5 text-slate-400"
+                            />
                             <span className="break-all">{u.email}</span>
                           </div>
                         </td>
@@ -986,7 +1089,9 @@ export default function UserManagementSection() {
                             <RoleSelector
                               currentRole={u.role}
                               busy={isChangingRole}
-                              onChange={(newRole) => handleChangeRole(u, newRole)}
+                              onChange={(newRole) =>
+                                handleChangeRole(u, newRole)
+                              }
                             />
                           ) : (
                             <div className="flex flex-wrap items-center gap-2">
@@ -1087,224 +1192,276 @@ export default function UserManagementSection() {
 
         {/* Add User Modal */}
         {showAdd && (
-          <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4">
-            <div className="mx-auto max-w-3xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-              <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4">
-                <SectionTitle
-                  icon={Plus}
-                  title="Add User"
-                  description="Create a new user and assign one or more ports."
-                  badge={<Badge variant="info">Create</Badge>}
-                />
-                <button
-                  onClick={() => setShowAdd(false)}
-                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+          <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
+            <div className="mx-auto my-8 w-full max-w-3xl">
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4">
+                  <SectionTitle
+                    icon={Plus}
+                    title="Add User"
+                    description="Create a new user and assign one or more ports."
+                    badge={<Badge variant="info">Create</Badge>}
+                  />
+                  <button
+                    onClick={() => setShowAdd(false)}
+                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
 
-              <div className="p-6">
-                {formErrors.general && (
-                  <AlertBanner variant="error">{formErrors.general}</AlertBanner>
-                )}
-
-                <form onSubmit={handleCreateUser} className="mt-4 space-y-5">
-                  {/* Identity */}
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div>
-                      <FieldLabel required>Username</FieldLabel>
-                      <Input
-                        value={form.username}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, username: e.target.value }))
-                        }
-                        className={cn(formErrors.username && "border-red-400 focus:ring-red-300 focus:border-red-400")}
-                      />
-                      {formErrors.username && (
-                        <div className="mt-1 text-xs text-red-600">
-                          {formErrors.username}
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <FieldLabel required>Email</FieldLabel>
-                      <Input
-                        value={form.email}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, email: e.target.value }))
-                        }
-                        className={cn(formErrors.email && "border-red-400 focus:ring-red-300 focus:border-red-400")}
-                      />
-                      {formErrors.email && (
-                        <div className="mt-1 text-xs text-red-600">
-                          {formErrors.email}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <FieldLabel required>Full name</FieldLabel>
-                    <Input
-                      value={form.full_name}
-                      onChange={(e) =>
-                        setForm((f) => ({ ...f, full_name: e.target.value }))
-                      }
-                      className={cn(formErrors.full_name && "border-red-400 focus:ring-red-300 focus:border-red-400")}
-                    />
-                    {formErrors.full_name && (
-                      <div className="mt-1 text-xs text-red-600">
-                        {formErrors.full_name}
-                      </div>
+                {/* scroll */}
+                <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
+                  <div className="p-6">
+                    {formErrors.general && (
+                      <AlertBanner variant="error">
+                        {formErrors.general}
+                      </AlertBanner>
                     )}
-                  </div>
 
-                  {/* Password / Role */}
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                    <div>
-                      <FieldLabel required>Password</FieldLabel>
-                      <Input
-                        type="password"
-                        value={form.password}
-                        onChange={(e) =>
-                          setForm((f) => ({ ...f, password: e.target.value }))
-                        }
-                        className={cn(formErrors.password && "border-red-400 focus:ring-red-300 focus:border-red-400")}
-                      />
-                      {formErrors.password && (
-                        <div className="mt-1 text-xs text-red-600">
-                          {formErrors.password}
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <FieldLabel>Role</FieldLabel>
-                      <Select
-                        value={form.role}
-                        onChange={(e) =>
-                          setForm((f) => ({
-                            ...f,
-                            role: e.target.value as UserRole,
-                          }))
-                        }
-                      >
-                        {isSuperAdmin && (
-                          <>
-                            <option value="SUPER_ADMIN">SUPER_ADMIN</option>
-                            <option value="ADMIN">ADMIN</option>
-                          </>
-                        )}
-                        <option value="USER">USER</option>
-                      </Select>
-                      <div className="mt-1 text-[11px] text-slate-500">
-                        {isSuperAdmin
-                          ? "SUPER_ADMIN can create admins and super admins."
-                          : "Admins typically create standard users."}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Ports */}
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/60">
-                    <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
-                      <div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          Assigned Ports
-                        </div>
-                        <div className="mt-0.5 text-xs text-slate-500">
-                          Add one or more ports for this user.
-                        </div>
-                      </div>
-
-                      <Btn type="button" size="sm" variant="outline" onClick={addPortRow}>
-                        <Plus size={14} />
-                        Add port
-                      </Btn>
-                    </div>
-
-                    <div className="p-4 space-y-3">
-                      {formErrors.ports && (
-                        <AlertBanner variant="error">{formErrors.ports}</AlertBanner>
-                      )}
-
-                      {form.ports.map((p, index) => (
-                        <div
-                          key={index}
-                          className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-4 md:grid-cols-[1fr_1fr_auto]"
-                        >
-                          <div>
-                            <FieldLabel>Label</FieldLabel>
-                            <Input
-                              value={p.label}
-                              onChange={(e) =>
-                                updatePortRow(index, "label", e.target.value)
-                              }
-                              placeholder="ex: Client A"
-                            />
-                          </div>
-
-                          <div>
-                            <FieldLabel required>Port value</FieldLabel>
-                            <Input
-                              value={p.value}
-                              onChange={(e) =>
-                                updatePortRow(index, "value", e.target.value)
-                              }
-                              placeholder="ex: 1/1/7/3/95"
-                              className={cn(
-                                formErrors[`ports.${index}.value`] &&
-                                  "border-red-400 focus:ring-red-300 focus:border-red-400",
-                                "font-mono",
-                              )}
-                            />
-                            {formErrors[`ports.${index}.value`] && (
-                              <div className="mt-1 text-xs text-red-600">
-                                {formErrors[`ports.${index}.value`]}
-                              </div>
+                    <form onSubmit={handleCreateUser} className="mt-4 space-y-5">
+                      {/* Identity */}
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div>
+                          <FieldLabel required>Username</FieldLabel>
+                          <Input
+                            value={form.username}
+                            onChange={(e) =>
+                              setForm((f) => ({
+                                ...f,
+                                username: e.target.value,
+                              }))
+                            }
+                            className={cn(
+                              formErrors.username &&
+                                "border-red-400 focus:ring-red-300 focus:border-red-400",
                             )}
-                          </div>
+                          />
+                          {formErrors.username && (
+                            <div className="mt-1 text-xs text-red-600">
+                              {formErrors.username}
+                            </div>
+                          )}
+                        </div>
 
-                          <div className="md:pt-7">
-                            <Btn
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => removePortRow(index)}
-                              disabled={form.ports.length === 1}
-                              title="Remove this port"
-                              className="border border-slate-200"
-                            >
-                              <X size={14} />
-                            </Btn>
+                        <div>
+                          <FieldLabel required>Email</FieldLabel>
+                          <Input
+                            value={form.email}
+                            onChange={(e) =>
+                              setForm((f) => ({ ...f, email: e.target.value }))
+                            }
+                            className={cn(
+                              formErrors.email &&
+                                "border-red-400 focus:ring-red-300 focus:border-red-400",
+                            )}
+                          />
+                          {formErrors.email && (
+                            <div className="mt-1 text-xs text-red-600">
+                              {formErrors.email}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <FieldLabel required>Full name</FieldLabel>
+                        <Input
+                          value={form.full_name}
+                          onChange={(e) =>
+                            setForm((f) => ({
+                              ...f,
+                              full_name: e.target.value,
+                            }))
+                          }
+                          className={cn(
+                            formErrors.full_name &&
+                              "border-red-400 focus:ring-red-300 focus:border-red-400",
+                          )}
+                        />
+                        {formErrors.full_name && (
+                          <div className="mt-1 text-xs text-red-600">
+                            {formErrors.full_name}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Password / Role */}
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div>
+                          <FieldLabel required>Password</FieldLabel>
+                          <Input
+                            type="password"
+                            value={form.password}
+                            onChange={(e) =>
+                              setForm((f) => ({
+                                ...f,
+                                password: e.target.value,
+                              }))
+                            }
+                            className={cn(
+                              formErrors.password &&
+                                "border-red-400 focus:ring-red-300 focus:border-red-400",
+                            )}
+                          />
+                          {formErrors.password && (
+                            <div className="mt-1 text-xs text-red-600">
+                              {formErrors.password}
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <FieldLabel>Role</FieldLabel>
+                          <Select
+                            value={form.role}
+                            onChange={(e) =>
+                              setForm((f) => ({
+                                ...f,
+                                role: e.target.value as UserRole,
+                              }))
+                            }
+                          >
+                            {isSuperAdmin && (
+                              <>
+                                <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                                <option value="ADMIN">ADMIN</option>
+                              </>
+                            )}
+                            <option value="USER">USER</option>
+                          </Select>
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            {isSuperAdmin
+                              ? "SUPER_ADMIN can create admins and super admins."
+                              : "Admins typically create standard users."}
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  </div>
+                      </div>
 
-                  {/* Actions */}
-                  <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 pt-4">
-                    <Btn type="button" variant="outline" onClick={() => setShowAdd(false)}>
-                      Cancel
-                    </Btn>
-                    <Btn type="submit" variant="primary" disabled={submitting}>
-                      {submitting ? (
-                        <>
-                          <Loader2 size={14} className="animate-spin" />
-                          Creating...
-                        </>
-                      ) : (
-                        <>
-                          <Plus size={16} />
-                          Create user
-                        </>
-                      )}
-                    </Btn>
+                      {/* Ports */}
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/60">
+                        <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">
+                              Assigned Ports
+                            </div>
+                            <div className="mt-0.5 text-xs text-slate-500">
+                              Add one or more ports for this user.
+                            </div>
+                          </div>
+
+                          <Btn
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={addPortRow}
+                          >
+                            <Plus size={14} />
+                            Add port
+                          </Btn>
+                        </div>
+
+                        <div className="p-4 space-y-3">
+                          {formErrors.ports && (
+                            <AlertBanner variant="error">
+                              {formErrors.ports}
+                            </AlertBanner>
+                          )}
+
+                          <div className="max-h-[300px] overflow-y-auto space-y-3 pr-2">
+                            {form.ports.map((p, index) => (
+                              <div
+                                key={index}
+                                className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-4 md:grid-cols-[1fr_1fr_auto]"
+                              >
+                                <div>
+                                  <FieldLabel>Label</FieldLabel>
+                                  <Input
+                                    value={p.label}
+                                    onChange={(e) =>
+                                      updatePortRow(
+                                        index,
+                                        "label",
+                                        e.target.value,
+                                      )
+                                    }
+                                    placeholder="ex: Client A"
+                                  />
+                                </div>
+
+                                <div>
+                                  <FieldLabel required>Port value</FieldLabel>
+                                  <Input
+                                    value={p.value}
+                                    onChange={(e) =>
+                                      updatePortRow(
+                                        index,
+                                        "value",
+                                        e.target.value,
+                                      )
+                                    }
+                                    placeholder="ex: 1/1/7/3/95"
+                                    className={cn(
+                                      formErrors[`ports.${index}.value`] &&
+                                        "border-red-400 focus:ring-red-300 focus:border-red-400",
+                                      "font-mono",
+                                    )}
+                                  />
+                                  {formErrors[`ports.${index}.value`] && (
+                                    <div className="mt-1 text-xs text-red-600">
+                                      {formErrors[`ports.${index}.value`]}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="md:pt-7">
+                                  <Btn
+                                    type="button"
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => removePortRow(index)}
+                                    disabled={form.ports.length === 1}
+                                    title="Remove this port"
+                                    className="border border-slate-200"
+                                  >
+                                    <X size={14} />
+                                  </Btn>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Footer buttons */}
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Btn
+                          type="button"
+                          variant="outline"
+                          onClick={() => setShowAdd(false)}
+                        >
+                          Cancel
+                        </Btn>
+
+                        <Btn type="submit" variant="primary" disabled={submitting}>
+                          {submitting ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin" />
+                              Creating...
+                            </>
+                          ) : (
+                            <>
+                              <Plus size={16} />
+                              Create user
+                            </>
+                          )}
+                        </Btn>
+                      </div>
+                    </form>
                   </div>
-                </form>
+                </div>
+
+                {/* end modal */}
               </div>
             </div>
           </div>
@@ -1383,9 +1540,7 @@ export default function UserManagementSection() {
               </span>
             </div>
 
-            <AlertBanner variant="error">
-              This action is irreversible.
-            </AlertBanner>
+            <AlertBanner variant="error">This action is irreversible.</AlertBanner>
           </div>
         )}
       </ConfirmDialog>
@@ -1394,7 +1549,7 @@ export default function UserManagementSection() {
 }
 
 /* ================================================================
-   Confirm Dialog — Enterprise (with loading + Btn)
+   Confirm Dialog
    ================================================================ */
 
 function ConfirmDialog({
@@ -1450,7 +1605,8 @@ function ConfirmDialog({
             onClick={onConfirm}
             disabled={loading}
             className={cn(
-              variant === "danger" && "bg-red-600 hover:bg-red-700 border-red-600",
+              variant === "danger" &&
+                "bg-red-600 hover:bg-red-700 border-red-600",
             )}
           >
             {loading && <Loader2 size={14} className="animate-spin" />}

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import hashlib
@@ -33,7 +33,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     to_encode = data.copy()
     if expires_delta is None:
         expires_delta = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    expire = datetime.utcnow() + expires_delta
+    expire = datetime.now(timezone.utc) + expires_delta
     to_encode.update({"exp": expire})
     encoded_jwt = jwt.encode(
         to_encode,
@@ -60,14 +60,14 @@ def get_refresh_token_hash(token: str) -> str:
 def create_refresh_token_for_user(db: Session, user: User) -> str:
     raw_token = generate_refresh_token()
     token_hash = get_refresh_token_hash(raw_token)
-    expires_at = datetime.utcnow() + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
+    expires_at = datetime.now(timezone.utc) + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
 
     rt = RefreshToken(
         user_id=user.id,
         token_hash=token_hash,
         expires_at=expires_at,
         revoked=False,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     db.add(rt)
     db.commit()

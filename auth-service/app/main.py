@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime , timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,8 +39,8 @@ def bootstrap_super_admin():
             password_hash=get_password_hash(settings.INITIAL_SUPERADMIN_PASSWORD),
             role=UserRole.SUPER_ADMIN.value,
             is_active=True,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
         )
         db.add(user)
         db.commit()
