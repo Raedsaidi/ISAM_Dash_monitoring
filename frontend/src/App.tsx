@@ -13,15 +13,10 @@ import RegisterSelfForm from "./components/auth/RegisterSelfForm";
 import WanTemplatesSection from "./components/WanTemplatesSection";
 import { Toaster } from 'sonner';
 
-const { user } = useAuth();
-const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
-
 const sectionMeta: Record<NavSection, { title: string; subtitle: string }> = {
   overview: {
     title: "Dashboard Overview",
-    subtitle: isAdmin 
-    ? "System health, metrics, and real-time monitoring"
-    : "Account Information, ports, templates",
+    subtitle: "System health, metrics, and real-time monitoring",
   },
   junctions: {
     title: "ISAM Management",
