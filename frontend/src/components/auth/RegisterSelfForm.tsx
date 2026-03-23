@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext';
 
-const AUTH_BASE_URL = 'http://127.0.0.1:9000';
+const AUTH_BASE_URL = '${import.meta.env.VITE_AUTH_BASE_URL}';
 
 interface RegisterSelfFormProps {
   onShowLogin?: () => void;

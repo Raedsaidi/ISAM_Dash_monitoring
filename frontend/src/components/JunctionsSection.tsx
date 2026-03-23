@@ -22,7 +22,7 @@ import TemplateWorkspaceOverlay from './TemplateWorkspaceOverlay';
 import LTSlotsPanel from './LTSlotsPanel';
 
 // Ajuste si ton isam-service n'est pas sur 8001
-const ISAM_BASE_URL = 'http://127.0.0.1:8001';
+const ISAM_BASE_URL = '${import.meta.env.VITE_ISAM_BASE_URL}';
 
 type StatusType = 'active' | 'inactive' | 'error';
 type ProtocolPreference = 'telnet' | 'ssh' | 'auto';

@@ -27,8 +27,8 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const ISAM_BASE_URL = "http://127.0.0.1:8001";
-const AUTH_BASE_URL = "http://127.0.0.1:9000";
+const ISAM_BASE_URL = "${import.meta.env.VITE_ISAM_BASE_URL}";
+const AUTH_BASE_URL = "${import.meta.env.VITE_AUTH_BASE_URL}";
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type TemplateScope = "GLOBAL" | "USER_INSTANCE";

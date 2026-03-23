@@ -54,7 +54,7 @@ export default function LTSlotsPanel({
 
     try {
       const res = await fetch(
-        `http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots`,
+        `${import.meta.env.VITE_ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots`,
         {
           headers: {
             ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),

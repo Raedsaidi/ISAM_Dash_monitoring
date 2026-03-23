@@ -27,8 +27,8 @@ export default function PortLockButton({
     try {
       const encodedPortId = encodeURIComponent(portId);
       const url = isLocked
-        ? `http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/ports/${encodedPortId}/unlock`
-        : `http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/ports/${encodedPortId}/lock`;
+        ? `${import.meta.env.VITE_ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/ports/${encodedPortId}/unlock`
+        : `${import.meta.env.VITE_ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/ports/${encodedPortId}/lock`;
 
       const method = isLocked ? 'DELETE' : 'POST';
 

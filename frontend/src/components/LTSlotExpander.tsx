@@ -56,7 +56,7 @@ export default function LTSlotExpander({
         console.log("slot.slot_id:", slot.slot_id);
         console.log("encodedSlotId:", encodedSlotId);
         const res = await fetch(
-        `http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlotId}/ports`,
+        `${import.meta.env.VITE_ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlotId}/ports`,
             {
             headers: {
                 ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),

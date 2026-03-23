@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const AUTH_BASE_URL = "http://127.0.0.1:9000";
+const AUTH_BASE_URL = "${import.meta.env.VITE_AUTH_BASE_URL}";
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type RoleFilter = "ALL" | UserRole;
