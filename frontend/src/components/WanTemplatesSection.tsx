@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const ISAM_BASE_URL = "${import.meta.env.VITE_ISAM_BASE_URL}";
+const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
 type StatusType = "active" | "inactive" | "error";
 type ProtocolPreference = "telnet" | "ssh" | "auto";
