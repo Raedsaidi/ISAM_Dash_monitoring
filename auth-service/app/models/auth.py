@@ -91,6 +91,25 @@ def is_valid_port_label(value: str) -> bool:
     return all(ch.isalnum() or ch in PORT_LABEL_EXTRA_CHARS for ch in value)
 
 
+def validate_password_rules(v: str) -> str:
+    if any(ch.isspace() for ch in v):
+        raise ValueError("Le mot de passe ne doit pas contenir d'espaces.")
+
+    if not any(ch.islower() for ch in v):
+        raise ValueError("Le mot de passe doit contenir au moins une lettre minuscule.")
+
+    if not any(ch.isupper() for ch in v):
+        raise ValueError("Le mot de passe doit contenir au moins une lettre majuscule.")
+
+    if not any(ch.isdigit() for ch in v):
+        raise ValueError("Le mot de passe doit contenir au moins un chiffre.")
+
+    if not any(not ch.isalnum() for ch in v):
+        raise ValueError("Le mot de passe doit contenir au moins un caractère spécial.")
+
+    return v
+
+
 # =========================================================
 # Bases communes
 # =========================================================
@@ -144,9 +163,6 @@ class UserInputBase(StrictInputModel):
     @field_validator("username")
     @classmethod
     def validate_username(cls, v: str) -> str:
-        # Username accepte "tout" (caractères), MAIS règles business :
-        # - pas uniquement chiffres (même avec espaces)
-        # - pas de tabulations / retours ligne
         if is_only_digits_ignoring_spaces(v):
             raise ValueError("Le nom d'utilisateur ne doit pas être uniquement composé de chiffres.")
 
@@ -172,7 +188,6 @@ class UserInputBase(StrictInputModel):
     @field_validator("full_name")
     @classmethod
     def validate_full_name(cls, v: str) -> str:
-        # interdit full_name sans lettres (ex: "123")
         if not contains_letter(v):
             raise ValueError("Le nom complet doit contenir au moins une lettre et ne doit pas être uniquement numérique.")
 
@@ -187,22 +202,7 @@ class UserInputBase(StrictInputModel):
     @field_validator("password")
     @classmethod
     def validate_password(cls, v: str) -> str:
-        if any(ch.isspace() for ch in v):
-            raise ValueError("Le mot de passe ne doit pas contenir d'espaces.")
-
-        if not any(ch.islower() for ch in v):
-            raise ValueError("Le mot de passe doit contenir au moins une lettre minuscule.")
-
-        if not any(ch.isupper() for ch in v):
-            raise ValueError("Le mot de passe doit contenir au moins une lettre majuscule.")
-
-        if not any(ch.isdigit() for ch in v):
-            raise ValueError("Le mot de passe doit contenir au moins un chiffre.")
-
-        if not any(not ch.isalnum() for ch in v):
-            raise ValueError("Le mot de passe doit contenir au moins un caractère spécial.")
-
-        return v
+        return validate_password_rules(v)
 
 
 # =========================================================
@@ -271,14 +271,103 @@ class UserPortRead(ORMReadModel):
 
 class AdminUserCreate(UserInputBase):
     role: UserRole
-    ports: list[UserPortCreate] = Field(..., min_length=1, max_length=20)
+
+    # MODIF: ports optionnels (sauf si role == USER)
+    ports: Optional[list[UserPortCreate]] = Field(default=None, max_length=20)
 
     @field_validator("ports")
     @classmethod
-    def validate_ports(cls, v: list[UserPortCreate]) -> list[UserPortCreate]:
+    def validate_ports(cls, v: Optional[list[UserPortCreate]], info) -> Optional[list[UserPortCreate]]:
+        role = info.data.get("role")
+
+        # USER => ports obligatoires
+        if role == UserRole.USER:
+            if not v or len(v) == 0:
+                raise ValueError("Au moins un port est requis pour un utilisateur USER.")
+
+        # ADMIN/SUPER_ADMIN => ports facultatifs
+        if not v:
+            return v
+
+        # Si ports fournis => pas de doublons
         seen = set()
         for port in v:
-            normalized = port.value  # digits + "/" => pas besoin lower()
+            normalized = port.value
+            if normalized in seen:
+                raise ValueError("Les ports dupliqués ne sont pas autorisés.")
+            seen.add(normalized)
+
+        return v
+
+
+# =========================================================
+# UPDATE user via ADMIN / SUPER_ADMIN (sans username)
+# =========================================================
+
+class AdminUserUpdate(StrictInputModel):
+    """
+    Permet de modifier un user (tout sauf username).
+    - role: seulement SUPER_ADMIN (enforced côté endpoint)
+    - password optionnel: si fourni => mêmes règles strictes
+    - ports optionnel: si fourni => remplace la liste complète
+    """
+    email: Optional[EmailStr] = None
+    full_name: Optional[FullNameStr] = None
+    password: Optional[PasswordStr] = None
+    is_active: Optional[bool] = None
+    role: Optional[UserRole] = None
+    ports: Optional[list[UserPortCreate]] = Field(default=None, min_length=1, max_length=20)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: Optional[EmailStr]) -> Optional[EmailStr]:
+        if v is None:
+            return None
+        if len(str(v)) > 254:
+            raise ValueError("L'adresse email est trop longue.")
+        return v
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+
+        if not contains_letter(v):
+            raise ValueError("Le nom complet doit contenir au moins une lettre et ne doit pas être uniquement numérique.")
+
+        if not is_valid_full_name(v):
+            raise ValueError("Le nom complet ne peut contenir que des lettres et des espaces.")
+
+        if "  " in v:
+            raise ValueError("Le nom complet ne doit pas contenir d'espaces doubles.")
+
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        return validate_password_rules(v)
+
+    @field_validator("ports")
+    @classmethod
+    def validate_ports(cls, v: Optional[list[UserPortCreate]]) -> Optional[list[UserPortCreate]]:
+        if v is None:
+            return None
+        seen = set()
+        for port in v:
+            normalized = port.value
             if normalized in seen:
                 raise ValueError("Les ports dupliqués ne sont pas autorisés.")
             seen.add(normalized)

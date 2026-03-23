@@ -5,7 +5,7 @@ import {
   XCircle,
   AlertTriangle,
   Search,
-  Download,
+  RefreshCw ,
   Clock,
   User,
   Globe,
@@ -464,7 +464,7 @@ export default function AuditLogsSection() {
           {loading ? (
             <Loader2 size={16} className="animate-spin" />
           ) : (
-            <Download size={16} />
+            <RefreshCw  size={16} />
           )}
           Reload Logs
         </button>

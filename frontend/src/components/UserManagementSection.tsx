@@ -1,10 +1,4 @@
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../utils/cn";
 import {
@@ -18,11 +12,11 @@ import {
   Cable,
   UserCog,
   Mail,
-  ChevronDown,
   AlertCircle,
   CheckCircle2,
   Clock,
   RefreshCcw,
+  Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,7 +24,9 @@ const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type RoleFilter = "ALL" | UserRole;
-type ConfirmActionType = "change-role" | "delete-user";
+
+type ConfirmActionType = "delete-user";
+type UserModalMode = "create" | "edit";
 
 interface UserPort {
   id: number;
@@ -59,20 +55,38 @@ interface PortForm {
   value: string;
 }
 
+interface UserFormState {
+  username: string; // readonly en edit, mais utile pour affichage
+  email: string;
+  full_name: string;
+  password: string; // obligatoire en create, optionnel en edit
+  role: UserRole; // modifiable uniquement si SUPER_ADMIN
+  is_active: boolean; // modifiable en edit
+  ports: PortForm[];
+}
+
 interface AdminUserCreatePayload {
   username: string;
   email: string;
   full_name: string;
   password: string;
   role: UserRole;
-  ports: PortForm[];
+  ports?: PortForm[]; // MODIF: optionnel
+}
+
+interface AdminUserUpdatePayload {
+  email?: string;
+  full_name?: string;
+  password?: string;
+  role?: UserRole;
+  is_active?: boolean;
+  ports?: PortForm[]; // déjà optionnel
 }
 
 interface ConfirmDialogState {
   open: boolean;
   type: ConfirmActionType | null;
   target: UserAdminRead | null;
-  newRole: UserRole | null;
   loading: boolean;
 }
 
@@ -80,7 +94,6 @@ const EMPTY_CONFIRM_DIALOG: ConfirmDialogState = {
   open: false,
   type: null,
   target: null,
-  newRole: null,
   loading: false,
 };
 
@@ -99,13 +112,11 @@ class ApiError extends Error {
 }
 
 function cleanMsg(msg: string) {
-  // Pydantic often prefixes: "Value error, ..."
   return msg.replace(/^Value error,\s*/i, "");
 }
 
 function locToKey(loc: any): string {
   if (!Array.isArray(loc)) return "general";
-  // ["body","ports",0,"value"] => "ports.0.value"
   const cleaned = loc.filter(
     (p) => !["body", "query", "path", "header"].includes(String(p)),
   );
@@ -158,6 +169,29 @@ function getInitials(name: string) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("");
+}
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function validatePasswordStrict(pwd: string): string | null {
+  if (pwd.length < 8 || pwd.length > 72) return "Password must be 8–72 characters.";
+  if (/\s/.test(pwd)) return "Password must not contain spaces.";
+  if (!/[a-z]/.test(pwd)) return "Password must contain a lowercase letter.";
+  if (!/[A-Z]/.test(pwd)) return "Password must contain an uppercase letter.";
+  if (!/[0-9]/.test(pwd)) return "Password must contain a digit.";
+  if (!/[^A-Za-z0-9]/.test(pwd)) return "Password must contain a special character.";
+  return null;
+}
+
+function normalizePortsForPayload(ports: PortForm[]): PortForm[] {
+  return (ports || [])
+    .map((p) => ({
+      label: (p.label ?? "").trim(),
+      value: (p.value ?? "").trim(),
+    }))
+    .filter((p) => p.value.length > 0);
 }
 
 type BadgeProps = {
@@ -352,8 +386,6 @@ function AlertBanner({
       {variant === "info" && (
         <AlertCircle size={14} className="mt-0.5 shrink-0" />
       )}
-
-      {/* pre-wrap => affiche les \n */}
       <div style={{ whiteSpace: "pre-wrap" }}>{children}</div>
     </div>
   );
@@ -375,13 +407,7 @@ function RoleBadge({ role }: { role: UserRole }) {
   return <Badge variant={roleToBadgeVariant(role)}>{role}</Badge>;
 }
 
-function AvatarCircle({
-  name,
-  username,
-}: {
-  name: string;
-  username: string;
-}) {
+function AvatarCircle({ name, username }: { name: string; username: string }) {
   const initials = getInitials(name || username || "U");
   return (
     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-xs font-bold text-slate-700">
@@ -422,46 +448,6 @@ function SegmentedFilter({
   );
 }
 
-function RoleSelector({
-  currentRole,
-  busy,
-  onChange,
-}: {
-  currentRole: UserRole;
-  busy: boolean;
-  onChange: (newRole: UserRole) => void;
-}) {
-  return (
-    <div className="relative inline-flex items-center">
-      <select
-        value={currentRole}
-        disabled={busy}
-        onChange={(e) => onChange(e.target.value as UserRole)}
-        className={cn(
-          "appearance-none rounded-lg border border-slate-300 bg-white pl-3 pr-8 py-2 text-xs font-semibold uppercase tracking-wide text-slate-800",
-          "outline-none focus:ring-1 focus:ring-slate-300 focus:border-slate-400",
-          "disabled:opacity-50 disabled:cursor-wait",
-        )}
-      >
-        <option value="ADMIN">ADMIN</option>
-        <option value="USER">USER</option>
-      </select>
-
-      {busy ? (
-        <Loader2
-          size={14}
-          className="absolute right-2 top-1/2 -translate-y-1/2 animate-spin text-slate-500"
-        />
-      ) : (
-        <ChevronDown
-          size={14}
-          className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500"
-        />
-      )}
-    </div>
-  );
-}
-
 function StatCard({
   title,
   value,
@@ -485,10 +471,7 @@ function StatCard({
 
   return (
     <div
-      className={cn(
-        "rounded-xl border border-slate-200 shadow-sm",
-        tones[tone],
-      )}
+      className={cn("rounded-xl border border-slate-200 shadow-sm", tones[tone])}
     >
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
@@ -496,9 +479,7 @@ function StatCard({
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               {title}
             </div>
-            <div className="mt-1 text-2xl font-bold text-slate-900">
-              {value}
-            </div>
+            <div className="mt-1 text-2xl font-bold text-slate-900">{value}</div>
             <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
           </div>
           <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700">
@@ -524,19 +505,24 @@ export default function UserManagementSection() {
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("ALL");
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState<AdminUserCreatePayload>({
+  // Modal create/edit
+  const [userModalOpen, setUserModalOpen] = useState(false);
+  const [userModalMode, setUserModalMode] = useState<UserModalMode>("create");
+  const [editTarget, setEditTarget] = useState<UserAdminRead | null>(null);
+
+  const [form, setForm] = useState<UserFormState>({
     username: "",
     email: "",
     full_name: "",
     password: "",
     role: "USER",
+    is_active: true,
     ports: [{ label: "", value: "" }],
   });
+
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
 
-  const [changingRoleFor, setChangingRoleFor] = useState<number | null>(null);
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
 
   const [confirmDialog, setConfirmDialog] =
@@ -547,11 +533,7 @@ export default function UserManagementSection() {
 
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // FIXED authFetchJson: uses parseFastApiError (no [object Object])
-  async function authFetchJson<T>(
-    url: string,
-    options: RequestInit = {},
-  ): Promise<T> {
+  async function authFetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
     const res = await authFetch(url, options);
 
     let data: any = null;
@@ -574,22 +556,11 @@ export default function UserManagementSection() {
     setConfirmDialog(EMPTY_CONFIRM_DIALOG);
   }
 
-  function openRoleChangeDialog(target: UserAdminRead, newRole: UserRole) {
-    setConfirmDialog({
-      open: true,
-      type: "change-role",
-      target,
-      newRole,
-      loading: false,
-    });
-  }
-
   function openDeleteDialog(target: UserAdminRead) {
     setConfirmDialog({
       open: true,
       type: "delete-user",
       target,
-      newRole: null,
       loading: false,
     });
   }
@@ -612,10 +583,7 @@ export default function UserManagementSection() {
         const data = await authFetchJson<UserListResponse>(url);
         setUsers(data.users);
       } catch (err: any) {
-        if (
-          err.message !== "Session expired" &&
-          err.message !== "No access token"
-        ) {
+        if (err.message !== "Session expired" && err.message !== "No access token") {
           setGlobalError(err.message || "Failed to load users.");
         }
       } finally {
@@ -651,105 +619,215 @@ export default function UserManagementSection() {
     loadUsers(searchTerm, role);
   }
 
-  function handleChangeRole(target: UserAdminRead, newRole: UserRole) {
-    if (newRole === target.role) return;
-
-    if (!isSuperAdmin) {
-      toast.error("Only SUPER_ADMIN can change user roles.");
-      return;
-    }
-
-    if (target.role === "SUPER_ADMIN") {
-      toast.error("Cannot change the role of a SUPER_ADMIN user.");
-      return;
-    }
-
-    openRoleChangeDialog(target, newRole);
+  function addPortRow() {
+    setForm((f) => ({ ...f, ports: [...f.ports, { label: "", value: "" }] }));
   }
 
-  function validateForm(): boolean {
+  function removePortRow(index: number) {
+    setForm((f) => {
+      if (f.ports.length === 1) return f;
+      const copy = [...f.ports];
+      copy.splice(index, 1);
+      return { ...f, ports: copy };
+    });
+  }
+
+  function updatePortRow(index: number, field: "label" | "value", value: string) {
+    setForm((f) => {
+      const copy = [...f.ports];
+      copy[index] = { ...copy[index], [field]: value };
+      return { ...f, ports: copy };
+    });
+  }
+
+  function openCreateModal() {
+    setUserModalMode("create");
+    setEditTarget(null);
+    setFormErrors({});
+    setForm({
+      username: "",
+      email: "",
+      full_name: "",
+      password: "",
+      role: "USER",
+      is_active: true,
+      ports: [{ label: "", value: "" }],
+    });
+    setUserModalOpen(true);
+  }
+
+  function openEditModal(target: UserAdminRead) {
+    setUserModalMode("edit");
+    setEditTarget(target);
+    setFormErrors({});
+
+    const existingPorts = getUserPorts(target);
+
+    setForm({
+      username: target.username,
+      email: target.email,
+      full_name: target.full_name,
+      password: "", // optionnel
+      role: target.role,
+      is_active: target.is_active,
+      // si aucun port => on garde 1 ligne vide (mais elle ne sera pas envoyée)
+      ports:
+        existingPorts.length > 0
+          ? existingPorts.map((p) => ({ label: p.label ?? "", value: p.value }))
+          : [{ label: "", value: "" }],
+    });
+
+    setUserModalOpen(true);
+  }
+
+  function closeUserModal() {
+    if (submitting) return;
+    setUserModalOpen(false);
+  }
+
+  function validateUserForm(mode: UserModalMode): boolean {
     const e: Record<string, string> = {};
 
-    // username: accept all, but basic rules + not only digits
-    if (!form.username.trim()) e.username = "Username is required.";
-    else if (form.username.length < 3 || form.username.length > 32)
-      e.username = "Username must be between 3 and 32 characters.";
-    else {
-      const compact = form.username.replace(/\s+/g, "");
-      if (compact && /^\d+$/.test(compact)) {
-        e.username = "Username cannot be only digits.";
+    if (mode === "create") {
+      if (!form.username.trim()) e.username = "Username is required.";
+      else if (form.username.length < 3 || form.username.length > 32)
+        e.username = "Username must be between 3 and 32 characters.";
+      else {
+        const compact = form.username.replace(/\s+/g, "");
+        if (compact && /^\d+$/.test(compact)) {
+          e.username = "Username cannot be only digits.";
+        }
       }
     }
 
     if (!form.email.trim()) e.email = "Email is required.";
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email))
-      e.email = "Invalid email format.";
+    else if (!isValidEmail(form.email.trim())) e.email = "Invalid email format.";
 
-    // full_name: letters + spaces only (simple client check)
     if (!form.full_name.trim()) e.full_name = "Full name is required.";
     else if (form.full_name.trim().length < 2)
       e.full_name = "Full name must be at least 2 characters.";
     else if (!/^[A-Za-zÀ-ÿ]+(?: [A-Za-zÀ-ÿ]+)*$/.test(form.full_name.trim()))
       e.full_name = "Full name must contain only letters and spaces.";
 
-    if (!form.password) e.password = "Password is required.";
-    else if (form.password.length < 8)
-      e.password = "Password must be at least 8 characters.";
-
-    // ports value: digits separated by "/"
-    if (!form.ports || form.ports.length === 0) {
-      e.ports = "At least one port is required.";
+    if (mode === "create") {
+      if (!form.password) e.password = "Password is required.";
+      else {
+        const pwdErr = validatePasswordStrict(form.password);
+        if (pwdErr) e.password = pwdErr;
+      }
     } else {
-      form.ports.forEach((p, index) => {
-        const v = p.value.trim();
-        if (!v) e[`ports.${index}.value`] = "Port value is required.";
-        else if (/\s/.test(v))
-          e[`ports.${index}.value`] = "Port value must not contain spaces.";
-        else if (!/^\d+(\/\d+)*$/.test(v))
-          e[`ports.${index}.value`] = "Invalid format. Example: 1/1/7/3";
-      });
+      if (form.password.trim()) {
+        const pwdErr = validatePasswordStrict(form.password);
+        if (pwdErr) e.password = pwdErr;
+      }
+    }
+
+    // MODIF: Ports obligatoires seulement pour USER.
+    const portsAreRequired = form.role === "USER";
+    const seenValues = new Set<string>();
+    let hasAtLeastOnePortValue = false;
+
+    form.ports.forEach((p, index) => {
+      const v = (p.value || "").trim();
+
+      if (!v) {
+        if (portsAreRequired) {
+          e[`ports.${index}.value`] = "Port value is required.";
+        }
+        return; // si non requis, on ignore la ligne vide
+      }
+
+      hasAtLeastOnePortValue = true;
+
+      if (/\s/.test(v)) e[`ports.${index}.value`] = "Port value must not contain spaces.";
+      else if (!/^\d+(\/\d+)*$/.test(v))
+        e[`ports.${index}.value`] = "Invalid format. Example: 1/1/7/3";
+
+      if (seenValues.has(v)) {
+        e[`ports.${index}.value`] = "Duplicate port value is not allowed.";
+      }
+      seenValues.add(v);
+    });
+
+    if (portsAreRequired && !hasAtLeastOnePortValue) {
+      e.ports = "At least one port is required for USER role.";
     }
 
     setFormErrors(e);
     return Object.keys(e).length === 0;
   }
 
-  async function handleCreateUser(e?: any) {
+  async function handleSubmitUserForm(e?: any) {
     e?.preventDefault?.();
     setFormErrors({});
-    if (!validateForm()) return;
+
+    if (!validateUserForm(userModalMode)) return;
 
     setSubmitting(true);
 
     try {
-      await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
+      const portsPayload = normalizePortsForPayload(form.ports);
 
-      setShowAdd(false);
-      setForm({
-        username: "",
-        email: "",
-        full_name: "",
-        password: "",
-        role: "USER",
-        ports: [{ label: "", value: "" }],
-      });
+      if (userModalMode === "create") {
+        const payload: AdminUserCreatePayload = {
+          username: form.username,
+          email: form.email,
+          full_name: form.full_name,
+          password: form.password,
+          role: form.role,
+        };
 
+        // MODIF: n'envoyer ports que si on en a vraiment
+        // (USER => validation garantit >= 1)
+        if (portsPayload.length > 0) payload.ports = portsPayload;
+
+        await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        toast.success("User created successfully.");
+      } else {
+        if (!editTarget) throw new Error("No user selected.");
+
+        const payload: AdminUserUpdatePayload = {
+          email: form.email,
+          full_name: form.full_name,
+          is_active: form.is_active,
+        };
+
+        // role au même endroit (uniquement SUPER_ADMIN)
+        if (isSuperAdmin) payload.role = form.role;
+
+        // password optionnel
+        if (form.password.trim()) payload.password = form.password;
+
+        // MODIF: n'envoyer ports que si l'admin a saisi au moins un port
+        // (sinon on ne touche pas aux ports côté backend)
+        if (portsPayload.length > 0) payload.ports = portsPayload;
+
+        await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${editTarget.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+
+        toast.success("User updated successfully.");
+      }
+
+      setUserModalOpen(false);
+      setEditTarget(null);
       await loadUsers(searchTerm, roleFilter);
-      toast.success("User created successfully.");
     } catch (err: any) {
-      // FIX: show readable errors + per-field errors
       if (err instanceof ApiError) {
         if (err.fieldErrors && Object.keys(err.fieldErrors).length > 0) {
           setFormErrors(err.fieldErrors);
         } else {
-          setFormErrors({ general: err.message || "Failed to create user." });
+          setFormErrors({ general: err.message || "Request failed." });
         }
       } else {
-        setFormErrors({ general: err?.message || "Failed to create user." });
+        setFormErrors({ general: err?.message || "Request failed." });
       }
     } finally {
       setSubmitting(false);
@@ -767,46 +845,19 @@ export default function UserManagementSection() {
       return;
     }
 
+    if (user?.username === target.username) {
+      toast.error("You cannot delete your own account here.");
+      return;
+    }
+
     openDeleteDialog(target);
   }
 
   async function handleConfirmDialog() {
-    const { type, target, newRole } = confirmDialog;
+    const { type, target } = confirmDialog;
     if (!type || !target) return;
 
     setConfirmDialog((prev) => ({ ...prev, loading: true }));
-
-    if (type === "change-role" && newRole) {
-      setChangingRoleFor(target.id);
-      const toastId = toast.loading("Updating role...");
-
-      try {
-        await authFetchJson(
-          `${AUTH_BASE_URL}/api/v1/auth/users/${target.id}/role`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ role: newRole }),
-          },
-        );
-
-        await loadUsers(searchTerm, roleFilter);
-        toast.success(`${target.username} is now ${newRole}.`, { id: toastId });
-      } catch (err: any) {
-        try {
-          await loadUsers(searchTerm, roleFilter);
-        } catch {
-          // ignore
-        }
-        toast.error(err.message || "Failed to change user role.", {
-          id: toastId,
-        });
-      } finally {
-        setChangingRoleFor(null);
-        setConfirmDialog(EMPTY_CONFIRM_DIALOG);
-      }
-      return;
-    }
 
     if (type === "delete-user") {
       setDeletingUserId(target.id);
@@ -828,31 +879,6 @@ export default function UserManagementSection() {
     }
   }
 
-  function addPortRow() {
-    setForm((f) => ({ ...f, ports: [...f.ports, { label: "", value: "" }] }));
-  }
-
-  function removePortRow(index: number) {
-    setForm((f) => {
-      if (f.ports.length === 1) return f;
-      const copy = [...f.ports];
-      copy.splice(index, 1);
-      return { ...f, ports: copy };
-    });
-  }
-
-  function updatePortRow(
-    index: number,
-    field: "label" | "value",
-    value: string,
-  ) {
-    setForm((f) => {
-      const copy = [...f.ports];
-      copy[index] = { ...copy[index], [field]: value };
-      return { ...f, ports: copy };
-    });
-  }
-
   const stats = useMemo(() => {
     const totalUsers = users.length;
     const totalAdmins = users.filter(
@@ -863,22 +889,15 @@ export default function UserManagementSection() {
     return { totalUsers, totalAdmins, totalStandardUsers, totalPorts };
   }, [users]);
 
+  // Permissions UI pour edit role
+  const editingSelf = userModalMode === "edit" && editTarget && user?.username === editTarget.username;
+  const editingSuperAdminTarget = userModalMode === "edit" && editTarget?.role === "SUPER_ADMIN";
+  const canEditRoleField = isSuperAdmin && !editingSelf && !editingSuperAdminTarget;
+
   const confirmTitle =
-    confirmDialog.type === "change-role"
-      ? "Change role?"
-      : confirmDialog.type === "delete-user"
-        ? `Delete ${confirmDialog.target?.username ?? "user"}?`
-        : "";
-
-  const confirmText =
-    confirmDialog.type === "change-role"
-      ? "Change role"
-      : confirmDialog.type === "delete-user"
-        ? "Delete"
-        : "Confirm";
-
-  const confirmVariant =
-    confirmDialog.type === "delete-user" ? "danger" : "primary";
+    confirmDialog.type === "delete-user"
+      ? `Delete ${confirmDialog.target?.username ?? "user"}?`
+      : "";
 
   return (
     <>
@@ -912,7 +931,7 @@ export default function UserManagementSection() {
                 Refresh
               </Btn>
 
-              <Btn variant="primary" onClick={() => setShowAdd(true)}>
+              <Btn variant="primary" onClick={openCreateModal}>
                 <Plus size={16} />
                 Add User
               </Btn>
@@ -988,7 +1007,7 @@ export default function UserManagementSection() {
                 isSuperAdmin ? (
                   <Badge variant="info">
                     <ShieldCheck size={12} />
-                    Role changes enabled
+                    Full edit enabled
                   </Badge>
                 ) : (
                   <Badge variant="default">Read / Limited actions</Badge>
@@ -1038,26 +1057,21 @@ export default function UserManagementSection() {
                     const ports = getUserPorts(u);
                     const isCurrentUser = user?.username === u.username;
 
-                    const isChangingRole = changingRoleFor === u.id;
                     const isDeleting = deletingUserId === u.id;
-
-                    const canChangeRole =
-                      isSuperAdmin && !isCurrentUser && u.role !== "SUPER_ADMIN";
 
                     const canDelete =
                       !isCurrentUser &&
                       u.role !== "SUPER_ADMIN" &&
                       !(isAdmin && u.role === "ADMIN");
 
+                    const canEdit =
+                      !(isAdmin && u.role !== "USER"); // admin: only edit USER
+
                     return (
                       <tr key={u.id} className="hover:bg-slate-50/70">
-                        {/* User */}
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-3">
-                            <AvatarCircle
-                              name={u.full_name}
-                              username={u.username}
-                            />
+                            <AvatarCircle name={u.full_name} username={u.username} />
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
                                 <span className="font-semibold text-slate-900 font-mono">
@@ -1072,45 +1086,28 @@ export default function UserManagementSection() {
                           </div>
                         </td>
 
-                        {/* Contact */}
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-2 text-slate-700">
-                            <Mail
-                              size={14}
-                              className="mt-0.5 text-slate-400"
-                            />
+                            <Mail size={14} className="mt-0.5 text-slate-400" />
                             <span className="break-all">{u.email}</span>
                           </div>
                         </td>
 
-                        {/* Role */}
                         <td className="px-5 py-4 align-top">
-                          {canChangeRole ? (
-                            <RoleSelector
-                              currentRole={u.role}
-                              busy={isChangingRole}
-                              onChange={(newRole) =>
-                                handleChangeRole(u, newRole)
-                              }
-                            />
-                          ) : (
-                            <div className="flex flex-wrap items-center gap-2">
-                              <RoleBadge role={u.role} />
-                              {u.role === "SUPER_ADMIN" && !isCurrentUser && (
-                                <span className="text-[10px] text-slate-400 italic">
-                                  protected
-                                </span>
-                              )}
-                            </div>
-                          )}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <RoleBadge role={u.role} />
+                            {u.role === "SUPER_ADMIN" && !isCurrentUser && (
+                              <span className="text-[10px] text-slate-400 italic">
+                                protected
+                              </span>
+                            )}
+                          </div>
                         </td>
 
-                        {/* Status */}
                         <td className="px-5 py-4 align-top">
                           <StatusBadge active={u.is_active} />
                         </td>
 
-                        {/* Ports */}
                         <td className="px-5 py-4 align-top">
                           {ports.length > 0 ? (
                             <div className="space-y-2">
@@ -1132,43 +1129,55 @@ export default function UserManagementSection() {
                                   </span>
                                 ))}
                                 {ports.length > 4 && (
-                                  <Badge variant="info">
-                                    +{ports.length - 4} more
-                                  </Badge>
+                                  <Badge variant="info">+{ports.length - 4} more</Badge>
                                 )}
                               </div>
                             </div>
                           ) : (
-                            <span className="text-xs text-slate-400">
-                              No ports
-                            </span>
+                            <span className="text-xs text-slate-400">No ports</span>
                           )}
                         </td>
 
-                        {/* Actions */}
                         <td className="px-5 py-4 align-top text-right">
-                          <Btn
-                            variant="danger"
-                            size="sm"
-                            onClick={() => handleDeleteUser(u)}
-                            disabled={!canDelete || isDeleting}
-                            title={
-                              isCurrentUser
-                                ? "You cannot delete your own account here."
-                                : u.role === "SUPER_ADMIN"
-                                  ? "SUPER_ADMIN users cannot be deleted."
-                                  : isAdmin && u.role === "ADMIN"
-                                    ? "ADMIN users cannot delete other ADMINs."
-                                    : "Delete user"
-                            }
-                          >
-                            {isDeleting ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : (
-                              <Trash2 size={14} />
-                            )}
-                            Delete
-                          </Btn>
+                          <div className="inline-flex items-center gap-2">
+                            <Btn
+                              variant="outline"
+                              size="sm"
+                              onClick={() => openEditModal(u)}
+                              disabled={!canEdit}
+                              title={
+                                !canEdit
+                                  ? "You do not have permission to edit this user."
+                                  : "Edit user"
+                              }
+                            >
+                              <Pencil size={14} />
+                              Edit
+                            </Btn>
+
+                            <Btn
+                              variant="danger"
+                              size="sm"
+                              onClick={() => handleDeleteUser(u)}
+                              disabled={!canDelete || isDeleting}
+                              title={
+                                isCurrentUser
+                                  ? "You cannot delete your own account here."
+                                  : u.role === "SUPER_ADMIN"
+                                    ? "SUPER_ADMIN users cannot be deleted."
+                                    : isAdmin && u.role === "ADMIN"
+                                      ? "ADMIN users cannot delete other ADMINs."
+                                      : "Delete user"
+                              }
+                            >
+                              {isDeleting ? (
+                                <Loader2 size={14} className="animate-spin" />
+                              ) : (
+                                <Trash2 size={14} />
+                              )}
+                              Delete
+                            </Btn>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1190,53 +1199,64 @@ export default function UserManagementSection() {
           )}
         </div>
 
-        {/* Add User Modal */}
-        {showAdd && (
+        {/* Create/Edit User Modal */}
+        {userModalOpen && (
           <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
             <div className="mx-auto my-8 w-full max-w-3xl">
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
                 <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4">
                   <SectionTitle
-                    icon={Plus}
-                    title="Add User"
-                    description="Create a new user and assign one or more ports."
-                    badge={<Badge variant="info">Create</Badge>}
+                    icon={userModalMode === "create" ? Plus : Pencil}
+                    title={userModalMode === "create" ? "Add User" : "Edit User"}
+                    description={
+                      userModalMode === "create"
+                        ? "Create a new user and assign one or more ports."
+                        : "Update user information (username cannot be changed)."
+                    }
+                    badge={
+                      <Badge variant="info">
+                        {userModalMode === "create" ? "Create" : "Edit"}
+                      </Badge>
+                    }
                   />
                   <button
-                    onClick={() => setShowAdd(false)}
+                    onClick={closeUserModal}
                     className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                    disabled={submitting}
                   >
                     <X size={16} />
                   </button>
                 </div>
 
-                {/* scroll */}
                 <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
                   <div className="p-6">
                     {formErrors.general && (
-                      <AlertBanner variant="error">
-                        {formErrors.general}
-                      </AlertBanner>
+                      <AlertBanner variant="error">{formErrors.general}</AlertBanner>
                     )}
 
-                    <form onSubmit={handleCreateUser} className="mt-4 space-y-5">
-                      {/* Identity */}
+                    <form onSubmit={handleSubmitUserForm} className="mt-4 space-y-5">
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                         <div>
-                          <FieldLabel required>Username</FieldLabel>
+                          <FieldLabel required={userModalMode === "create"}>
+                            Username
+                          </FieldLabel>
                           <Input
                             value={form.username}
                             onChange={(e) =>
-                              setForm((f) => ({
-                                ...f,
-                                username: e.target.value,
-                              }))
+                              setForm((f) => ({ ...f, username: e.target.value }))
                             }
+                            disabled={userModalMode === "edit"}
                             className={cn(
+                              userModalMode === "edit" && "bg-slate-100",
                               formErrors.username &&
                                 "border-red-400 focus:ring-red-300 focus:border-red-400",
                             )}
                           />
+                          {userModalMode === "edit" && (
+                            <div className="mt-1 text-[11px] text-slate-500">
+                              Username cannot be changed.
+                            </div>
+                          )}
                           {formErrors.username && (
                             <div className="mt-1 text-xs text-red-600">
                               {formErrors.username}
@@ -1269,10 +1289,7 @@ export default function UserManagementSection() {
                         <Input
                           value={form.full_name}
                           onChange={(e) =>
-                            setForm((f) => ({
-                              ...f,
-                              full_name: e.target.value,
-                            }))
+                            setForm((f) => ({ ...f, full_name: e.target.value }))
                           }
                           className={cn(
                             formErrors.full_name &&
@@ -1286,19 +1303,18 @@ export default function UserManagementSection() {
                         )}
                       </div>
 
-                      {/* Password / Role */}
-                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                        <div>
-                          <FieldLabel required>Password</FieldLabel>
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                        <div className="md:col-span-1">
+                          <FieldLabel required={userModalMode === "create"}>
+                            Password
+                          </FieldLabel>
                           <Input
                             type="password"
                             value={form.password}
                             onChange={(e) =>
-                              setForm((f) => ({
-                                ...f,
-                                password: e.target.value,
-                              }))
+                              setForm((f) => ({ ...f, password: e.target.value }))
                             }
+                            placeholder={userModalMode === "edit" ? "Leave blank to keep" : ""}
                             className={cn(
                               formErrors.password &&
                                 "border-red-400 focus:ring-red-300 focus:border-red-400",
@@ -1311,30 +1327,40 @@ export default function UserManagementSection() {
                           )}
                         </div>
 
-                        <div>
+                        <div className="md:col-span-1">
                           <FieldLabel>Role</FieldLabel>
                           <Select
                             value={form.role}
+                            disabled={userModalMode === "edit" ? !canEditRoleField : !isSuperAdmin}
                             onChange={(e) =>
-                              setForm((f) => ({
-                                ...f,
-                                role: e.target.value as UserRole,
-                              }))
+                              setForm((f) => ({ ...f, role: e.target.value as UserRole }))
                             }
+                            className={cn(
+                              userModalMode === "edit" && !canEditRoleField && "bg-slate-100",
+                              userModalMode === "create" && !isSuperAdmin && "bg-slate-100",
+                            )}
                           >
-                            {isSuperAdmin && (
-                              <>
-                                <option value="SUPER_ADMIN">SUPER_ADMIN</option>
-                                <option value="ADMIN">ADMIN</option>
-                              </>
+                            {isSuperAdmin && <option value="SUPER_ADMIN">SUPER_ADMIN</option>}
+                            {(isSuperAdmin || userModalMode === "edit") && (
+                              <option value="ADMIN">ADMIN</option>
                             )}
                             <option value="USER">USER</option>
                           </Select>
-                          <div className="mt-1 text-[11px] text-slate-500">
-                            {isSuperAdmin
-                              ? "SUPER_ADMIN can create admins and super admins."
-                              : "Admins typically create standard users."}
-                          </div>
+                        </div>
+
+                        <div className="md:col-span-1">
+                          <FieldLabel>Status</FieldLabel>
+                          <Select
+                            value={form.is_active ? "ACTIVE" : "INACTIVE"}
+                            disabled={userModalMode === "create"}
+                            onChange={(e) =>
+                              setForm((f) => ({ ...f, is_active: e.target.value === "ACTIVE" }))
+                            }
+                            className={cn(userModalMode === "create" && "bg-slate-100")}
+                          >
+                            <option value="ACTIVE">Active</option>
+                            <option value="INACTIVE">Inactive</option>
+                          </Select>
                         </div>
                       </div>
 
@@ -1346,7 +1372,7 @@ export default function UserManagementSection() {
                               Assigned Ports
                             </div>
                             <div className="mt-0.5 text-xs text-slate-500">
-                              Add one or more ports for this user.
+                              Ports are required only for USER role. (ADMIN/SUPER_ADMIN can be created without ports)
                             </div>
                           </div>
 
@@ -1363,9 +1389,7 @@ export default function UserManagementSection() {
 
                         <div className="p-4 space-y-3">
                           {formErrors.ports && (
-                            <AlertBanner variant="error">
-                              {formErrors.ports}
-                            </AlertBanner>
+                            <AlertBanner variant="error">{formErrors.ports}</AlertBanner>
                           )}
 
                           <div className="max-h-[300px] overflow-y-auto space-y-3 pr-2">
@@ -1379,26 +1403,20 @@ export default function UserManagementSection() {
                                   <Input
                                     value={p.label}
                                     onChange={(e) =>
-                                      updatePortRow(
-                                        index,
-                                        "label",
-                                        e.target.value,
-                                      )
+                                      updatePortRow(index, "label", e.target.value)
                                     }
                                     placeholder="ex: Client A"
                                   />
                                 </div>
 
                                 <div>
-                                  <FieldLabel required>Port value</FieldLabel>
+                                  <FieldLabel required={form.role === "USER"}>
+                                    Port value
+                                  </FieldLabel>
                                   <Input
                                     value={p.value}
                                     onChange={(e) =>
-                                      updatePortRow(
-                                        index,
-                                        "value",
-                                        e.target.value,
-                                      )
+                                      updatePortRow(index, "value", e.target.value)
                                     }
                                     placeholder="ex: 1/1/7/3/95"
                                     className={cn(
@@ -1433,13 +1451,8 @@ export default function UserManagementSection() {
                         </div>
                       </div>
 
-                      {/* Footer buttons */}
                       <div className="flex flex-wrap justify-end gap-2">
-                        <Btn
-                          type="button"
-                          variant="outline"
-                          onClick={() => setShowAdd(false)}
-                        >
+                        <Btn type="button" variant="outline" onClick={closeUserModal}>
                           Cancel
                         </Btn>
 
@@ -1447,12 +1460,17 @@ export default function UserManagementSection() {
                           {submitting ? (
                             <>
                               <Loader2 size={14} className="animate-spin" />
-                              Creating...
+                              Saving...
                             </>
-                          ) : (
+                          ) : userModalMode === "create" ? (
                             <>
                               <Plus size={16} />
                               Create user
+                            </>
+                          ) : (
+                            <>
+                              <Pencil size={16} />
+                              Save changes
                             </>
                           )}
                         </Btn>
@@ -1460,56 +1478,22 @@ export default function UserManagementSection() {
                     </form>
                   </div>
                 </div>
-
-                {/* end modal */}
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* Confirm Dialog */}
       <ConfirmDialog
         open={confirmDialog.open}
         title={confirmTitle}
-        confirmText={confirmText}
+        confirmText="Delete"
         cancelText="Cancel"
         loading={confirmDialog.loading}
-        variant={confirmVariant}
+        variant="danger"
         onCancel={closeConfirmDialog}
         onConfirm={handleConfirmDialog}
       >
-        {confirmDialog.type === "change-role" &&
-          confirmDialog.target &&
-          confirmDialog.newRole && (
-            <div className="space-y-3 text-sm text-slate-600">
-              <div className="grid grid-cols-[90px_1fr] gap-3">
-                <span className="text-slate-500">User</span>
-                <span className="font-semibold text-slate-900">
-                  {confirmDialog.target.username}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-[90px_1fr] gap-3">
-                <span className="text-slate-500">Current</span>
-                <span className="font-semibold text-slate-700">
-                  {confirmDialog.target.role}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-[90px_1fr] gap-3">
-                <span className="text-slate-500">New role</span>
-                <span className="font-semibold text-slate-900">
-                  <RoleBadge role={confirmDialog.newRole} />
-                </span>
-              </div>
-
-              <AlertBanner variant="warning">
-                This change is immediate and impacts user permissions.
-              </AlertBanner>
-            </div>
-          )}
-
         {confirmDialog.type === "delete-user" && confirmDialog.target && (
           <div className="space-y-3 text-sm text-slate-600">
             <div className="grid grid-cols-[110px_1fr] gap-3">

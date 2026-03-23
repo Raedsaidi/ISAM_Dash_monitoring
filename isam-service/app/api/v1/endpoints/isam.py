@@ -667,51 +667,79 @@ def create_wan_template(
     return tpl
 
 
+from fastapi import Query, Depends
+from sqlalchemy.orm import Session
+from sqlalchemy import or_, and_
+
 @router.get("/wan-templates", response_model=WanTemplateList)
 def list_wan_templates(
     instance_id: int | None = Query(None, ge=1),
     creator: str | None = Query(None),
     scope: str | None = Query(None),
     search: str | None = Query(None, min_length=1, max_length=200),
+
+    # NEW: filtre "mes templates"
+    mine: bool = Query(False, description="If true => only templates created by current user"),
+
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     q = db.query(WanTemplate)
 
-    if is_admin_role(current_user.role):
+    # =========================================================
+    # NEW: mine=true => uniquement les templates créés par moi
+    # (On retourne des templates USER_INSTANCE seulement)
+    # =========================================================
+    if mine:
+        q = q.filter(
+            WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
+            WanTemplate.created_by == current_user.username,
+        )
         if instance_id is not None:
-            q = q.filter(
-                or_(
-                    WanTemplate.scope == WanTemplateScope.GLOBAL.value,
-                    WanTemplate.isam_instance_id == instance_id,
-                )
-            )
-        if creator:
-            q = q.filter(WanTemplate.created_by == creator)
-        if scope:
-            q = q.filter(WanTemplate.scope == scope)
+            q = q.filter(WanTemplate.isam_instance_id == instance_id)
+
+        # (optionnel) si tu veux permettre scope=GLOBAL même en mine=true,
+        # supprime le filtre sur scope ci-dessus. Mais ton besoin dit "créés par lui même",
+        # donc USER_INSTANCE est logique.
+
     else:
-        if instance_id is not None:
-            q = q.filter(
-                or_(
-                    WanTemplate.scope == WanTemplateScope.GLOBAL.value,
-                    and_(
-                        WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
-                        WanTemplate.created_by == current_user.username,
+        # =========================================================
+        # Logique existante (inchangée)
+        # =========================================================
+        if is_admin_role(current_user.role):
+            if instance_id is not None:
+                q = q.filter(
+                    or_(
+                        WanTemplate.scope == WanTemplateScope.GLOBAL.value,
                         WanTemplate.isam_instance_id == instance_id,
-                    ),
+                    )
                 )
-            )
+            if creator:
+                q = q.filter(WanTemplate.created_by == creator)
+            if scope:
+                q = q.filter(WanTemplate.scope == scope)
         else:
-            q = q.filter(
-                or_(
-                    WanTemplate.scope == WanTemplateScope.GLOBAL.value,
-                    and_(
-                        WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
-                        WanTemplate.created_by == current_user.username,
-                    ),
+            if instance_id is not None:
+                q = q.filter(
+                    or_(
+                        WanTemplate.scope == WanTemplateScope.GLOBAL.value,
+                        and_(
+                            WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
+                            WanTemplate.created_by == current_user.username,
+                            WanTemplate.isam_instance_id == instance_id,
+                        ),
+                    )
                 )
-            )
+            else:
+                q = q.filter(
+                    or_(
+                        WanTemplate.scope == WanTemplateScope.GLOBAL.value,
+                        and_(
+                            WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
+                            WanTemplate.created_by == current_user.username,
+                        ),
+                    )
+                )
 
     # --- server-side search ---
     if search:
