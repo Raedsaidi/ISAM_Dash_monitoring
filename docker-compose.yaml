@@ -1,20 +1,24 @@
-version: "3.9"
-
 services:
   # ---------- Base de données MySQL ----------
   db:
-    image: mysql:8.0              # ou mariadb:10.11 si tu préfères
+    image: mysql:8.0
     container_name: isam-dash-mysql
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: isam_dash   # base commune pour auth + isam
+      MYSQL_DATABASE: isam_dash
       MYSQL_USER: pfe_user
       MYSQL_PASSWORD: pfe_pass
     ports:
-      - "3307:3306"               # port externe 3307 -> port interne 3306
+      - "3307:3306"
     volumes:
       - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "pfe_user", "-ppfe_pass"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s   # gives MySQL time to fully initialize
 
   # ---------- Auth-service ----------
   auth-service:
@@ -23,18 +27,13 @@ services:
     ports:
       - "9000:9000"
     environment:
-      # Ancienne config SQLite (gardée en commentaire)
-      # - DB_URL=sqlite:///./auth.db
-
-      # Nouvelle config MySQL (via conteneur "db")
       - DB_URL=mysql+pymysql://pfe_user:pfe_pass@db:3306/isam_dash
-
       - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
       - JWT_ALGORITHM=HS256
     depends_on:
-      - db
-    # volumes:
-    #   - ./auth-service/data:/app  # si tu veux persister d'autres données
+      db:
+        condition: service_healthy   # ← waits for MySQL to be truly ready
+    restart: on-failure
 
   # ---------- ISAM-service ----------
   isam-service:
@@ -43,22 +42,16 @@ services:
     ports:
       - "8001:8001"
     environment:
-      # Ancienne config SQLite (gardée en commentaire)
-      # - DB_URL=sqlite:///./isam.db
-
-      # Nouvelle config MySQL
       - DB_URL=mysql+pymysql://pfe_user:pfe_pass@db:3306/isam_dash
-
-      # URL d'auth-service dans le réseau Docker
       - AUTH_SERVICE_URL=http://auth-service:9000
-
       - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
       - JWT_ALGORITHM=HS256
     depends_on:
-      - db
-      - auth-service
-    # volumes:
-    #   - ./isam-service/data:/app  # si tu veux persister d'autres données
+      db:
+        condition: service_healthy   # ← waits for MySQL
+      auth-service:
+        condition: service_started   # ← waits for auth to start
+    restart: on-failure
 
   # ---------- Frontend ----------
   frontend:
@@ -69,6 +62,7 @@ services:
     depends_on:
       - auth-service
       - isam-service
+    restart: on-failure
 
 volumes:
   db_data:
