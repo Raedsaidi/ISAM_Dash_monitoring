@@ -19,9 +19,6 @@ import {
   AlertCircle,
   CheckCircle2,
   Zap,
-  Copy,
-  ExternalLink,
-  ChevronRight,
   Terminal,
   Network,
 } from "lucide-react";
@@ -35,6 +32,8 @@ type TemplateScope = "GLOBAL" | "USER_INSTANCE";
 type ProtocolPreference = "telnet" | "ssh" | "auto";
 type StatusType = "active" | "inactive" | "error";
 type ConfirmActionType = "clear-content" | "clear-all";
+
+type TemplateOwnerFilter = "ALL" | "MINE";
 
 interface IsamInstance {
   id: number;
@@ -165,9 +164,22 @@ function isPortVariable(name: string) {
   return v === "port" || v === "port_id";
 }
 
-/* ================================================================
-   UI PRIMITIVES — Enterprise style
-   ================================================================ */
+/** USER name auto => "username/baseName" */
+function buildUserTemplateName(
+  username: string | null | undefined,
+  baseName: string,
+) {
+  const u = (username || "user").trim();
+  const b = (baseName || "").trim();
+
+  if (!b) return u;
+  if (!u) return b;
+  if (b.startsWith(`${u}/`)) return b;
+
+  return `${u}/${b}`;
+}
+
+/* ================= UI Primitives ================= */
 
 function Badge({
   children,
@@ -215,12 +227,7 @@ function StatusDot({ status }: { status: StatusType }) {
           status === "active" ? colors[status] : "bg-transparent",
         )}
       />
-      <span
-        className={cn(
-          "relative inline-flex h-2 w-2 rounded-full",
-          colors[status],
-        )}
-      />
+      <span className={cn("relative inline-flex h-2 w-2 rounded-full", colors[status])} />
     </span>
   );
 }
@@ -248,9 +255,7 @@ function SectionTitle({
           <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
           {badge}
         </div>
-        {description && (
-          <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
-        )}
+        {description && <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>}
       </div>
     </div>
   );
@@ -267,16 +272,11 @@ function Btn({
   size?: "sm" | "md";
 }) {
   const variants = {
-    primary:
-      "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
-    outline:
-      "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
-    subtle:
-      "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
-    danger:
-      "bg-white text-red-600 hover:bg-red-50 border-red-200",
-    ghost:
-      "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
+    primary: "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
+    outline: "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
+    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
+    danger: "bg-white text-red-600 hover:bg-red-50 border-red-200",
+    ghost: "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
   };
 
   const sizes = {
@@ -299,10 +299,7 @@ function Btn({
   );
 }
 
-function Input({
-  className,
-  ...props
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
@@ -334,10 +331,7 @@ function Select({
   );
 }
 
-function Textarea({
-  className,
-  ...props
-}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <textarea
       {...props}
@@ -364,9 +358,7 @@ function CodeViewer({
     <div
       className={cn(
         "overflow-auto rounded-lg border font-mono text-[11px] leading-6",
-        dark
-          ? "border-slate-700 bg-[#0c1222] text-slate-300"
-          : "border-slate-200 bg-slate-50 text-slate-800",
+        dark ? "border-slate-700 bg-[#0c1222] text-slate-300" : "border-slate-200 bg-slate-50 text-slate-800",
         className,
       )}
       style={{ maxHeight }}
@@ -391,12 +383,7 @@ function AlertBanner({
   };
 
   return (
-    <div
-      className={cn(
-        "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-xs",
-        variants[variant],
-      )}
-    >
+    <div className={cn("flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-xs", variants[variant])}>
       {variant === "error" && <AlertCircle size={14} className="mt-0.5 shrink-0" />}
       {variant === "success" && <CheckCircle2 size={14} className="mt-0.5 shrink-0" />}
       {variant === "warning" && <AlertCircle size={14} className="mt-0.5 shrink-0" />}
@@ -406,13 +393,7 @@ function AlertBanner({
   );
 }
 
-function FieldLabel({
-  children,
-  required,
-}: {
-  children: React.ReactNode;
-  required?: boolean;
-}) {
+function FieldLabel({ children, required }: { children: React.ReactNode; required?: boolean }) {
   return (
     <label className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
       {children}
@@ -421,32 +402,16 @@ function FieldLabel({
   );
 }
 
-function Divider({ className }: { className?: string }) {
-  return <div className={cn("border-t border-slate-200", className)} />;
-}
-
-function MetadataChip({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
+function MetadataChip({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-center gap-1.5">
-      <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400">
-        {label}
-      </span>
-      <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-700">
-        {value}
-      </span>
+      <span className="text-[10px] font-medium uppercase tracking-wider text-slate-400">{label}</span>
+      <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-700">{value}</span>
     </div>
   );
 }
 
-/* ================================================================
-   MAIN COMPONENT
-   ================================================================ */
+/* ================= MAIN ================= */
 
 export default function TemplateWorkspaceOverlay({
   instance,
@@ -460,21 +425,18 @@ export default function TemplateWorkspaceOverlay({
   const isUser = currentRole === "USER";
   const isAdmin = currentRole === "ADMIN" || currentRole === "SUPER_ADMIN";
 
-  /* ---------- templates ---------- */
   const [templates, setTemplates] = useState<WanTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
 
-  /* ---------- search ---------- */
   const [templateSearch, setTemplateSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [ownerFilter, setOwnerFilter] = useState<TemplateOwnerFilter>("ALL");
 
-  /* ---------- ports ---------- */
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
   const [portsError, setPortsError] = useState<string | null>(null);
 
-  /* ---------- editor ---------- */
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const [name, setName] = useState("");
   const [commands, setCommands] = useState("");
@@ -482,7 +444,6 @@ export default function TemplateWorkspaceOverlay({
   const [selectedPort, setSelectedPort] = useState("");
   const [variableValues, setVariableValues] = useState<Record<string, string>>({});
 
-  /* ---------- preview / apply ---------- */
   const [previewState, setPreviewState] = useState<{
     loading: boolean;
     error: string | null;
@@ -513,7 +474,6 @@ export default function TemplateWorkspaceOverlay({
 
   const [saving, setSaving] = useState(false);
 
-  /* ---------- confirm dialog ---------- */
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
     action: ConfirmActionType | null;
@@ -528,36 +488,25 @@ export default function TemplateWorkspaceOverlay({
     confirmText: "Confirm",
   });
 
-  /* ---------- derived ---------- */
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId],
   );
 
-  const detectedVariables = useMemo(
-    () => extractTemplateVariables(commands),
-    [commands],
-  );
-
-  const customVariables = useMemo(
-    () => detectedVariables.filter((v) => !isPortVariable(v)),
-    [detectedVariables],
-  );
+  const detectedVariables = useMemo(() => extractTemplateVariables(commands), [commands]);
+  const customVariables = useMemo(() => detectedVariables.filter((v) => !isPortVariable(v)), [detectedVariables]);
 
   const currentPreviewFingerprint = useMemo(
     () => JSON.stringify({ commands, selectedPort, variableValues }),
     [commands, selectedPort, variableValues],
   );
-
   const [lastPreviewFingerprint, setLastPreviewFingerprint] = useState("");
 
-  /* ---------- debounce search ---------- */
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(templateSearch), 400);
     return () => clearTimeout(timer);
   }, [templateSearch]);
 
-  /* ---------- load templates ---------- */
   const loadTemplates = useCallback(async () => {
     if (!accessToken) return;
     setLoadingTemplates(true);
@@ -567,6 +516,7 @@ export default function TemplateWorkspaceOverlay({
       const params = new URLSearchParams();
       params.set("instance_id", String(instance.id));
       if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+      if (ownerFilter === "MINE") params.set("mine", "true");
 
       const res = await authFetchJson<WanTemplateListResponse>(
         `${ISAM_BASE_URL}/api/v1/isam/wan-templates?${params.toString()}`,
@@ -578,47 +528,52 @@ export default function TemplateWorkspaceOverlay({
     } finally {
       setLoadingTemplates(false);
     }
-  }, [accessToken, instance.id, debouncedSearch]);
+  }, [accessToken, instance.id, debouncedSearch, ownerFilter]);
 
   useEffect(() => {
     loadTemplates();
   }, [loadTemplates]);
 
-  /* ---------- load ports ---------- */
   useEffect(() => {
     loadPorts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instance.id]);
 
-  /* ---------- auto-select first template ---------- */
   useEffect(() => {
-    if (templates.length > 0 && selectedTemplateId === null) {
+    if (templates.length === 0) {
+      setSelectedTemplateId(null);
+      return;
+    }
+    if (selectedTemplateId === null) {
+      setSelectedTemplateId(templates[0].id);
+      return;
+    }
+    if (!templates.some((t) => t.id === selectedTemplateId)) {
       setSelectedTemplateId(templates[0].id);
     }
   }, [templates, selectedTemplateId]);
 
-  /* ---------- sync editor ---------- */
   useEffect(() => {
     if (!selectedTemplate) return;
-    setName(selectedTemplate.name);
+
+    const autoNameForUser = buildUserTemplateName(user?.username, selectedTemplate.name);
+    setName(isUser ? autoNameForUser : selectedTemplate.name);
+
     setCommands(selectedTemplate.commands_template);
     setEditMode(false);
     resetExecutionStates();
     setLastPreviewFingerprint("");
-  }, [selectedTemplate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTemplate, isUser, user?.username]);
 
-  /* ---------- sync variable fields ---------- */
   useEffect(() => {
     setVariableValues((prev) => {
       const next: Record<string, string> = {};
-      customVariables.forEach((v) => {
-        next[v] = prev[v] ?? "";
-      });
+      customVariables.forEach((v) => (next[v] = prev[v] ?? ""));
       return next;
     });
   }, [customVariables]);
 
-  /* ---------- helpers ---------- */
   function resetExecutionStates() {
     setPreviewState({ loading: false, error: null, rendered_script: "", rendered_commands: [] });
     setApplyState({ loading: false, error: null, successMessage: null, protocol_used: null, commands_executed: [], raw_output: "" });
@@ -646,7 +601,8 @@ export default function TemplateWorkspaceOverlay({
 
     if (action === "clear-all") {
       if (selectedTemplate) {
-        setName(selectedTemplate.name);
+        const autoNameForUser = buildUserTemplateName(user?.username, selectedTemplate.name);
+        setName(isUser ? autoNameForUser : selectedTemplate.name);
         setCommands(selectedTemplate.commands_template);
         setEditMode(false);
       } else {
@@ -667,10 +623,7 @@ export default function TemplateWorkspaceOverlay({
 
     try {
       if (isUser) {
-        const me = await authFetchJson<MeResponse>(
-          `${AUTH_BASE_URL}/api/v1/auth/me`,
-          accessToken,
-        );
+        const me = await authFetchJson<MeResponse>(`${AUTH_BASE_URL}/api/v1/auth/me`, accessToken);
         let ports: string[] = (me.ports || []).map((p) => p.value).filter(Boolean);
         if (ports.length === 0 && me.port_value) ports = [me.port_value];
         setAvailablePorts(ports);
@@ -785,11 +738,20 @@ export default function TemplateWorkspaceOverlay({
   async function handleSave() {
     if (!selectedTemplate) return;
     if (!editMode) {
-      toast.info('Click "Modify" first to enable editing.');
+      toast.info('Click "Enable editing" first to modify.');
       return;
     }
-    if (!name.trim() || !commands.trim()) {
-      toast.error("Template name and content are required.");
+    if (!commands.trim()) {
+      toast.error("Template content is required.");
+      return;
+    }
+
+    const finalName = isUser
+      ? buildUserTemplateName(user?.username, selectedTemplate.name)
+      : name.trim();
+
+    if (!finalName) {
+      toast.error("Template name is required.");
       return;
     }
 
@@ -797,13 +759,19 @@ export default function TemplateWorkspaceOverlay({
 
     try {
       let saved: WanTemplate;
-      const isOwn = selectedTemplate.scope === "USER_INSTANCE" && selectedTemplate.created_by === user?.username;
+      const isOwn =
+        selectedTemplate.scope === "USER_INSTANCE" &&
+        selectedTemplate.created_by === user?.username;
 
       if (isOwn || isAdmin) {
         saved = await authFetchJson<WanTemplate>(
           `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${selectedTemplate.id}`,
           accessToken,
-          { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), commands_template: commands }) },
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: finalName, commands_template: commands }),
+          },
         );
       } else {
         saved = await authFetchJson<WanTemplate>(
@@ -812,7 +780,13 @@ export default function TemplateWorkspaceOverlay({
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: name.trim(), commands_template: commands, scope: "USER_INSTANCE", isam_instance_id: instance.id, source_template_id: selectedTemplate.id }),
+            body: JSON.stringify({
+              name: finalName,
+              commands_template: commands,
+              scope: "USER_INSTANCE",
+              isam_instance_id: instance.id,
+              source_template_id: selectedTemplate.id,
+            }),
           },
         );
       }
@@ -838,26 +812,16 @@ export default function TemplateWorkspaceOverlay({
     openConfirmDialog("clear-all", "Reset workspace?", "This will reset editor, port, variables, preview and execution results.", "Reset");
   }
 
-  /* ================================================================
-     RENDER
-     ================================================================ */
-
   return (
     <>
-      {/* ---- Backdrop ---- */}
       <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm p-3 sm:p-5">
-        {/* ---- Modal shell ---- */}
         <div className="mx-auto flex h-[96vh] max-w-[1700px] flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
-
-          {/* ============= TOP BAR ============= */}
           <header className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-5 py-3">
             <div className="flex items-center gap-4">
-              {/* Icon */}
               <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white">
                 <Network size={17} className="text-slate-600" />
               </div>
 
-              {/* Titles */}
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-sm font-bold tracking-tight text-slate-900">
@@ -877,9 +841,7 @@ export default function TemplateWorkspaceOverlay({
             </div>
 
             <div className="flex items-center gap-2">
-              <Badge variant={isUser ? "info" : "purple"}>
-                {currentRole.replace("_", " ")}
-              </Badge>
+              <Badge variant={isUser ? "info" : "purple"}>{currentRole.replace("_", " ")}</Badge>
               <div className="h-6 w-px bg-slate-200" />
               <button
                 onClick={onClose}
@@ -890,36 +852,47 @@ export default function TemplateWorkspaceOverlay({
             </div>
           </header>
 
-          {/* ============= BODY ============= */}
           <div className="flex flex-1 min-h-0">
-            {/* ---- SIDEBAR ---- */}
             <aside className="flex w-[300px] shrink-0 flex-col border-r border-slate-200 bg-white">
-              {/* Sidebar header */}
               <div className="border-b border-slate-200 p-4">
                 <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                    Templates
-                  </h2>
+                  <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">Templates</h2>
                   <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-500">
                     {templates.length}
                   </span>
                 </div>
 
-                <div className="relative">
-                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                  <Input
-                    value={templateSearch}
-                    onChange={(e) => setTemplateSearch(e.target.value)}
-                    placeholder="Search..."
-                    className="pl-9 pr-8 py-1.5 text-xs"
-                  />
-                  {loadingTemplates && debouncedSearch && (
-                    <Loader2 size={12} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-slate-400" />
-                  )}
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      value={templateSearch}
+                      onChange={(e) => setTemplateSearch(e.target.value)}
+                      placeholder="Search..."
+                      className="pl-9 pr-8 py-1.5 text-xs"
+                    />
+                    {loadingTemplates && debouncedSearch && (
+                      <Loader2 size={12} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-slate-400" />
+                    )}
+                  </div>
+
+                  <Select
+                    value={ownerFilter}
+                    onChange={(e) => setOwnerFilter(e.target.value as TemplateOwnerFilter)}
+                    className="py-1.5 text-xs"
+                  >
+                    <option value="ALL">All templates</option>
+                    <option value="MINE">My templates</option>
+                  </Select>
+
+                  <div className="text-[10px] text-slate-500">
+                    {ownerFilter === "MINE"
+                      ? "Showing only templates created by you."
+                      : "Showing global + personal templates (depending on permissions)."}
+                  </div>
                 </div>
               </div>
 
-              {/* Template list */}
               <div className="flex-1 overflow-y-auto">
                 {loadingTemplates && templates.length === 0 && (
                   <div className="flex items-center gap-2 px-4 py-6 text-xs text-slate-500">
@@ -946,14 +919,11 @@ export default function TemplateWorkspaceOverlay({
                           : "hover:bg-slate-50 border-l-2 border-l-transparent",
                       )}
                     >
-                      {/* Name + scope */}
                       <div className="flex items-center justify-between gap-2">
                         <span
                           className={cn(
                             "truncate text-[13px] font-semibold",
-                            selectedTemplateId === tpl.id
-                              ? "text-sky-900"
-                              : "text-slate-800",
+                            selectedTemplateId === tpl.id ? "text-sky-900" : "text-slate-800",
                           )}
                         >
                           {tpl.name}
@@ -966,7 +936,6 @@ export default function TemplateWorkspaceOverlay({
                         )}
                       </div>
 
-                      {/* Meta line */}
                       <div className="flex items-center gap-2 text-[10px] text-slate-400">
                         <span>{tpl.created_by || "system"}</span>
                         <span>·</span>
@@ -977,13 +946,16 @@ export default function TemplateWorkspaceOverlay({
 
                 {!loadingTemplates && templates.length === 0 && (
                   <div className="px-4 py-8 text-center text-xs text-slate-400">
-                    {debouncedSearch ? `No match for "${debouncedSearch}".` : "No templates found."}
+                    {debouncedSearch
+                      ? `No match for "${debouncedSearch}".`
+                      : ownerFilter === "MINE"
+                        ? "No personal templates found."
+                        : "No templates found."}
                   </div>
                 )}
               </div>
             </aside>
 
-            {/* ---- MAIN CONTENT ---- */}
             <main className="flex flex-1 flex-col min-w-0">
               {!selectedTemplate ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 text-slate-400">
@@ -993,11 +965,7 @@ export default function TemplateWorkspaceOverlay({
               ) : (
                 <div className="flex-1 overflow-y-auto">
                   <div className="grid grid-cols-1 xl:grid-cols-2 gap-0 xl:divide-x xl:divide-slate-200 min-h-full">
-
-                    {/* ========== LEFT COLUMN: EDITOR ========== */}
                     <div className="space-y-0 divide-y divide-slate-200">
-
-                      {/* --- Section: Template Info --- */}
                       <div className="p-5">
                         <SectionTitle
                           icon={FileText}
@@ -1006,9 +974,13 @@ export default function TemplateWorkspaceOverlay({
                           badge={
                             <Badge variant={selectedTemplate.scope === "GLOBAL" ? "purple" : "info"}>
                               {selectedTemplate.scope === "GLOBAL" ? (
-                                <><Globe size={10} /> Global</>
+                                <>
+                                  <Globe size={10} /> Global
+                                </>
                               ) : (
-                                <><User size={10} /> Personal</>
+                                <>
+                                  <User size={10} /> Personal
+                                </>
                               )}
                             </Badge>
                           }
@@ -1027,29 +999,29 @@ export default function TemplateWorkspaceOverlay({
                         </div>
                       </div>
 
-                      {/* --- Section: Name --- */}
+                      {/* NAME disabled for USER */}
                       <div className="p-5">
                         <FieldLabel>Template Name</FieldLabel>
                         <Input
                           value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          disabled={!editMode}
-                          className={cn(
-                            !editMode && "cursor-not-allowed bg-slate-50 text-slate-500",
-                          )}
+                          onChange={(e) => {
+                            if (!isUser) setName(e.target.value);
+                          }}
+                          disabled={!editMode || isUser}
+                          className={cn((!editMode || isUser) && "cursor-not-allowed bg-slate-50 text-slate-500")}
                         />
+                        {isUser && (
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            Name is generated automatically as:{" "}
+                            <span className="font-mono text-slate-700">{name}</span>
+                          </div>
+                        )}
                       </div>
 
-                      {/* --- Section: Commands --- */}
                       <div className="p-5">
                         <div className="flex items-center justify-between mb-1.5">
                           <FieldLabel required>Commands Template</FieldLabel>
-                          <Btn
-                            size="sm"
-                            variant="danger"
-                            onClick={handleClearContent}
-                            disabled={!editMode || !commands.trim()}
-                          >
+                          <Btn size="sm" variant="danger" onClick={handleClearContent} disabled={!editMode || !commands.trim()}>
                             <Trash2 size={12} />
                             Clear
                           </Btn>
@@ -1060,12 +1032,9 @@ export default function TemplateWorkspaceOverlay({
                           onChange={(e) => setCommands(e.target.value)}
                           disabled={!editMode}
                           rows={14}
-                          className={cn(
-                            !editMode && "cursor-not-allowed bg-slate-50 text-slate-500",
-                          )}
+                          className={cn(!editMode && "cursor-not-allowed bg-slate-50 text-slate-500")}
                         />
 
-                        {/* Detected variables */}
                         {detectedVariables.length > 0 && (
                           <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
                             <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-2">
@@ -1089,15 +1058,8 @@ export default function TemplateWorkspaceOverlay({
                             </div>
                           </div>
                         )}
-
-                        {!editMode && (
-                          <div className="mt-3 text-[11px] text-slate-500">
-                            Editing is disabled. Click <strong>Enable editing</strong> above to modify.
-                          </div>
-                        )}
                       </div>
 
-                      {/* --- Section: Variables / Actions --- */}
                       <div className="p-5 space-y-4">
                         <SectionTitle
                           icon={Cable}
@@ -1105,7 +1067,6 @@ export default function TemplateWorkspaceOverlay({
                           description="Select the target port and fill custom placeholders."
                         />
 
-                        {/* Port selection */}
                         <div>
                           <FieldLabel required>Select Port</FieldLabel>
                           <Select
@@ -1115,9 +1076,12 @@ export default function TemplateWorkspaceOverlay({
                           >
                             <option value="">— Select port —</option>
                             {availablePorts.map((p) => (
-                              <option key={p} value={p}>{p}</option>
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
                             ))}
                           </Select>
+
                           {loadingPorts && (
                             <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
                               <Loader2 size={11} className="animate-spin" /> Loading ports...
@@ -1130,16 +1094,13 @@ export default function TemplateWorkspaceOverlay({
                           )}
                         </div>
 
-                        {/* Custom variables */}
                         {customVariables.length > 0 && (
                           <div>
                             <FieldLabel>Custom Variables</FieldLabel>
                             <div className="grid grid-cols-2 gap-3">
                               {customVariables.map((v) => (
                                 <div key={v}>
-                                  <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                                    {v}
-                                  </label>
+                                  <label className="mb-1 block text-[11px] font-medium text-slate-600">{v}</label>
                                   <Input
                                     value={variableValues[v] ?? ""}
                                     onChange={(e) =>
@@ -1153,7 +1114,6 @@ export default function TemplateWorkspaceOverlay({
                           </div>
                         )}
 
-                        {/* --- Action bar --- */}
                         <div className="flex flex-wrap items-center gap-2 pt-2">
                           <Btn onClick={handlePreview} disabled={previewState.loading}>
                             {previewState.loading ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
@@ -1184,28 +1144,17 @@ export default function TemplateWorkspaceOverlay({
                       </div>
                     </div>
 
-                    {/* ========== RIGHT COLUMN: OUTPUT ========== */}
                     <div className="divide-y divide-slate-200 bg-slate-50/40">
-
-                      {/* --- Preview --- */}
                       <div className="p-5">
-                        <SectionTitle
-                          icon={Eye}
-                          title="Rendered Preview"
-                          description="Preview commands before execution."
-                        />
-
+                        <SectionTitle icon={Eye} title="Rendered Preview" description="Preview commands before execution." />
                         <div className="mt-3">
                           {previewState.error && (
                             <div className="mb-3">
                               <AlertBanner variant="error">{previewState.error}</AlertBanner>
                             </div>
                           )}
-
                           {previewState.rendered_commands.length > 0 ? (
-                            <CodeViewer maxHeight="400px">
-                              {previewState.rendered_commands.join("\n")}
-                            </CodeViewer>
+                            <CodeViewer maxHeight="400px">{previewState.rendered_commands.join("\n")}</CodeViewer>
                           ) : (
                             <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white py-12 text-center">
                               <Eye size={24} strokeWidth={1.2} className="text-slate-300 mb-2" />
@@ -1217,22 +1166,11 @@ export default function TemplateWorkspaceOverlay({
                         </div>
                       </div>
 
-                      {/* --- Execution --- */}
                       <div className="p-5">
-                        <SectionTitle
-                          icon={Terminal}
-                          title="Execution Result"
-                          description="Live device response and command trace."
-                        />
-
+                        <SectionTitle icon={Terminal} title="Execution Result" description="Live device response and command trace." />
                         <div className="mt-3 space-y-3">
-                          {applyState.error && (
-                            <AlertBanner variant="error">{applyState.error}</AlertBanner>
-                          )}
-
-                          {applyState.successMessage && (
-                            <AlertBanner variant="success">{applyState.successMessage}</AlertBanner>
-                          )}
+                          {applyState.error && <AlertBanner variant="error">{applyState.error}</AlertBanner>}
+                          {applyState.successMessage && <AlertBanner variant="success">{applyState.successMessage}</AlertBanner>}
 
                           {applyState.protocol_used && (
                             <div className="flex items-center gap-2">
@@ -1259,9 +1197,7 @@ export default function TemplateWorkspaceOverlay({
                               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                                 Raw Output
                               </div>
-                              <CodeViewer dark maxHeight="260px">
-                                {applyState.raw_output}
-                              </CodeViewer>
+                              <CodeViewer dark maxHeight="260px">{applyState.raw_output}</CodeViewer>
                             </div>
                           ) : (
                             !applyState.error &&
@@ -1281,7 +1217,6 @@ export default function TemplateWorkspaceOverlay({
             </main>
           </div>
 
-          {/* ============= FOOTER ============= */}
           <footer className="flex items-center justify-between border-t border-slate-200 bg-slate-50/80 px-5 py-2.5">
             <div className="flex items-center gap-4 text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5">
@@ -1289,17 +1224,16 @@ export default function TemplateWorkspaceOverlay({
                 {templates.length} template{templates.length !== 1 ? "s" : ""}
               </span>
               <span>·</span>
-              <span>{availablePorts.length} port{availablePorts.length !== 1 ? "s" : ""} available</span>
+              <span>
+                {availablePorts.length} port{availablePorts.length !== 1 ? "s" : ""} available
+              </span>
             </div>
 
-            <div className="text-[11px] text-slate-400">
-              ISAM Template Manager v1.0
-            </div>
+            <div className="text-[11px] text-slate-400">ISAM Template Manager v1.0</div>
           </footer>
         </div>
       </div>
 
-      {/* ---- Confirm Dialog ---- */}
       <ConfirmDialog
         open={confirmDialog.open}
         title={confirmDialog.title}
@@ -1312,10 +1246,6 @@ export default function TemplateWorkspaceOverlay({
     </>
   );
 }
-
-/* ================================================================
-   CONFIRM DIALOG — Enterprise style
-   ================================================================ */
 
 function ConfirmDialog({
   open,

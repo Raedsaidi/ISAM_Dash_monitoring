@@ -171,7 +171,7 @@ export default function JunctionsSection() {
   const [submitAdding, setSubmitAdding] = useState(false);
 
   const [showTemplateWorkspace, setShowTemplateWorkspace] = useState(false);
-  const [showLTSlotsPanel, setShowLTSlotsPanel] = useState(false);
+  const [showLTSlotsPanel, setShowLTSlotsPanel] = useState(true);
 
   useEffect(() => {
     if (!accessToken) return;
