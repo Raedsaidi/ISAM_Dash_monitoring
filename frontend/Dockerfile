@@ -1,23 +1,25 @@
-# Étape 1 : build du frontend avec Node
+# Stage 1: Build
 FROM node:20-alpine AS build
 
 WORKDIR /app
 
+# Declare build args
+ARG VITE_AUTH_BASE_URL
+ARG VITE_ISAM_BASE_URL
+
+# Make them available to Vite during build
+ENV VITE_AUTH_BASE_URL=$VITE_AUTH_BASE_URL
+ENV VITE_ISAM_BASE_URL=$VITE_ISAM_BASE_URL
+
 COPY package*.json ./
-RUN npm install
+RUN npm install && chmod +x node_modules/.bin/vite
 
 COPY . .
 RUN npm run build
 
-# Étape 2 : servir les fichiers statiques avec Nginx
+# Stage 2: Serve with Nginx
 FROM nginx:alpine
-
-# Copier le build Vite
 COPY --from=build /app/dist /usr/share/nginx/html
-
-# (Optionnel) config Nginx custom, sinon il sert index.html par défaut
-# COPY nginx.conf /etc/nginx/conf.d/default.conf
-
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
-
 CMD ["nginx", "-g", "daemon off;"]
