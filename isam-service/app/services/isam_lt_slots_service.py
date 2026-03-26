@@ -7,6 +7,8 @@ from app.models.isam_instance import ISAMInstance
 
 logger = logging.getLogger(__name__)
 
+ALLOWED_PORT_TYPES = {"xdsl-line", "ethernet-line", "pon", "ont"}
+
 
 class ISAMLTSlotsService:
     """
@@ -19,14 +21,23 @@ class ISAMLTSlotsService:
 
     # ---------- 1) Récupérer les slots LT ----------
 
-    def get_lt_slots(self, timeout: int = 30) -> Tuple[bool, Optional[Protocol], str, List[Dict[str, Any]], str]:
+    def get_lt_slots(
+        self,
+        timeout: int = 30,
+    ) -> Tuple[bool, Optional[Protocol], str, List[Dict[str, Any]], str]:
         """
         Exécute: "show equipment slot | match exact:lt"
-        
+
         Retourne:
             (success, protocol_used, raw_output, slots_list, message)
         """
         script = "show\nequipment\nslot | match exact:lt"
+        logger.info(
+            "[LT_SLOTS] Récupération des slots LT pour instance #%s (%s) avec script: %r",
+            self.instance.id,
+            self.instance.name,
+            script,
+        )
 
         try:
             success, protocol_used, raw_output, err_msg = self.conn_service.execute_command_preference(
@@ -35,11 +46,31 @@ class ISAMLTSlotsService:
             )
 
             if not success:
-                logger.error(f"[LT_SLOTS] Impossible de récupérer les slots LT : {err_msg}")
+                logger.error(
+                    "[LT_SLOTS] Impossible de récupérer les slots LT pour instance #%s : %s",
+                    self.instance.id,
+                    err_msg,
+                )
                 return False, protocol_used, raw_output or "", [], err_msg
 
+            if raw_output:
+                logger.debug(
+                    "[LT_SLOTS] Sortie brute (premières lignes):\n%s",
+                    "\n".join(raw_output.splitlines()[:10]),
+                )
+
             slots = self._parse_lt_slots(raw_output or "")
-            logger.info(f"[LT_SLOTS] {len(slots)} slots LT récupérés et parsés.")
+            logger.info(
+                "[LT_SLOTS] %d slots LT parsés pour instance #%s.",
+                len(slots),
+                self.instance.id,
+            )
+
+            if not slots:
+                msg = "Aucun slot LT parsé depuis 'show equipment slot | match exact:lt'"
+                logger.warning("[LT_SLOTS] %s", msg)
+                return False, protocol_used, raw_output or "", [], msg
+
             return True, protocol_used, raw_output or "", slots, "OK"
 
         except Exception as e:
@@ -51,41 +82,25 @@ class ISAMLTSlotsService:
     def _parse_lt_slots(raw_output: str) -> List[Dict[str, Any]]:
         """
         Parse la sortie de: "show equipment slot | match exact:lt"
-        
-        Exemple de format:
-        ```
-        Ports on LT
-        ====================================================================
-        Port             Admin Link Port    Cfg  Oper LAG/ Port Port Port
-        Id               State      State   MTU  MTU  Bndl Mode Encp Type
-        --------------------------------------------------------------------
-        lt:1/1/4         Up    No   Down    9212 9212    - accs dotq lt
-        lt:1/1/5         Up    Yes  Up      9212 9212    - accs dotq lt
-        lt:1/1/6         Up    Yes  Up      9212 9212    - accs dotq lt
-        lt:1/1/7         Up    Yes  Up      9212 9212    - accs dotq lt
-        lt:1/1/8         Up    Yes  Up      9212 9212    - accs dotq lt
-        lt:1/1/9         Up    No   Down    9212 9212    - accs dotq lt
-        lt:1/1/10        Up    Yes  Up      9212 9212    - accs dotq lt
-        lt:1/1/11        Up    No   Down    9212 9212    - accs dotq lt
-        ```
+
+        Format attendu (exemple réel) :
+            Port             Admin Link Port    Cfg  Oper LAG/ Port Port Port
+            Id               State      State   MTU  MTU  Bndl Mode Encp Type
+            --------------------------------------------------------------------
+            lt:1/1/4         Up    No   Down    9212 9212    - accs dotq lt
+            lt:1/1/5         Up    Yes  Up      9212 9212    - accs dotq lt
+            ...
+
+        On force board="LT". On ajoute aussi slot_short_id="1/1/5" (utile pour show interface).
         """
         slots: List[Dict[str, Any]] = []
-        current_board: str | None = None
         in_table: bool = False
+        board = "LT"
 
         for line_orig in raw_output.splitlines():
             line = line_orig.rstrip("\n")
             stripped = line.strip()
-
             if not stripped:
-                in_table = False
-                continue
-
-            # Détecte le board (ex: "Ports on LT")
-            if stripped.startswith("Ports on "):
-                current_board = stripped[len("Ports on "):].strip()
-                in_table = False
-                logger.debug(f"[LT_SLOTS] Détecté board: {current_board}")
                 continue
 
             # Détecte l'en-tête du tableau
@@ -102,37 +117,48 @@ class ISAMLTSlotsService:
             if stripped.startswith("=") or stripped.startswith("-"):
                 continue
 
-            # Parse les lignes de données
-            if in_table and current_board:
-                parts = stripped.split()
-                if len(parts) < 10:
-                    logger.debug(f"[LT_SLOTS] Ligne non reconnue (trop courte) : {line_orig!r}")
-                    continue
+            if not in_table:
+                continue
 
-                slot_id = parts[0]
-                admin_state = parts[1]
-                link_state = parts[2]
-                port_state = parts[3]
-                cfg_mtu_str = parts[4]
-                oper_mtu_str = parts[5]
-                lag_bndl = parts[6]
-                mode = parts[7]
-                encap = parts[8]
-                port_type = parts[9]
+            parts = stripped.split()
+            if len(parts) < 10:
+                logger.debug(
+                    "[LT_SLOTS] Ligne slot non reconnue (trop courte) : %r",
+                    line_orig,
+                )
+                continue
 
-                # Parse les MTU
-                try:
-                    cfg_mtu = int(cfg_mtu_str)
-                except ValueError:
-                    cfg_mtu = 0
-                try:
-                    oper_mtu = int(oper_mtu_str)
-                except ValueError:
-                    oper_mtu = 0
+            raw_slot_id = parts[0]      # ex: "lt:1/1/5"
+            admin_state = parts[1]      # "Up"
+            link_state = parts[2]       # "Yes"/"No"
+            port_state = parts[3]       # "Up"/"Down"
+            cfg_mtu_str = parts[4]
+            oper_mtu_str = parts[5]
+            lag_bndl = parts[6]
+            mode = parts[7]
+            encap = parts[8]
+            port_type = parts[9]        # "lt"
 
-                slot_dict = {
-                    "slot_id": slot_id,
-                    "board": current_board,
+            # slot_id "court" sans le préfixe "lt:"
+            if ":" in raw_slot_id:
+                slot_short = raw_slot_id.split(":", 1)[1]  # "1/1/5"
+            else:
+                slot_short = raw_slot_id
+
+            try:
+                cfg_mtu = int(cfg_mtu_str)
+            except ValueError:
+                cfg_mtu = 0
+            try:
+                oper_mtu = int(oper_mtu_str)
+            except ValueError:
+                oper_mtu = 0
+
+            slots.append(
+                {
+                    "slot_id": raw_slot_id,       # "lt:1/1/5"
+                    "slot_short_id": slot_short,  # "1/1/5" (pour show interface port)
+                    "board": board,
                     "admin_state": admin_state,
                     "link_state": link_state,
                     "port_state": port_state,
@@ -141,10 +167,10 @@ class ISAMLTSlotsService:
                     "lag_bndl": lag_bndl,
                     "mode": mode,
                     "encap": encap,
-                    "port_type": port_type,
+                    "port_type": port_type,       # "lt"
                 }
-                slots.append(slot_dict)
-                logger.debug(f"[LT_SLOTS] Parsed slot: {slot_id} ({port_type})")
+            )
+            logger.debug("[LT_SLOTS] Slot parsé: %s (short=%s)", raw_slot_id, slot_short)
 
         return slots
 
@@ -152,32 +178,28 @@ class ISAMLTSlotsService:
 
     def get_slot_ports(
         self,
-        slot_id: str,
-        port_type: str,
+        slot_id: str,        # ex: "lt:1/1/5" (id complet)
+        slot_short_id: str,  # ex: "1/1/5" (id court utilisé dans la commande)
         timeout: int = 30,
     ) -> Tuple[bool, Optional[Protocol], str, List[Dict[str, Any]], str]:
         """
-        Récupère les ports individuels d'un slot LT.
-        
-        Selon le port_type, exécute la commande appropriée:
-        - xdsl-line → "show interface port | match exact:{slot_id} | match exact:xdsl-line"
-        - ethernet-line → "show interface port | match exact:{slot_id} | match exact:ethernet-line"
-        - ont → "show interface port | match exact:{slot_id} | match exact:ont"
-        
-        Exemple de sortie:
-        ```
-        Ports on LT
-        ====================================================================
-        Port             Admin Link Port    Cfg  Oper LAG/ Port Port Port
-        Id               State      State   MTU  MTU  Bndl Mode Encp Type
-        --------------------------------------------------------------------
-        1/1/5/1          Up    Yes  Up      9212 9212    - accs dotq xdsl-line
-        1/1/5/2          Up    Yes  Up      9212 9212    - accs dotq xdsl-line
-        1/1/5/3          Up    No   Down    9212 9212    - accs dotq xdsl-line
-        ```
+        Récupère tous les ports d'un slot LT avec:
+        show interface port | match exact:{slot_short_id}
+
+        On filtre ensuite pour ne garder que:
+        - xdsl-line
+        - ethernet-line
+        - pon
+        - ont
         """
-        # Construire la commande
-        script = f"show\ninterface\nport | match exact:{slot_id} | match exact:{port_type}"
+        script = f"show\ninterface\nport | match exact:{slot_short_id}"
+
+        logger.info(
+            "[LT_PORTS] Récupération des ports pour slot %s (short=%s) avec script: %r",
+            slot_id,
+            slot_short_id,
+            script,
+        )
 
         try:
             success, protocol_used, raw_output, err_msg = self.conn_service.execute_command_preference(
@@ -186,12 +208,27 @@ class ISAMLTSlotsService:
             )
 
             if not success:
-                msg = f"[LT_PORTS] Impossible de récupérer les ports du slot {slot_id} ({port_type}): {err_msg}"
+                msg = (
+                    f"[LT_PORTS] Impossible de récupérer les ports du slot "
+                    f"{slot_id} (short={slot_short_id}) : {err_msg}"
+                )
                 logger.error(msg)
                 return False, protocol_used, raw_output or "", [], err_msg
 
-            ports = self._parse_slot_ports(raw_output or "", slot_id, port_type)
-            logger.info(f"[LT_PORTS] {len(ports)} ports récupérés pour slot {slot_id}.")
+            if raw_output:
+                logger.debug(
+                    "[LT_PORTS] Sortie brute pour slot %s (premières lignes):\n%s",
+                    slot_id,
+                    "\n".join(raw_output.splitlines()[:10]),
+                )
+
+            ports = self._parse_slot_ports(raw_output or "", slot_id, slot_short_id)
+            logger.info(
+                "[LT_PORTS] %d ports (types %s) parsés pour slot %s",
+                len(ports),
+                ", ".join(sorted({p['port_type'] for p in ports}) or ["(aucun)"]),
+                slot_id,
+            )
             return True, protocol_used, raw_output or "", ports, "OK"
 
         except Exception as e:
@@ -203,87 +240,75 @@ class ISAMLTSlotsService:
     def _parse_slot_ports(
         raw_output: str,
         slot_id: str,
-        port_type: str,
+        slot_short_id: str,
     ) -> List[Dict[str, Any]]:
         """
-        Parse les ports d'un slot spécifique.
-        
-        Format similaire aux slots, mais avec des port_id complets.
+        Parse les ports d'un slot spécifique à partir de:
+
+            show interface port | match exact:{slot_short_id}
+
+        Format attendu par ligne:
+            <type>:<id>    <admin_state>    <oper_state>
+
+        Exemples:
+            xdsl-line:1/1/5/1        down    down
+            ethernet-line:1/1/5/1    up      no-value
+            pon:1/1/7/1              up      up
+            ont:1/1/7/1/1            up      down
         """
         ports: List[Dict[str, Any]] = []
-        current_board: str | None = None
-        in_table: bool = False
 
         for line_orig in raw_output.splitlines():
-            line = line_orig.rstrip("\n")
-            stripped = line.strip()
-
+            stripped = line_orig.strip()
             if not stripped:
-                in_table = False
                 continue
 
-            # Détecte le board
-            if stripped.startswith("Ports on "):
-                current_board = stripped[len("Ports on "):].strip()
-                in_table = False
-                logger.debug(f"[LT_PORTS] Détecté board: {current_board}")
+            # On cherche des lignes du type  "<type>:<id>  <state>  <state>"
+            m = re.match(r"^(\S+):(\S+)\s+(\S+)\s+(\S+)", stripped)
+            if not m:
+                logger.debug("[LT_PORTS] Ligne ignorée (ne matche pas le pattern) : %r", line_orig)
                 continue
 
-            # Détecte l'en-tête
-            if (
-                stripped.lower().startswith("port")
-                and "admin" in stripped.lower()
-                and "link" in stripped.lower()
-            ):
-                in_table = True
+            port_type = m.group(1)  # xdsl-line / ethernet-line / pon / ont / ...
+            port_id = m.group(2)    # 1/1/5/1, 1/1/7/1, 1/1/7/1/1, ...
+            admin_state = m.group(3)
+            oper_state = m.group(4)
+
+            if port_type not in ALLOWED_PORT_TYPES:
+                logger.debug(
+                    "[LT_PORTS] Type de port ignoré pour slot %s : %s",
+                    slot_id,
+                    port_type,
+                )
                 continue
 
-            # Ignore les séparations
-            if stripped.startswith("=") or stripped.startswith("-"):
-                continue
+            # On ne dispose pas d'info MTU/lag/mode/encap dans cette commande,
+            # on met des valeurs par défaut.
+            port_dict: Dict[str, Any] = {
+                "port_id": port_id,
+                "slot_id": slot_id,        # "lt:1/1/5"
+                "port_type": port_type,
+                "admin_state": admin_state,
+                "link_state": oper_state,  # on mappe oper_state sur link_state
+                "port_state": oper_state,  # pour compatibilité avec le modèle
+                "cfg_mtu": 0,
+                "oper_mtu": 0,
+                "lag_bndl": "-",
+                "mode": "-",
+                "encap": "-",
+                "board": "LT",
+                "raw_line": stripped,
+                "slot_short_id": slot_short_id,
+            }
 
-            # Parse les lignes
-            if in_table and current_board:
-                parts = stripped.split()
-                if len(parts) < 10:
-                    logger.debug(f"[LT_PORTS] Ligne non reconnue : {line_orig!r}")
-                    continue
-
-                port_id = parts[0]
-                admin_state = parts[1]
-                link_state = parts[2]
-                port_state = parts[3]
-                cfg_mtu_str = parts[4]
-                oper_mtu_str = parts[5]
-                lag_bndl = parts[6]
-                mode = parts[7]
-                encap = parts[8]
-                port_type_actual = parts[9] if len(parts) > 9 else port_type
-
-                try:
-                    cfg_mtu = int(cfg_mtu_str)
-                except ValueError:
-                    cfg_mtu = 0
-                try:
-                    oper_mtu = int(oper_mtu_str)
-                except ValueError:
-                    oper_mtu = 0
-
-                port_dict = {
-                    "port_id": port_id,
-                    "slot_id": slot_id,
-                    "board": current_board,
-                    "admin_state": admin_state,
-                    "link_state": link_state,
-                    "port_state": port_state,
-                    "cfg_mtu": cfg_mtu,
-                    "oper_mtu": oper_mtu,
-                    "lag_bndl": lag_bndl,
-                    "mode": mode,
-                    "encap": encap,
-                    "port_type": port_type_actual,
-                }
-                ports.append(port_dict)
-                logger.debug(f"[LT_PORTS] Parsed port: {port_id}")
+            ports.append(port_dict)
+            logger.debug(
+                "[LT_PORTS] Port parsé pour slot %s: type=%s, id=%s, admin=%s, oper=%s",
+                slot_id,
+                port_type,
+                port_id,
+                admin_state,
+                oper_state,
+            )
 
         return ports

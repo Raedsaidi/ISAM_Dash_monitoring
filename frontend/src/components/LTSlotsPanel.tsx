@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
-import { cn } from '../utils/cn';
 import { toast } from 'sonner';
 import LTSlotExpander from './LTSlotExpander';
 
@@ -53,6 +52,8 @@ export default function LTSlotsPanel({
     setError(null);
 
     try {
+      console.log('[LT_SLOTS_PANEL] Loading LT slots for instance:', instanceId);
+
       const res = await fetch(
         `http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots`,
         {
@@ -78,6 +79,11 @@ export default function LTSlotsPanel({
         throw new Error(detail);
       }
 
+      console.log(
+        '[LT_SLOTS_PANEL] LT slots loaded:',
+        Array.isArray(data.slots) ? data.slots.length : 0
+      );
+
       setSlots(data.slots || []);
       setCacheInfo({
         cached_at: data.cached_at,
@@ -86,6 +92,7 @@ export default function LTSlotsPanel({
         last_refresh_error: data.last_refresh_error,
       });
     } catch (err: any) {
+      console.error('[LT_SLOTS_PANEL] Error loading LT slots:', err);
       setError(err.message || 'Failed to load LT slots');
       toast.error('Failed to load LT slots');
     } finally {
@@ -132,7 +139,9 @@ export default function LTSlotsPanel({
         </div>
         <div>
           Last refresh attempt:{' '}
-          <span className="font-mono">{formatDateTime(cacheInfo.last_refresh_at)}</span>
+          <span className="font-mono">
+            {formatDateTime(cacheInfo.last_refresh_at)}
+          </span>
         </div>
         {!cacheInfo.last_refresh_success && cacheInfo.last_refresh_error && (
           <div className="text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-2">

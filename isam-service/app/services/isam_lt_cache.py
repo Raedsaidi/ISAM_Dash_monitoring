@@ -24,6 +24,11 @@ def _replace_lt_slots_for_instance(
     """
     now = datetime.utcnow()
 
+    logger.info(
+        "[CACHE-LT] Suppression des anciens slots LT pour instance #%s",
+        instance_id,
+    )
+
     db.query(ISAMLTSlot).filter(
         ISAMLTSlot.isam_instance_id == instance_id
     ).delete(synchronize_session=False)
@@ -32,8 +37,8 @@ def _replace_lt_slots_for_instance(
         db.add(
             ISAMLTSlot(
                 isam_instance_id=instance_id,
-                slot_id=slot["slot_id"],
-                board=slot["board"],
+                slot_id=slot["slot_id"],      # ex: "lt:1/1/5"
+                board=slot["board"],          # "LT"
                 admin_state=slot["admin_state"],
                 link_state=slot["link_state"],
                 port_state=slot["port_state"],
@@ -42,12 +47,18 @@ def _replace_lt_slots_for_instance(
                 lag_bndl=slot["lag_bndl"],
                 mode=slot["mode"],
                 encap=slot["encap"],
-                port_type=slot["port_type"],
+                port_type=slot["port_type"],  # "lt"
                 last_success_at=now,
                 created_at=now,
                 updated_at=now,
             )
         )
+
+    logger.info(
+        "[CACHE-LT] %d slots LT stockés pour instance #%s",
+        len(slots_data),
+        instance_id,
+    )
 
 
 def _replace_lt_ports_for_slot(
@@ -63,6 +74,12 @@ def _replace_lt_ports_for_slot(
     """
     now = datetime.utcnow()
 
+    logger.info(
+        "[CACHE-LT] Suppression des anciens ports pour slot %s (instance #%s)",
+        slot_id,
+        instance_id,
+    )
+
     db.query(ISAMLTPort).filter(
         ISAMLTPort.isam_instance_id == instance_id,
         ISAMLTPort.slot_id == slot_id,
@@ -72,9 +89,9 @@ def _replace_lt_ports_for_slot(
         db.add(
             ISAMLTPort(
                 isam_instance_id=instance_id,
-                slot_id=slot_id,
-                port_id=port["port_id"],
-                port_type=port["port_type"],
+                slot_id=slot_id,                 # "lt:1/1/5"
+                port_id=port["port_id"],         # "1/1/5/1"
+                port_type=port["port_type"],     # xdsl-line / ethernet-line / pon / ont
                 admin_state=port["admin_state"],
                 link_state=port["link_state"],
                 port_state=port["port_state"],
@@ -90,6 +107,13 @@ def _replace_lt_ports_for_slot(
                 updated_at=now,
             )
         )
+
+    logger.info(
+        "[CACHE-LT] %d ports stockés pour slot %s (instance #%s)",
+        len(ports_data),
+        slot_id,
+        instance_id,
+    )
 
 
 def refresh_lt_slots_snapshot(
@@ -108,7 +132,11 @@ def refresh_lt_slots_snapshot(
     - si la récupération des slots échoue -> on garde l'ancien snapshot
     - si la récupération des ports d'un slot échoue -> on garde les anciens ports de ce slot
     """
-    logger.info(f"[CACHE-LT] Refreshing LT slots for instance #{instance.id} ({instance.name})")
+    logger.info(
+        "[CACHE-LT] Refreshing LT slots for instance #%s (%s)",
+        instance.id,
+        instance.name,
+    )
 
     service = ISAMLTSlotsService(instance)
 
@@ -117,7 +145,9 @@ def refresh_lt_slots_snapshot(
 
         if not success:
             logger.warning(
-                f"[CACHE-LT] LT slots refresh failed for instance #{instance.id}: {msg}"
+                "[CACHE-LT] LT slots refresh failed for instance #%s: %s",
+                instance.id,
+                msg,
             )
             db.rollback()
             return
@@ -133,28 +163,43 @@ def refresh_lt_slots_snapshot(
         current_slot_ids = [slot["slot_id"] for slot in slots if slot.get("slot_id")]
 
         if current_slot_ids:
+            logger.info(
+                "[CACHE-LT] Suppression des ports pour les slots obsolètes (instance #%s)",
+                instance.id,
+            )
             db.query(ISAMLTPort).filter(
                 ISAMLTPort.isam_instance_id == instance.id,
                 ~ISAMLTPort.slot_id.in_(current_slot_ids),
             ).delete(synchronize_session=False)
         else:
+            logger.info(
+                "[CACHE-LT] Aucun slot LT présent, suppression de tous les ports LT (instance #%s)",
+                instance.id,
+            )
             db.query(ISAMLTPort).filter(
                 ISAMLTPort.isam_instance_id == instance.id
             ).delete(synchronize_session=False)
 
         # 3) Refresh ports slot par slot
         for slot in slots:
-            slot_id = slot.get("slot_id")
-            port_type = slot.get("port_type")
+            slot_id = slot.get("slot_id")             # ex: "lt:1/1/5"
+            slot_short_id = slot.get("slot_short_id") # ex: "1/1/5"
 
-            if not slot_id or not port_type:
-                logger.warning(f"[CACHE-LT] Invalid slot data: {slot}")
+            if not slot_id or not slot_short_id:
+                logger.warning(f"[CACHE-LT] Invalid slot data (id manquant): {slot}")
                 continue
+
+            logger.info(
+                "[CACHE-LT] Rafraîchissement des ports pour slot %s (short=%s, instance #%s)",
+                slot_id,
+                slot_short_id,
+                instance.id,
+            )
 
             try:
                 ports_success, ports_proto, ports_raw, ports_list, ports_msg = service.get_slot_ports(
                     slot_id=slot_id,
-                    port_type=port_type,
+                    slot_short_id=slot_short_id,
                     timeout=timeout,
                 )
 
@@ -162,29 +207,36 @@ def refresh_lt_slots_snapshot(
                     _replace_lt_ports_for_slot(
                         db,
                         instance_id=instance.id,
-                        slot_id=slot_id,
+                        slot_id=slot_id,          # on stocke le slot complet "lt:1/1/5"
                         ports_data=ports_list,
-                    )
-                    logger.info(
-                        f"[CACHE-LT] Stored {len(ports_list)} ports for slot {slot_id}"
                     )
                 else:
                     logger.warning(
-                        f"[CACHE-LT] Failed to refresh ports for slot {slot_id}: {ports_msg}"
+                        "[CACHE-LT] Failed to refresh ports for slot %s: %s",
+                        slot_id,
+                        ports_msg,
                     )
                     # On garde l'ancien snapshot de ce slot
 
             except Exception:
-                logger.exception(f"[CACHE-LT] Error refreshing ports for slot {slot_id}")
+                logger.exception(
+                    "[CACHE-LT] Error refreshing ports for slot %s (instance #%s)",
+                    slot_id,
+                    instance.id,
+                )
                 # On garde l'ancien snapshot de ce slot
 
         db.commit()
-        logger.info(f"[CACHE-LT] LT snapshot updated for instance #{instance.id}")
+        logger.info(
+            "[CACHE-LT] LT snapshot updated for instance #%s",
+            instance.id,
+        )
 
     except Exception:
         db.rollback()
         logger.exception(
-            f"[CACHE-LT] Error while refreshing LT snapshot for instance #{instance.id}"
+            "[CACHE-LT] Error while refreshing LT snapshot for instance #%s",
+            instance.id,
         )
         raise
 
@@ -201,6 +253,10 @@ def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
     )
 
     if not rows:
+        logger.info(
+            "[CACHE-LT] Aucun snapshot de slots LT pour instance #%s",
+            instance_id,
+        )
         return {
             "slots": [],
             "slot_count": 0,
@@ -235,6 +291,12 @@ def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
         for row in rows
     ]
 
+    logger.info(
+        "[CACHE-LT] Chargement snapshot LT : %d slots pour instance #%s",
+        len(slots),
+        instance_id,
+    )
+
     return {
         "slots": slots,
         "slot_count": len(slots),
@@ -251,6 +313,7 @@ def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
 def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[str, Any]:
     """
     Charge les ports LT d'un slot précis depuis la table dédiée ISAMLTPort.
+    slot_id doit être au format complet, ex: "lt:1/1/5".
     """
     rows = (
         db.query(ISAMLTPort)
@@ -263,6 +326,11 @@ def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[st
     )
 
     if not rows:
+        logger.info(
+            "[CACHE-LT] Aucun snapshot de ports pour slot %s (instance #%s)",
+            slot_id,
+            instance_id,
+        )
         return {
             "ports": [],
             "port_count": 0,
@@ -298,6 +366,13 @@ def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[st
         }
         for row in rows
     ]
+
+    logger.info(
+        "[CACHE-LT] Chargement snapshot LT : %d ports pour slot %s (instance #%s)",
+        len(ports),
+        slot_id,
+        instance_id,
+    )
 
     return {
         "ports": ports,

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronUp, Lock } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { cn } from '../utils/cn';
 import PortLockButton from './PortLockButton';
 
@@ -21,8 +21,8 @@ export default function LTPortItem({
   onLockToggle,
 }: LTPortItemProps) {
   const getStateColor = (state: string) => {
-    if (state === 'Up') return 'text-green-600';
-    if (state === 'Down') return 'text-red-600';
+    if (state === 'Up' || state === 'up') return 'text-green-600';
+    if (state === 'Down' || state === 'down') return 'text-red-600';
     return 'text-slate-400';
   };
 
@@ -36,7 +36,10 @@ export default function LTPortItem({
               {port.port_id}
             </div>
             <div className="text-xs text-slate-500 mt-1">
-              Type: <span className="font-mono">{port.port_type}</span>
+              Type:{' '}
+              <span className="font-mono">
+                {port.port_type}
+              </span>
             </div>
           </div>
 
@@ -90,7 +93,9 @@ export default function LTPortItem({
       <div className="mt-3 pt-3 border-t border-slate-100 grid grid-cols-2 gap-2 text-xs">
         <div>
           <span className="text-slate-500">MTU:</span>
-          <span className="font-mono ml-2">{port.cfg_mtu} / {port.oper_mtu}</span>
+          <span className="font-mono ml-2">
+            {port.cfg_mtu} / {port.oper_mtu}
+          </span>
         </div>
         <div>
           <span className="text-slate-500">Mode:</span>
