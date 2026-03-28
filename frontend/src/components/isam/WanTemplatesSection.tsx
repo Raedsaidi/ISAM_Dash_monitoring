@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useAuth } from "../context/AuthContext";
-import { cn } from "../utils/cn";
+import { useAuth } from "../../context/AuthContext";
+import { cn } from "../../utils/cn";
 import {
   Plus,
   Trash2,

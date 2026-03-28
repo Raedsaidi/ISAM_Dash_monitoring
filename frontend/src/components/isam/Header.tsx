@@ -1,6 +1,6 @@
 import React from 'react';
 import { Bell, Search, User, RefreshCw, LogOut } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 
 interface HeaderProps {
   title: string;

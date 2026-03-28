@@ -1,6 +1,6 @@
 import React from 'react';
-import { cn } from '../utils/cn';
-import { NavSection } from '../types/isam';
+import { cn } from '../../utils/cn';
+import { NavSection } from '../../types/isam';
 import {
   LayoutDashboard,
   Shield,
@@ -11,7 +11,7 @@ import {
   User,
   Globe2,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 
 interface SidebarProps {
   activeSection: NavSection;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Lock, Unlock, Loader2 } from 'lucide-react';
-import { cn } from '../utils/cn';
+import { cn } from '../../utils/cn';
 import { toast } from 'sonner';
 
 interface PortLockButtonProps {

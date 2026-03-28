@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { cn } from '../utils/cn';
+import { cn } from '../../utils/cn';
 import {
   Network,
   CheckCircle,
@@ -17,7 +17,7 @@ import {
   Cable,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 import TemplateWorkspaceOverlay from './TemplateWorkspaceOverlay';
 import LTSlotsPanel from './LTSlotsPanel';
 

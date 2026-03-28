@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useAuth } from "../context/AuthContext";
-import { cn } from "../utils/cn";
+import { useAuth } from "../../context/AuthContext";
+import { cn } from "../../utils/cn";
 import {
   Trash2,
   Plus,

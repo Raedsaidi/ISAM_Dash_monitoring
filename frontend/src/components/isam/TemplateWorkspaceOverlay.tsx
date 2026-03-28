@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { cn } from "../utils/cn";
-import { useAuth } from "../context/AuthContext";
+import { cn } from "../../utils/cn";
+import { useAuth } from "../../context/AuthContext";
 import {
   X,
   Search,

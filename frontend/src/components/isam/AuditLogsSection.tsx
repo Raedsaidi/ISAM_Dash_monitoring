@@ -1,18 +1,18 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
-import { cn } from "../utils/cn";
+import { cn } from "../../utils/cn";
 import {
   CheckCircle,
   XCircle,
   AlertTriangle,
   Search,
-  RefreshCw ,
+  RefreshCw,
   Clock,
   User,
   Globe,
   Loader2,
   Server,
 } from "lucide-react";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../../context/AuthContext";
 import { JSX } from "react/jsx-runtime";
 
 const ISAM_BASE_URL = "http://127.0.0.1:8001";
@@ -64,6 +64,8 @@ interface AuditLog {
 }
 
 /* ---------- constants ---------- */
+
+const PAGE_SIZE = 10;
 
 const resultConfig: Record<
   AuditResult,
@@ -243,6 +245,9 @@ export default function AuditLogsSection() {
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string>("all");
 
+  /* --- pagination --- */
+  const [page, setPage] = useState(1);
+
   /* --- debounce the search input (400 ms) --- */
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchTerm), 400);
@@ -367,6 +372,17 @@ export default function AuditLogsSection() {
     });
   }, [auditLogs, isPrivileged, scopeFilter]);
 
+  /* --- pagination (10 logs / page) --- */
+  // Quand la liste filtrée change (nouvelle recherche, filtres, etc.), on revient à la page 1
+  useEffect(() => {
+    setPage(1);
+  }, [filtered.length]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const startIndex = (page - 1) * PAGE_SIZE;
+  const endIndex = startIndex + PAGE_SIZE;
+  const paginated = filtered.slice(startIndex, endIndex);
+
   /* ========== RENDER ========== */
 
   return (
@@ -464,7 +480,7 @@ export default function AuditLogsSection() {
           {loading ? (
             <Loader2 size={16} className="animate-spin" />
           ) : (
-            <RefreshCw  size={16} />
+            <RefreshCw size={16} />
           )}
           Reload Logs
         </button>
@@ -485,7 +501,7 @@ export default function AuditLogsSection() {
           </div>
         ) : (
           <div className="divide-y divide-slate-100">
-            {filtered.map((log) => {
+            {paginated.map((log) => {
               const config = resultConfig[log.result];
               return (
                 <div
@@ -514,15 +530,17 @@ export default function AuditLogsSection() {
                           log.result === "success"
                             ? "bg-green-100 text-green-700"
                             : log.result === "failure"
-                              ? "bg-red-100 text-red-700"
-                              : "bg-amber-100 text-amber-700",
+                            ? "bg-red-100 text-red-700"
+                            : "bg-amber-100 text-amber-700",
                         )}
                       >
                         {log.result}
                       </span>
                     </div>
 
-                    <p className="text-sm text-slate-700 mt-2">{log.details}</p>
+                    <p className="text-sm text-slate-700 mt-2">
+                      {log.details}
+                    </p>
 
                     <div className="flex items-center gap-4 mt-2 text-xs text-slate-400 flex-wrap">
                       <span className="flex items-center gap-1">
@@ -555,13 +573,64 @@ export default function AuditLogsSection() {
       {/* ---- Footer ---- */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-slate-500">
-          Showing {filtered.length} of {rawItems.length} entries
+          {filtered.length === 0
+            ? "No entries"
+            : `Showing ${startIndex + 1}-${Math.min(
+                endIndex,
+                filtered.length,
+              )} of ${filtered.length} entries`}
         </p>
-        <div className="flex gap-1">
-          <button className="w-8 h-8 rounded-lg text-sm font-medium bg-blue-600 text-white">
-            1
-          </button>
-        </div>
+
+        {filtered.length > 0 && (
+          <div className="flex items-center gap-1">
+            {/* Page précédente */}
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className={cn(
+                "w-8 h-8 rounded-lg text-sm font-medium",
+                page === 1
+                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+              )}
+            >
+              ‹
+            </button>
+
+            {/* Numéros de pages 1 / 2 / 3 / ... */}
+            {Array.from({ length: totalPages }, (_, i) => {
+              const p = i + 1;
+              return (
+                <button
+                  key={p}
+                  onClick={() => setPage(p)}
+                  className={cn(
+                    "w-8 h-8 rounded-lg text-sm font-medium",
+                    p === page
+                      ? "bg-blue-600 text-white"
+                      : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+                  )}
+                >
+                  {p}
+                </button>
+              );
+            })}
+
+            {/* Page suivante */}
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className={cn(
+                "w-8 h-8 rounded-lg text-sm font-medium",
+                page === totalPages
+                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                  : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+              )}
+            >
+              ›
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

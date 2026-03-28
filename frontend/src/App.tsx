@@ -1,17 +1,29 @@
+// src/App.tsx
 import React from "react";
 import { cn } from "./utils/cn";
 import { NavSection } from "./types/isam";
-import Sidebar from "./components/Sidebar";
-import Header from "./components/Header";
-import OverviewSection from "./components/OverviewSection";
-import JunctionsSection from "./components/JunctionsSection";
-import AuditLogsSection from "./components/AuditLogsSection";
-import UserManagementSection from "./components/UserManagementSection";
+
+import Sidebar from "./components/isam/Sidebar";
+import Header from "./components/isam/Header";
+import OverviewSection from "./components/isam/OverviewSection";
+import JunctionsSection from "./components/isam/JunctionsSection";
+import AuditLogsSection from "./components/isam/AuditLogsSection";
+import UserManagementSection from "./components/isam/UserManagementSection";
+import WanTemplatesSection from "./components/isam/WanTemplatesSection";
+
 import { useAuth } from "./context/AuthContext";
 import LoginForm from "./components/auth/LoginForm";
 import RegisterSelfForm from "./components/auth/RegisterSelfForm";
-import WanTemplatesSection from "./components/WanTemplatesSection";
-import { Toaster } from 'sonner';
+
+import ProductSelection from "./components/ProductSelection";
+import CiscoSidebar from "./components/cisco/CiscoSidebar";
+import CiscoHeader from "./components/cisco/CiscoHeader";
+import CiscoOverviewSection from "./components/cisco/CiscoOverviewSection";
+import CiscoUserManagementSection from "./components/cisco/CiscoUserManagementSection";
+
+import { Toaster } from "sonner";
+
+/* ------------ ISAM metadata ------------ */
 
 const sectionMeta: Record<NavSection, { title: string; subtitle: string }> = {
   overview: {
@@ -36,18 +48,61 @@ const sectionMeta: Record<NavSection, { title: string; subtitle: string }> = {
   },
 };
 
+/* ------------ Cisco metadata ------------ */
+/* On utilise seulement 'overview' et 'user-management' pour Cisco. */
+
+const ciscoSectionMeta: Partial<
+  Record<NavSection, { title: string; subtitle: string }>
+> = {
+  overview: {
+    title: "Cisco Overview",
+    subtitle: "High-level status of your Cisco network",
+  },
+  "user-management": {
+    title: "Cisco User Management",
+    subtitle: "Manage Cisco-related users and roles",
+  },
+};
+
 function App() {
+  /* ISAM navigation */
   const [activeSection, setActiveSection] =
     React.useState<NavSection>("overview");
+
+  /* Cisco navigation */
+  const [ciscoSection, setCiscoSection] =
+    React.useState<NavSection>("overview");
+
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
 
   const { user, loading } = useAuth();
   const [authMode, setAuthMode] = React.useState<"login" | "register">("login");
 
-  // Track the previous user id to detect account switches
+  // Product choice: ISAM / Cisco / none
+  const [product, setProduct] = React.useState<"none" | "isam" | "cisco">(
+    () => {
+      if (typeof window === "undefined") return "none";
+      const saved = window.localStorage.getItem("selectedProduct");
+      if (saved === "isam" || saved === "cisco") return saved;
+      return "none";
+    },
+  );
+
+  // Persist product choice in localStorage
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (product === "none") {
+      window.localStorage.removeItem("selectedProduct");
+    } else {
+      window.localStorage.setItem("selectedProduct", product);
+    }
+  }, [product]);
+
+  // Track previous user to detect account switch
   const prevUserIdRef = React.useRef<number | null>(null);
 
-  // Reset to overview when user changes (login, logout, or account switch)
+  // Reset when user changes (login with another account, etc.)
   React.useEffect(() => {
     const currentUserId = user?.id ?? null;
 
@@ -55,24 +110,34 @@ function App() {
       prevUserIdRef.current !== null &&
       currentUserId !== prevUserIdRef.current
     ) {
-      // User changed — reset to overview
+      // User changed
       setActiveSection("overview");
+      setCiscoSection("overview");
+      setProduct("none");
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("selectedProduct");
+      }
     }
 
     prevUserIdRef.current = currentUserId;
   }, [user?.id]);
 
-  // Also reset when user becomes null (logout)
+  // Reset when user becomes null (logout)
   React.useEffect(() => {
     if (!user) {
       setActiveSection("overview");
+      setCiscoSection("overview");
       setAuthMode("login");
+      setProduct("none");
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem("selectedProduct");
+      }
     }
   }, [user]);
 
   const meta = sectionMeta[activeSection];
 
-  const renderSection = () => {
+  const renderIsamSection = () => {
     switch (activeSection) {
       case "overview":
         return <OverviewSection />;
@@ -88,6 +153,8 @@ function App() {
         return <OverviewSection />;
     }
   };
+
+  /* ----------- loading / auth states ----------- */
 
   if (loading) {
     return (
@@ -107,6 +174,66 @@ function App() {
     return <RegisterSelfForm onShowLogin={() => setAuthMode("login")} />;
   }
 
+  /* ----------- authenticated user ----------- */
+
+  // 1) If product not chosen yet, show selection (ISAM / Cisco)
+  if (product === "none") {
+    return (
+      <>
+        <ProductSelection
+          onSelectIsam={() => {
+            setProduct("isam");
+            setActiveSection("overview");
+          }}
+          onSelectCisco={() => {
+            setProduct("cisco");
+            setCiscoSection("overview");
+          }}
+        />
+        <Toaster position="top-right" richColors closeButton />
+      </>
+    );
+  }
+
+  // 2) Cisco UI
+  if (product === "cisco") {
+    const ciscoMeta =
+      ciscoSectionMeta[ciscoSection] ?? {
+        title: "Cisco",
+        subtitle: "",
+      };
+
+    return (
+      <div className="min-h-screen bg-slate-50">
+        <CiscoSidebar
+          activeSection={ciscoSection}
+          onNavigate={setCiscoSection}
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+        <main
+          className={cn(
+            "transition-all duration-300",
+            sidebarCollapsed ? "ml-16" : "ml-64",
+          )}
+        >
+          <CiscoHeader
+            title={ciscoMeta.title}
+            subtitle={ciscoMeta.subtitle}
+          />
+          <div className="p-6">
+            {ciscoSection === "overview" && <CiscoOverviewSection />}
+            {ciscoSection === "user-management" && (
+              <CiscoUserManagementSection />
+            )}
+          </div>
+        </main>
+        <Toaster position="top-right" richColors closeButton />
+      </div>
+    );
+  }
+
+  // 3) ISAM UI
   return (
     <div className="min-h-screen bg-slate-50">
       <Sidebar
@@ -122,11 +249,10 @@ function App() {
         )}
       >
         <Header title={meta.title} subtitle={meta.subtitle} />
-        <div className="p-6">{renderSection()}</div>
+        <div className="p-6">{renderIsamSection()}</div>
       </main>
       <Toaster position="top-right" richColors closeButton />
     </div>
-    
   );
 }
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { cn } from '../utils/cn';
+import { cn } from '../../utils/cn';
 import {
   Activity,
   Server,
@@ -19,7 +19,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../../context/AuthContext';
 
 /**
  * Ajuste ici selon ton architecture :
