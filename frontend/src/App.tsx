@@ -1,5 +1,12 @@
 // src/App.tsx
 import React from "react";
+import {
+  Routes,
+  Route,
+  Navigate,
+  useNavigate,
+  useLocation,
+} from "react-router-dom";
 import { cn } from "./utils/cn";
 import { NavSection } from "./types/isam";
 
@@ -11,45 +18,44 @@ import AuditLogsSection from "./components/isam/AuditLogsSection";
 import UserManagementSection from "./components/isam/UserManagementSection";
 import WanTemplatesSection from "./components/isam/WanTemplatesSection";
 
-import { useAuth } from "./context/AuthContext";
-import LoginForm from "./components/auth/LoginForm";
-import RegisterSelfForm from "./components/auth/RegisterSelfForm";
-
-import ProductSelection from "./components/ProductSelection";
 import CiscoSidebar from "./components/cisco/CiscoSidebar";
 import CiscoHeader from "./components/cisco/CiscoHeader";
 import CiscoOverviewSection from "./components/cisco/CiscoOverviewSection";
 import CiscoUserManagementSection from "./components/cisco/CiscoUserManagementSection";
 
+import ProductSelection from "./components/ProductSelection";
+import LoginForm from "./components/auth/LoginForm";
+import RegisterSelfForm from "./components/auth/RegisterSelfForm";
+import { useAuth } from "./context/AuthContext";
 import { Toaster } from "sonner";
 
 /* ------------ ISAM metadata ------------ */
 
-const sectionMeta: Record<NavSection, { title: string; subtitle: string }> = {
-  overview: {
-    title: "Dashboard Overview",
-    subtitle: "System health, metrics, and real-time monitoring",
-  },
-  junctions: {
-    title: "ISAM Management",
-    subtitle: "ISAM configuration and management",
-  },
-  "audit-logs": {
-    title: "Audit Logs",
-    subtitle: "Activity tracking and security event monitoring",
-  },
-  "user-management": {
-    title: "User Management",
-    subtitle: "Create and manage users and roles",
-  },
-  "wan-templates": {
-    title: "WAN Templates",
-    subtitle: "Configure WAN connection templates",
-  },
-};
+const isamSectionMeta: Record<NavSection, { title: string; subtitle: string }> =
+  {
+    overview: {
+      title: "Dashboard Overview",
+      subtitle: "System health, metrics, and real-time monitoring",
+    },
+    junctions: {
+      title: "ISAM Management",
+      subtitle: "ISAM configuration and management",
+    },
+    "audit-logs": {
+      title: "Audit Logs",
+      subtitle: "Activity tracking and security event monitoring",
+    },
+    "user-management": {
+      title: "User Management",
+      subtitle: "Create and manage users and roles",
+    },
+    "wan-templates": {
+      title: "WAN Templates",
+      subtitle: "Configure WAN connection templates",
+    },
+  };
 
 /* ------------ Cisco metadata ------------ */
-/* On utilise seulement 'overview' et 'user-management' pour Cisco. */
 
 const ciscoSectionMeta: Partial<
   Record<NavSection, { title: string; subtitle: string }>
@@ -65,98 +71,11 @@ const ciscoSectionMeta: Partial<
 };
 
 function App() {
-  /* ISAM navigation */
-  const [activeSection, setActiveSection] =
-    React.useState<NavSection>("overview");
-
-  /* Cisco navigation */
-  const [ciscoSection, setCiscoSection] =
-    React.useState<NavSection>("overview");
-
-  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
-
   const { user, loading } = useAuth();
-  const [authMode, setAuthMode] = React.useState<"login" | "register">("login");
-
-  // Product choice: ISAM / Cisco / none
-  const [product, setProduct] = React.useState<"none" | "isam" | "cisco">(
-    () => {
-      if (typeof window === "undefined") return "none";
-      const saved = window.localStorage.getItem("selectedProduct");
-      if (saved === "isam" || saved === "cisco") return saved;
-      return "none";
-    },
-  );
-
-  // Persist product choice in localStorage
-  React.useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    if (product === "none") {
-      window.localStorage.removeItem("selectedProduct");
-    } else {
-      window.localStorage.setItem("selectedProduct", product);
-    }
-  }, [product]);
-
-  // Track previous user to detect account switch
-  const prevUserIdRef = React.useRef<number | null>(null);
-
-  // Reset when user changes (login with another account, etc.)
-  React.useEffect(() => {
-    const currentUserId = user?.id ?? null;
-
-    if (
-      prevUserIdRef.current !== null &&
-      currentUserId !== prevUserIdRef.current
-    ) {
-      // User changed
-      setActiveSection("overview");
-      setCiscoSection("overview");
-      setProduct("none");
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem("selectedProduct");
-      }
-    }
-
-    prevUserIdRef.current = currentUserId;
-  }, [user?.id]);
-
-  // Reset when user becomes null (logout)
-  React.useEffect(() => {
-    if (!user) {
-      setActiveSection("overview");
-      setCiscoSection("overview");
-      setAuthMode("login");
-      setProduct("none");
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem("selectedProduct");
-      }
-    }
-  }, [user]);
-
-  const meta = sectionMeta[activeSection];
-
-  const renderIsamSection = () => {
-    switch (activeSection) {
-      case "overview":
-        return <OverviewSection />;
-      case "junctions":
-        return <JunctionsSection />;
-      case "audit-logs":
-        return <AuditLogsSection />;
-      case "user-management":
-        return <UserManagementSection />;
-      case "wan-templates":
-        return <WanTemplatesSection />;
-      default:
-        return <OverviewSection />;
-    }
-  };
-
-  /* ----------- loading / auth states ----------- */
+  const navigate = useNavigate();
 
   if (loading) {
+    // Écran de chargement global pendant la vérification de session
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
@@ -167,78 +86,125 @@ function App() {
     );
   }
 
-  if (!user) {
-    if (authMode === "login") {
-      return <LoginForm onShowRegister={() => setAuthMode("register")} />;
+  return (
+    <>
+      <Routes>
+        {/* --------- Auth routes --------- */}
+        <Route
+          path="/login"
+          element={
+            !user ? (
+              <LoginForm onShowRegister={() => navigate("/register")} />
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
+        />
+        <Route
+          path="/register"
+          element={
+            !user ? (
+              <RegisterSelfForm onShowLogin={() => navigate("/login")} />
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
+        />
+
+        {/* --------- Product selection (home) --------- */}
+        <Route
+          path="/"
+          element={
+            user ? (
+              <ProductSelection
+                onSelectIsam={() => navigate("/isam/overview")}
+                onSelectCisco={() => navigate("/cisco/overview")}
+              />
+            ) : (
+              <Navigate to="/login" replace />
+            )
+          }
+        />
+
+        {/* --------- ISAM dashboard --------- */}
+        <Route
+          path="/isam/*"
+          element={user ? <IsamLayout /> : <Navigate to="/login" replace />}
+        />
+
+        {/* --------- Cisco dashboard --------- */}
+        <Route
+          path="/cisco/*"
+          element={user ? <CiscoLayout /> : <Navigate to="/login" replace />}
+        />
+
+        {/* --------- Fallback --------- */}
+        <Route
+          path="*"
+          element={<Navigate to={user ? "/" : "/login"} replace />}
+        />
+      </Routes>
+
+      <Toaster position="top-right" richColors closeButton />
+    </>
+  );
+}
+
+/* ============================================================
+   ISAM Layout (sidebar + header + nested routes)
+   URL: /isam/...
+   ============================================================ */
+
+function IsamLayout() {
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Extrait la sous-route après /isam/
+  const pathAfterIsam = location.pathname.replace(/^\/isam\/?/, "");
+  const sub = pathAfterIsam.split("/")[0] || "overview";
+
+  const pathToSection: Record<string, NavSection> = {
+    "": "overview",
+    overview: "overview",
+    junctions: "junctions",
+    "audit-logs": "audit-logs",
+    "user-management": "user-management",
+    "wan-templates": "wan-templates",
+  };
+
+  const activeSection: NavSection = pathToSection[sub] || "overview";
+  const meta = isamSectionMeta[activeSection];
+
+  const handleNavigate = (section: NavSection) => {
+    let subPath: string;
+    switch (section) {
+      case "overview":
+        subPath = "overview";
+        break;
+      case "junctions":
+        subPath = "junctions";
+        break;
+      case "audit-logs":
+        subPath = "audit-logs";
+        break;
+      case "user-management":
+        subPath = "user-management";
+        break;
+      case "wan-templates":
+        subPath = "wan-templates";
+        break;
+      default:
+        subPath = "overview";
     }
-    return <RegisterSelfForm onShowLogin={() => setAuthMode("login")} />;
-  }
+    navigate(`/isam/${subPath}`);
+  };
 
-  /* ----------- authenticated user ----------- */
-
-  // 1) If product not chosen yet, show selection (ISAM / Cisco)
-  if (product === "none") {
-    return (
-      <>
-        <ProductSelection
-          onSelectIsam={() => {
-            setProduct("isam");
-            setActiveSection("overview");
-          }}
-          onSelectCisco={() => {
-            setProduct("cisco");
-            setCiscoSection("overview");
-          }}
-        />
-        <Toaster position="top-right" richColors closeButton />
-      </>
-    );
-  }
-
-  // 2) Cisco UI
-  if (product === "cisco") {
-    const ciscoMeta =
-      ciscoSectionMeta[ciscoSection] ?? {
-        title: "Cisco",
-        subtitle: "",
-      };
-
-    return (
-      <div className="min-h-screen bg-slate-50">
-        <CiscoSidebar
-          activeSection={ciscoSection}
-          onNavigate={setCiscoSection}
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
-        <main
-          className={cn(
-            "transition-all duration-300",
-            sidebarCollapsed ? "ml-16" : "ml-64",
-          )}
-        >
-          <CiscoHeader
-            title={ciscoMeta.title}
-            subtitle={ciscoMeta.subtitle}
-          />
-          <div className="p-6">
-            {ciscoSection === "overview" && <CiscoOverviewSection />}
-            {ciscoSection === "user-management" && (
-              <CiscoUserManagementSection />
-            )}
-          </div>
-        </main>
-        <Toaster position="top-right" richColors closeButton />
-      </div>
-    );
-  }
-
-  // 3) ISAM UI
   return (
     <div className="min-h-screen bg-slate-50">
       <Sidebar
         activeSection={activeSection}
-        onNavigate={setActiveSection}
+        onNavigate={handleNavigate}
         collapsed={sidebarCollapsed}
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
@@ -249,9 +215,96 @@ function App() {
         )}
       >
         <Header title={meta.title} subtitle={meta.subtitle} />
-        <div className="p-6">{renderIsamSection()}</div>
+        <div className="p-6">
+          <Routes>
+            <Route path="overview" element={<OverviewSection />} />
+            <Route path="junctions" element={<JunctionsSection />} />
+            <Route path="audit-logs" element={<AuditLogsSection />} />
+            <Route path="user-management" element={<UserManagementSection />} />
+            <Route path="wan-templates" element={<WanTemplatesSection />} />
+
+            {/* /isam -> /isam/overview */}
+            <Route index element={<Navigate to="overview" replace />} />
+            {/* sous-routes inconnues -> overview */}
+            <Route path="*" element={<Navigate to="overview" replace />} />
+          </Routes>
+        </div>
       </main>
-      <Toaster position="top-right" richColors closeButton />
+    </div>
+  );
+}
+
+/* ============================================================
+   Cisco Layout (sidebar + header + nested routes)
+   URL: /cisco/...
+   ============================================================ */
+
+function CiscoLayout() {
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const pathAfterCisco = location.pathname.replace(/^\/cisco\/?/, "");
+  const sub = pathAfterCisco.split("/")[0] || "overview";
+
+  let activeSection: NavSection;
+  switch (sub) {
+    case "user-management":
+      activeSection = "user-management";
+      break;
+    case "overview":
+    default:
+      activeSection = "overview";
+  }
+
+  const meta =
+    ciscoSectionMeta[activeSection] ?? {
+      title: "Cisco",
+      subtitle: "",
+    };
+
+  const handleNavigate = (section: NavSection) => {
+    let subPath: string;
+    switch (section) {
+      case "user-management":
+        subPath = "user-management";
+        break;
+      case "overview":
+      default:
+        subPath = "overview";
+    }
+    navigate(`/cisco/${subPath}`);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <CiscoSidebar
+        activeSection={activeSection}
+        onNavigate={handleNavigate}
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
+      <main
+        className={cn(
+          "transition-all duration-300",
+          sidebarCollapsed ? "ml-16" : "ml-64",
+        )}
+      >
+        <CiscoHeader title={meta.title} subtitle={meta.subtitle} />
+        <div className="p-6">
+          <Routes>
+            <Route path="overview" element={<CiscoOverviewSection />} />
+            <Route
+              path="user-management"
+              element={<CiscoUserManagementSection />}
+            />
+
+            {/* /cisco -> /cisco/overview */}
+            <Route index element={<Navigate to="overview" replace />} />
+            <Route path="*" element={<Navigate to="overview" replace />} />
+          </Routes>
+        </div>
+      </main>
     </div>
   );
 }
