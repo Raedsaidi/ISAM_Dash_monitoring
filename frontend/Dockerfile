@@ -1,22 +1,27 @@
-# Étape 1 : build du frontend avec Node
+# Stage 1: Build
 FROM node:20-alpine AS build
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+
+RUN npm ci
 
 COPY . .
-RUN npm run build
 
-# Étape 2 : servir les fichiers statiques avec Nginx
+RUN npx vite build
+
+# Stage 2: Serve
 FROM nginx:alpine
 
-# Copier le build Vite
-COPY --from=build /app/dist /usr/share/nginx/html
+# Remove default nginx config
+RUN rm /etc/nginx/conf.d/default.conf
 
-# (Optionnel) config Nginx custom, sinon il sert index.html par défaut
-# COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy custom nginx config
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy built files
+COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
