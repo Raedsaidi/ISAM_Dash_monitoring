@@ -26,12 +26,13 @@ class ISAMLTSlotsService:
         timeout: int = 30,
     ) -> Tuple[bool, Optional[Protocol], str, List[Dict[str, Any]], str]:
         """
-        Exécute: "show equipment slot | match exact:lt"
+        Exécute: "show equipment slot | match exact:lt:"
 
         Retourne:
             (success, protocol_used, raw_output, slots_list, message)
         """
-        script = "show\nequipment\nslot | match exact:lt"
+        # On colle à la commande réelle
+        script = "show\nequipment\nslot | match exact:lt:"
         logger.info(
             "[LT_SLOTS] Récupération des slots LT pour instance #%s (%s) avec script: %r",
             self.instance.id,
@@ -67,7 +68,7 @@ class ISAMLTSlotsService:
             )
 
             if not slots:
-                msg = "Aucun slot LT parsé depuis 'show equipment slot | match exact:lt'"
+                msg = "Aucun slot LT parsé depuis 'show equipment slot | match exact:lt:'"
                 logger.warning("[LT_SLOTS] %s", msg)
                 return False, protocol_used, raw_output or "", [], msg
 
@@ -81,96 +82,88 @@ class ISAMLTSlotsService:
     @staticmethod
     def _parse_lt_slots(raw_output: str) -> List[Dict[str, Any]]:
         """
-        Parse la sortie de: "show equipment slot | match exact:lt"
+        Parse la sortie de: "show equipment slot | match exact:lt:"
 
-        Format attendu (exemple réel) :
-            Port             Admin Link Port    Cfg  Oper LAG/ Port Port Port
-            Id               State      State   MTU  MTU  Bndl Mode Encp Type
-            --------------------------------------------------------------------
-            lt:1/1/4         Up    No   Down    9212 9212    - accs dotq lt
-            lt:1/1/5         Up    Yes  Up      9212 9212    - accs dotq lt
+        Format observé :
+
+            leg:isadmin># show equipment slot | match exact:lt:
+            lt:1/1/4   empty       no      no-error               not-installed 0
+            lt:1/1/5   ndlt-c      yes     no-error               available     0
+            lt:1/1/6   nelt-b      yes     no-error               available     0
             ...
+            vlt:1/1/63 empty       no      no-error               not-installed 0
+            vlt:1/1/64 empty       no      no-error               not-installed 0
 
-        On force board="LT". On ajoute aussi slot_short_id="1/1/5" (utile pour show interface).
+        Colonnes (probables) :
+            0: slot_id      (lt:1/1/5, vlt:1/1/63, ...)
+            1: board_type   (ndlt-c, nglt-c, empty, ...)
+            2: equipped     (yes/no)
+            3: alarm_state  (no-error, no-installation, ...)
+            4: admin_state  (available, not-installed, ...)
+            5: power / misc (0)
+
+        On NE RETIENT QUE les lignes "lt:" (on ignore vlt:).
         """
         slots: List[Dict[str, Any]] = []
-        in_table: bool = False
-        board = "LT"
 
         for line_orig in raw_output.splitlines():
-            line = line_orig.rstrip("\n")
-            stripped = line.strip()
-            if not stripped:
+            line = line_orig.strip()
+            if not line:
                 continue
 
-            # Détecte l'en-tête du tableau
-            if (
-                stripped.lower().startswith("port")
-                and "admin" in stripped.lower()
-                and "link" in stripped.lower()
-            ):
-                in_table = True
-                logger.debug("[LT_SLOTS] En-tête du tableau détecté")
+            # ✅ On ne garde que les vrais LT (on ignore les VLT)
+            if not line.startswith("lt:"):
+                # On ignore vlt:, l'invite, la commande, etc.
                 continue
 
-            # Ignore les lignes de séparation
-            if stripped.startswith("=") or stripped.startswith("-"):
+            parts = line.split()
+            if len(parts) < 5:
+                logger.debug("[LT_SLOTS] Ligne slot non reconnue (trop courte) : %r", line_orig)
                 continue
 
-            if not in_table:
-                continue
+            raw_slot_id = parts[0]      # lt:1/1/5
+            board_type = parts[1]       # ndlt-c / empty / ...
+            equipped = parts[2]         # yes / no
+            alarm_state = parts[3]      # no-error / no-installation / ...
+            admin_state = parts[4]      # available / not-installed / ...
 
-            parts = stripped.split()
-            if len(parts) < 10:
-                logger.debug(
-                    "[LT_SLOTS] Ligne slot non reconnue (trop courte) : %r",
-                    line_orig,
-                )
-                continue
-
-            raw_slot_id = parts[0]      # ex: "lt:1/1/5"
-            admin_state = parts[1]      # "Up"
-            link_state = parts[2]       # "Yes"/"No"
-            port_state = parts[3]       # "Up"/"Down"
-            cfg_mtu_str = parts[4]
-            oper_mtu_str = parts[5]
-            lag_bndl = parts[6]
-            mode = parts[7]
-            encap = parts[8]
-            port_type = parts[9]        # "lt"
-
-            # slot_id "court" sans le préfixe "lt:"
+            # ID court sans préfixe lt: (ex: "1/1/5")
             if ":" in raw_slot_id:
-                slot_short = raw_slot_id.split(":", 1)[1]  # "1/1/5"
+                slot_short = raw_slot_id.split(":", 1)[1]
             else:
                 slot_short = raw_slot_id
 
-            try:
-                cfg_mtu = int(cfg_mtu_str)
-            except ValueError:
-                cfg_mtu = 0
-            try:
-                oper_mtu = int(oper_mtu_str)
-            except ValueError:
-                oper_mtu = 0
+            # Tous les slots gardés ici sont de type LT
+            port_type = "lt"
 
-            slots.append(
-                {
-                    "slot_id": raw_slot_id,       # "lt:1/1/5"
-                    "slot_short_id": slot_short,  # "1/1/5" (pour show interface port)
-                    "board": board,
-                    "admin_state": admin_state,
-                    "link_state": link_state,
-                    "port_state": port_state,
-                    "cfg_mtu": cfg_mtu,
-                    "oper_mtu": oper_mtu,
-                    "lag_bndl": lag_bndl,
-                    "mode": mode,
-                    "encap": encap,
-                    "port_type": port_type,       # "lt"
-                }
+            # On n'a pas de MTU / LAG / mode / encap dans cette commande → valeurs par défaut
+            slot_dict: Dict[str, Any] = {
+                "slot_id": raw_slot_id,       # ex: "lt:1/1/5"
+                "slot_short_id": slot_short,  # ex: "1/1/5" (pour show interface port)
+                "board": board_type,          # ex: "ndlt-c", "empty", ...
+
+                # Mapping sur le modèle "port"-like :
+                "admin_state": admin_state,   # available / not-installed
+                "link_state": equipped,       # yes / no (présence de la carte)
+                "port_state": alarm_state,    # no-error / no-installation
+
+                "cfg_mtu": 0,
+                "oper_mtu": 0,
+                "lag_bndl": "-",
+                "mode": "-",
+                "encap": "-",
+                "port_type": port_type,       # "lt"
+            }
+
+            slots.append(slot_dict)
+            logger.debug(
+                "[LT_SLOTS] Slot parsé: %s (short=%s, board=%s, equipped=%s, admin=%s)",
+                raw_slot_id,
+                slot_short,
+                board_type,
+                equipped,
+                admin_state,
             )
-            logger.debug("[LT_SLOTS] Slot parsé: %s (short=%s)", raw_slot_id, slot_short)
 
         return slots
 
