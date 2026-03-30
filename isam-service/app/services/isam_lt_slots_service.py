@@ -34,7 +34,7 @@ class ISAMLTSlotsService:
         # On colle à la commande réelle
         script = "show\nequipment\nslot | match exact:lt:"
         logger.info(
-            "[LT_SLOTS] Récupération des slots LT pour instance #%s (%s) avec script: %r",
+            "[LT_SLOTS] >>> Récupération des slots LT pour instance #%s (%s) avec script: %r",
             self.instance.id,
             self.instance.name,
             script,
@@ -48,11 +48,17 @@ class ISAMLTSlotsService:
 
             if not success:
                 logger.error(
-                    "[LT_SLOTS] Impossible de récupérer les slots LT pour instance #%s : %s",
+                    "[LT_SLOTS] !!! Impossible de récupérer les slots LT pour instance #%s : %s",
                     self.instance.id,
                     err_msg,
                 )
                 return False, protocol_used, raw_output or "", [], err_msg
+
+            logger.info(
+                "[LT_SLOTS] <<< Commande slots OK pour instance #%s via %s",
+                self.instance.id,
+                protocol_used,
+            )
 
             if raw_output:
                 logger.debug(
@@ -106,14 +112,15 @@ class ISAMLTSlotsService:
         """
         slots: List[Dict[str, Any]] = []
 
+        logger.info("[LT_SLOTS] Démarrage parsing des slots LT (on ignore vlt:)")
+
         for line_orig in raw_output.splitlines():
             line = line_orig.strip()
             if not line:
                 continue
 
-            # ✅ On ne garde que les vrais LT (on ignore les VLT)
+            # On ne garde que les vrais LT (on ignore les VLT, l'invite, etc.)
             if not line.startswith("lt:"):
-                # On ignore vlt:, l'invite, la commande, etc.
                 continue
 
             parts = line.split()
@@ -165,6 +172,7 @@ class ISAMLTSlotsService:
                 admin_state,
             )
 
+        logger.info("[LT_SLOTS] Fin parsing slots LT : %d slots parsés", len(slots))
         return slots
 
     # ---------- 2) Récupérer les ports d'un slot LT ----------
@@ -188,7 +196,7 @@ class ISAMLTSlotsService:
         script = f"show\ninterface\nport | match exact:{slot_short_id}"
 
         logger.info(
-            "[LT_PORTS] Récupération des ports pour slot %s (short=%s) avec script: %r",
+            "[LT_PORTS] >>> Récupération des ports pour slot %s (short=%s) avec script: %r",
             slot_id,
             slot_short_id,
             script,
@@ -207,6 +215,12 @@ class ISAMLTSlotsService:
                 )
                 logger.error(msg)
                 return False, protocol_used, raw_output or "", [], err_msg
+
+            logger.info(
+                "[LT_PORTS] <<< Commande ports OK pour slot %s via %s",
+                slot_id,
+                protocol_used,
+            )
 
             if raw_output:
                 logger.debug(
