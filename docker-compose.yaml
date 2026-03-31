@@ -58,20 +58,13 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-<<<<<<< HEAD
         condition: service_healthy   # ← waits for MySQL
       auth-service:
         condition: service_started   # ← waits for auth to start
-=======
-        condition: service_healthy
-      auth-service:
-        condition: service_started
->>>>>>> fd10cbc8934102393ea226c2ab4e29b2e1a71553
     restart: on-failure
 
   # ---------- Frontend ----------
   frontend:
-<<<<<<< HEAD
       build:
         context: ./frontend
         dockerfile: Dockerfile
@@ -85,21 +78,6 @@ services:
         - auth-service
         - isam-service
       restart: on-failure
-=======
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        - VITE_AUTH_BASE_URL=http://10.255.25.77:9000
-        - VITE_ISAM_BASE_URL=http://10.255.25.77:8001
-    container_name: isam-frontend-container
-    ports:
-      - "5173:80"
-    depends_on:
-      - auth-service
-      - isam-service
-    restart: on-failure
->>>>>>> fd10cbc8934102393ea226c2ab4e29b2e1a71553
 
 volumes:
   db_data:
