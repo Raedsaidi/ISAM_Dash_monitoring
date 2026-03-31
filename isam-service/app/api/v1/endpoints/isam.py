@@ -18,6 +18,7 @@ from app.models.isam_data import ISAMDataType
 from app.models.port_lock import PortLock
 from app.services.isam_cache import get_cached_isam_data, load_cached_parsed_data
 from app.models.wan_template import WanTemplate, WanTemplateScope
+from app.models.wan_model import WanModel
 from app.models.isam_schemas import (
     ISAMInstanceCreate,
     ISAMInstanceUpdate,
@@ -51,6 +52,10 @@ from app.models.isam_schemas import (
     LTPortsResponse,
     LTPortItem,
     LTSlotItem,
+    WanModelCreate,
+    WanModelUpdate,
+    WanModelRead,
+    WanModelList,
 )
 from app.services.isam_connection import (
     ISAMConnectionService,
@@ -602,7 +607,125 @@ def get_isam_ports(
     )
 
 
-# -------- WAN TEMPLATES (global admin + user instance copies) --------
+# ── Helper pour WAN Models ──
+
+def get_wan_model_or_404(db: Session, model_id: int) -> WanModel:
+    m = db.query(WanModel).filter(WanModel.id == model_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail=f"WAN Model #{model_id} not found.")
+    return m
+
+
+# ================================================================
+# ========  WAN MODELS (table indépendante, admin only)  =========
+# ================================================================
+
+@router.post("/wan-models", response_model=WanModelRead)
+def create_wan_model(
+    body: WanModelCreate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    """Créer un modèle WAN (GPON, SAFRAN, ETHERNET...). Admin only."""
+    existing = db.query(WanModel).filter(WanModel.name == body.name.strip()).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A WAN model with name '{body.name.strip()}' already exists.",
+        )
+
+    model = WanModel(
+        name=body.name.strip(),
+        description=body.description.strip() if body.description else None,
+        created_by=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+@router.get("/wan-models", response_model=WanModelList)
+def list_wan_models(
+    search: str | None = Query(None, min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """Lister tous les modèles WAN. Accessible à tous les utilisateurs authentifiés."""
+    q = db.query(WanModel)
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                WanModel.name.ilike(pattern),
+                WanModel.description.ilike(pattern),
+            )
+        )
+
+    models = q.order_by(WanModel.name.asc()).all()
+    return WanModelList(models=models)
+
+
+@router.get("/wan-models/{model_id}", response_model=WanModelRead)
+def get_wan_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    return get_wan_model_or_404(db, model_id)
+
+
+@router.patch("/wan-models/{model_id}", response_model=WanModelRead)
+def update_wan_model(
+    model_id: int,
+    body: WanModelUpdate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    model = get_wan_model_or_404(db, model_id)
+    data = body.model_dump(exclude_unset=True)
+
+    if "name" in data and data["name"]:
+        new_name = data["name"].strip()
+        existing = db.query(WanModel).filter(
+            WanModel.name == new_name,
+            WanModel.id != model_id,
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A WAN model with name '{new_name}' already exists.",
+            )
+        data["name"] = new_name
+
+    for field, value in data.items():
+        setattr(model, field, value)
+
+    model.updated_at = datetime.utcnow()
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+@router.delete("/wan-models/{model_id}", status_code=204)
+def delete_wan_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    model = get_wan_model_or_404(db, model_id)
+    db.delete(model)
+    db.commit()
+    return
+
+
+# ================================================================
+# ========  WAN TEMPLATES (mis à jour avec project + scope filter)
+# ================================================================
 
 @router.post("/wan-templates", response_model=WanTemplateRead)
 def create_wan_template(
@@ -643,6 +766,7 @@ def create_wan_template(
     tpl = WanTemplate(
         isam_instance_id=instance_id,
         name=body.name.strip(),
+        project=body.project.strip() if body.project else None,
         commands_template=body.commands_template,
         created_by=current_user.username,
         scope=body.scope,
@@ -675,18 +799,26 @@ def create_wan_template(
 def list_wan_templates(
     instance_id: int | None = Query(None, ge=1),
     creator: str | None = Query(None),
-    scope: str | None = Query(None),
+    scope: str | None = Query(None, description="Filter by scope: GLOBAL or USER_INSTANCE"),
     search: str | None = Query(None, min_length=1, max_length=200),
-
-    # filtre "mes templates"
+    project: str | None = Query(None, min_length=1, max_length=100, description="Filter by project"),
     mine: bool = Query(False, description="If true => only templates created by current user"),
-
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     q = db.query(WanTemplate)
 
-    # mine=true => uniquement les templates créés par moi (USER_INSTANCE)
+    # ── Filtre scope (backend filtering pour le switch) ──
+    if scope:
+        scope_upper = scope.upper().strip()
+        if scope_upper in (WanTemplateScope.GLOBAL.value, WanTemplateScope.USER_INSTANCE.value):
+            q = q.filter(WanTemplate.scope == scope_upper)
+
+    # ── Filtre project ──
+    if project:
+        q = q.filter(WanTemplate.project.ilike(f"%{project.strip()}%"))
+
+    # ── mine=true => uniquement mes templates ──
     if mine:
         q = q.filter(
             WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
@@ -696,19 +828,22 @@ def list_wan_templates(
             q = q.filter(WanTemplate.isam_instance_id == instance_id)
 
     else:
-        # Logique existante
         if is_admin_role(current_user.role):
             if instance_id is not None:
-                q = q.filter(
-                    or_(
-                        WanTemplate.scope == WanTemplateScope.GLOBAL.value,
-                        WanTemplate.isam_instance_id == instance_id,
+                if not scope:
+                    q = q.filter(
+                        or_(
+                            WanTemplate.scope == WanTemplateScope.GLOBAL.value,
+                            WanTemplate.isam_instance_id == instance_id,
+                        )
                     )
-                )
+                else:
+                    scope_upper = scope.upper().strip() if scope else ""
+                    if scope_upper == WanTemplateScope.USER_INSTANCE.value:
+                        q = q.filter(WanTemplate.isam_instance_id == instance_id)
+
             if creator:
                 q = q.filter(WanTemplate.created_by == creator)
-            if scope:
-                q = q.filter(WanTemplate.scope == scope)
         else:
             if instance_id is not None:
                 q = q.filter(
@@ -732,7 +867,7 @@ def list_wan_templates(
                     )
                 )
 
-    # server-side search
+    # ── server-side search ──
     if search:
         pattern = f"%{search}%"
         q = q.filter(
@@ -741,6 +876,7 @@ def list_wan_templates(
                 WanTemplate.created_by.ilike(pattern),
                 WanTemplate.commands_template.ilike(pattern),
                 WanTemplate.scope.ilike(pattern),
+                WanTemplate.project.ilike(pattern),
             )
         )
 
@@ -912,7 +1048,6 @@ def apply_live_template(
         credentials=credentials,
     )
 
-    # Vérifier que le port n'est pas locké UNIQUEMENT pour les USERS
     ensure_port_not_locked_for_user(
         db=db,
         instance_id=inst.id,
@@ -969,7 +1104,6 @@ def apply_template_to_port(
 
     ensure_template_applicable_to_instance(tpl, inst.id)
 
-    # Optionnel : ne bloque jamais ici car current_user est ADMIN/SUPER_ADMIN
     ensure_port_not_locked_for_user(
         db=db,
         instance_id=inst.id,

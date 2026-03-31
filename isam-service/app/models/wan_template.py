@@ -1,3 +1,5 @@
+# app/models/wan_template.py
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -19,8 +21,6 @@ class WanTemplate(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
 
-    # NULL pour les templates globales admin
-    # non-NULL pour les templates user liées à un ISAM précis
     isam_instance_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("isam_instances.id", ondelete="CASCADE"),
@@ -29,19 +29,19 @@ class WanTemplate(Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    # contenu template avec variables du style [[$port]], [[$desc]], [[$serial number]]
+    # ── NOUVEAU : champ project ──
+    project: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
     commands_template: Mapped[str] = mapped_column(Text, nullable=False)
 
     created_by: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    # GLOBAL | USER_INSTANCE
     scope: Mapped[str] = mapped_column(
         String(30),
         nullable=False,
         default=WanTemplateScope.GLOBAL.value,
     )
 
-    # si c’est une copie user dérivée d’une template globale
     source_template_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("wan_templates.id", ondelete="SET NULL"),
