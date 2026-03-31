@@ -42,11 +42,7 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-<<<<<<< HEAD
         condition: service_healthy   # ← waits for MySQL to be truly ready
-=======
-        condition: service_healthy
->>>>>>> fd10cbc8934102393ea226c2ab4e29b2e1a71553
     restart: on-failure
 
   # ---------- ISAM-service ----------
