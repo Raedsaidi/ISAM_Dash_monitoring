@@ -130,11 +130,13 @@ class WanTemplateCreate(WanTemplateBase):
     scope: TemplateScope = "GLOBAL"
     isam_instance_id: Optional[int] = None
     source_template_id: Optional[int] = None
+    project: Optional[str] = None
 
 
 class WanTemplateUpdate(BaseModel):
     name: Optional[str] = None
     commands_template: Optional[str] = None
+    project: Optional[str] = None
 
 
 class WanTemplateRead(WanTemplateBase):
@@ -143,6 +145,7 @@ class WanTemplateRead(WanTemplateBase):
     isam_instance_id: Optional[int] = None
     created_by: Optional[str] = None
     source_template_id: Optional[int] = None
+    project: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -192,6 +195,7 @@ class TemplateApplyLiveRequest(TemplateRenderRequest):
     instance_id: int
     template_id: Optional[int] = None
 
+
 # -------- My Port / My Templates --------
 
 class MyPortResponse(BaseModel):
@@ -213,7 +217,7 @@ class ConfigHistoryRead(BaseModel):
     id: int
     username: str
     action: str
-    isam_instance_id: Optional[int] = None  # peut être NULL pour anciennes lignes
+    isam_instance_id: Optional[int] = None
     port_id: Optional[str] = None
     template_id: Optional[int] = None
     success: bool
@@ -231,15 +235,8 @@ class ConfigHistoryList(BaseModel):
     items: List[ConfigHistoryRead]
 
 
+# -------------------- isam_data.py --------------------
 
-
-
-
-
-
-
-
-#--------------------isam_data.py--------------------
 class CachedPortsResponse(PortsResponse):
     cached_at: Optional[datetime] = None
     last_refresh_at: Optional[datetime] = None
@@ -257,6 +254,15 @@ class CachedMemoryUsageResponse(MemoryUsageResponse):
 # ===== PORT LOCK SCHEMAS =====
 
 class PortLockResponse(BaseModel):
+    success: bool
+    port_id: str
+    locked: bool
+    locked_by: Optional[str] = None
+    locked_at: Optional[datetime] = None
+    message: str
+
+
+class PortLockStatusResponse(BaseModel):
     port_id: str
     locked: bool
     locked_by: Optional[str] = None
@@ -286,91 +292,6 @@ class LTSlotItem(BaseModel):
     mode: str
     encap: str
     port_type: str
-    last_success_at: Optional[datetime] = None
-
-
-class LTSlotsResponse(BaseModel):
-    success: bool
-    protocol_used: Optional[str] = None
-    slot_count: int
-    slots: List[LTSlotItem]
-    raw_output: str
-    message: str
-    cached_at: Optional[datetime] = None
-    last_refresh_at: Optional[datetime] = None
-    last_refresh_success: bool = False
-    last_refresh_error: Optional[str] = None
-
-
-# ===== LT PORT SCHEMAS =====
-
-class LTPortItem(BaseModel):
-    port_id: str
-    slot_id: str
-    port_type: str
-    admin_state: str
-    link_state: str
-    port_state: str
-    cfg_mtu: int
-    oper_mtu: int
-    lag_bndl: str
-    mode: str
-    encap: str
-    board: str
-    locked: bool = False
-    locked_by: Optional[str] = None
-    last_success_at: Optional[datetime] = None
-
-
-class LTPortsResponse(BaseModel):
-    success: bool
-    protocol_used: Optional[str] = None
-    port_count: int
-    ports: List[LTPortItem]
-    slot_id: str
-    raw_output: str
-    message: str
-    cached_at: Optional[datetime] = None
-    last_refresh_at: Optional[datetime] = None
-    last_refresh_success: bool = False
-    last_refresh_error: Optional[str] = None
-
-
-
-
-
-# ===== PORT LOCK SCHEMAS =====
-
-class PortLockResponse(BaseModel):
-    success: bool
-    port_id: str
-    locked: bool
-    locked_by: Optional[str] = None
-    locked_at: Optional[datetime] = None
-    message: str
-
-
-class PortLockStatusResponse(BaseModel):
-    port_id: str
-    locked: bool
-    locked_by: Optional[str] = None
-    locked_at: Optional[datetime] = None
-
-
-# ===== LT SLOT SCHEMAS =====
-
-class LTSlotItem(BaseModel):
-    slot_id: str
-    board: str
-    admin_state: str
-    link_state: str
-    port_state: str
-    cfg_mtu: int
-    oper_mtu: int
-    lag_bndl: str
-    mode: str
-    encap: str
-    port_type: str
 
 
 class LTSlotsResponse(BaseModel):
@@ -416,3 +337,31 @@ class LTPortsResponse(BaseModel):
     last_refresh_at: Optional[datetime] = None
     last_refresh_success: bool = False
     last_refresh_error: Optional[str] = None
+
+
+# ===== WAN MODEL SCHEMAS (table indépendante) =====
+
+class WanModelCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+
+
+class WanModelUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=255)
+
+
+class WanModelRead(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class WanModelList(BaseModel):
+    models: List[WanModelRead]

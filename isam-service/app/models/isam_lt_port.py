@@ -11,11 +11,10 @@ from app.core.db import Base
 class ISAMLTPort(Base):
     """
     Snapshot des ports d'un slot LT
-    
+
     Stocke les ports individuels extraits de:
-    - show interface port | match exact:{slot_id} | match exact:xdsl-line
-    - show interface port | match exact:{slot_id} | match exact:ethernet-line
-    - show interface port | match exact:{slot_id} | match exact:ont
+    - show interface port | match exact:{slot_short_id}
+      (on parse ensuite xdsl-line, ethernet-line, pon, ont, etc.)
     """
     __tablename__ = "isam_lt_ports"
 
@@ -34,7 +33,7 @@ class ISAMLTPort(Base):
     # Port ID (ex: "1/1/5/1", "1/1/5/2", etc)
     port_id: Mapped[str] = mapped_column(String(50), nullable=False)
 
-    # Type de port pour ce slot
+    # Type de port pour ce slot (xdsl-line, ethernet-line, pon, ont, ...)
     port_type: Mapped[str] = mapped_column(String(50), nullable=False)
 
     # Admin state
@@ -85,7 +84,13 @@ class ISAMLTPort(Base):
     # Relationship
     instance = relationship("ISAMInstance", back_populates="lt_ports")
 
-    # ✅ FIX: Bonne syntaxe pour les constraints
+
     __table_args__ = (
-        UniqueConstraint('isam_instance_id', 'port_id', name='uq_lt_ports_instance_port'),
+        UniqueConstraint(
+            'isam_instance_id',
+            'slot_id',
+            'port_type',
+            'port_id',
+            name='uq_lt_ports_instance_slot_type_port',
+        ),
     )
