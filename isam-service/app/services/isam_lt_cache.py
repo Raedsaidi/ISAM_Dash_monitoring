@@ -37,8 +37,8 @@ def _replace_lt_slots_for_instance(
         db.add(
             ISAMLTSlot(
                 isam_instance_id=instance_id,
-                slot_id=slot["slot_id"],      # ex: "lt:1/1/5"
-                board=slot["board"],          # "LT"
+                slot_id=slot["slot_id"],
+                board=slot["board"],
                 admin_state=slot["admin_state"],
                 link_state=slot["link_state"],
                 port_state=slot["port_state"],
@@ -47,7 +47,7 @@ def _replace_lt_slots_for_instance(
                 lag_bndl=slot["lag_bndl"],
                 mode=slot["mode"],
                 encap=slot["encap"],
-                port_type=slot["port_type"],  # "lt"
+                port_type=slot["port_type"],
                 last_success_at=now,
                 created_at=now,
                 updated_at=now,
@@ -89,9 +89,9 @@ def _replace_lt_ports_for_slot(
         db.add(
             ISAMLTPort(
                 isam_instance_id=instance_id,
-                slot_id=slot_id,                 # "lt:1/1/5"
-                port_id=port["port_id"],         # "1/1/5/1"
-                port_type=port["port_type"],     # xdsl-line / ethernet-line / pon / ont
+                slot_id=slot_id,
+                port_id=port["port_id"],
+                port_type=port["port_type"],
                 admin_state=port["admin_state"],
                 link_state=port["link_state"],
                 port_state=port["port_state"],
@@ -122,15 +122,16 @@ def refresh_lt_slots_snapshot(
     timeout: int = 30,
 ) -> None:
     """
-    Refresh complet :
-    1. récupère les slots LT
-    2. remplace les slots en base si succès
-    3. récupère les ports de chaque slot
-    4. remplace les ports slot par slot si succès
+    Refresh complet via UNE SEULE session Telnet persistante :
 
-    Important :
-    - si la récupération des slots échoue -> on garde l'ancien snapshot
-    - si la récupération des ports d'un slot échoue -> on garde les anciens ports de ce slot
+      1. ouvre 1 session Telnet
+      2. envoie la commande slots → parse
+      3. pour chaque slot, envoie la commande ports → parse
+      4. ferme la session
+      5. remplace slots + ports en base
+
+    Si le refresh échoue → l'ancien snapshot est conservé.
+    Si les ports d'un slot échouent → l'ancien snapshot de ce slot est conservé.
     """
     logger.info(
         "[CACHE-LT] Refreshing LT slots for instance #%s (%s)",
@@ -141,26 +142,41 @@ def refresh_lt_slots_snapshot(
     service = ISAMLTSlotsService(instance)
 
     try:
-        success, proto, raw_output, slots, msg = service.get_lt_slots(timeout=timeout)
+        # ── Récupération via session unique ─────────────────────────
+        success, raw_slots, slots_with_ports, msg = (
+            service.refresh_all_single_session(
+                timeout=timeout,
+                idle_timeout=3.0,            # 3s au lieu de 1s → attend les vraies données
+                post_send_delay=1.0,         # 1s de pause après envoi avant de lire
+                inter_command_delay=1.0,     # 1s entre chaque commande
+            )
+        )
 
         if not success:
             logger.warning(
-                "[CACHE-LT] LT slots refresh failed for instance #%s: %s",
+                "[CACHE-LT] LT refresh failed for instance #%s : %s",
                 instance.id,
                 msg,
             )
             db.rollback()
             return
 
-        # 1) Remplacer les slots
+        # ── 1. Stocker les slots (sans la clé "ports") ──────────────
+        slots_data = [
+            {k: v for k, v in s.items() if k != "ports"}
+            for s in slots_with_ports
+        ]
+
         _replace_lt_slots_for_instance(
             db,
             instance_id=instance.id,
-            slots_data=slots,
+            slots_data=slots_data,
         )
 
-        # 2) Supprimer les ports des slots qui n'existent plus
-        current_slot_ids = [slot["slot_id"] for slot in slots if slot.get("slot_id")]
+        # ── 2. Supprimer les ports des slots obsolètes ──────────────
+        current_slot_ids = [
+            s["slot_id"] for s in slots_with_ports if s.get("slot_id")
+        ]
 
         if current_slot_ids:
             logger.info(
@@ -173,63 +189,49 @@ def refresh_lt_slots_snapshot(
             ).delete(synchronize_session=False)
         else:
             logger.info(
-                "[CACHE-LT] Aucun slot LT présent, suppression de tous les ports LT (instance #%s)",
+                "[CACHE-LT] Aucun slot LT, suppression de tous les ports LT (instance #%s)",
                 instance.id,
             )
             db.query(ISAMLTPort).filter(
                 ISAMLTPort.isam_instance_id == instance.id
             ).delete(synchronize_session=False)
 
-        # 3) Refresh ports slot par slot
-        for slot in slots:
-            slot_id = slot.get("slot_id")             # ex: "lt:1/1/5"
-            slot_short_id = slot.get("slot_short_id") # ex: "1/1/5"
+        # ── 3. Stocker les ports slot par slot ──────────────────────
+        total_ports = 0
+        for slot in slots_with_ports:
+            slot_id = slot.get("slot_id")
+            ports = slot.get("ports", [])
 
-            if not slot_id or not slot_short_id:
-                logger.warning(f"[CACHE-LT] Invalid slot data (id manquant): {slot}")
+            if not slot_id:
                 continue
 
-            logger.info(
-                "[CACHE-LT] Rafraîchissement des ports pour slot %s (short=%s, instance #%s)",
-                slot_id,
-                slot_short_id,
-                instance.id,
-            )
-
-            try:
-                ports_success, ports_proto, ports_raw, ports_list, ports_msg = service.get_slot_ports(
+            if ports:
+                # On a des ports → remplacer
+                _replace_lt_ports_for_slot(
+                    db,
+                    instance_id=instance.id,
                     slot_id=slot_id,
-                    slot_short_id=slot_short_id,
-                    timeout=timeout,
+                    ports_data=ports,
                 )
-
-                if ports_success:
-                    _replace_lt_ports_for_slot(
-                        db,
-                        instance_id=instance.id,
-                        slot_id=slot_id,          # on stocke le slot complet "lt:1/1/5"
-                        ports_data=ports_list,
-                    )
-                else:
-                    logger.warning(
-                        "[CACHE-LT] Failed to refresh ports for slot %s: %s",
-                        slot_id,
-                        ports_msg,
-                    )
-                    # On garde l'ancien snapshot de ce slot
-
-            except Exception:
-                logger.exception(
-                    "[CACHE-LT] Error refreshing ports for slot %s (instance #%s)",
-                    slot_id,
-                    instance.id,
+                total_ports += len(ports)
+            else:
+                # Pas de ports récupérés pour ce slot.
+                # On supprime les anciens ports de ce slot
+                # (le slot existe mais n'a pas de ports, ou la commande
+                # n'a rien retourné — ex: slot "empty").
+                _replace_lt_ports_for_slot(
+                    db,
+                    instance_id=instance.id,
+                    slot_id=slot_id,
+                    ports_data=[],
                 )
-                # On garde l'ancien snapshot de ce slot
 
         db.commit()
         logger.info(
-            "[CACHE-LT] LT snapshot updated for instance #%s",
+            "[CACHE-LT] LT snapshot updated for instance #%s : %d slots, %d ports",
             instance.id,
+            len(slots_with_ports),
+            total_ports,
         )
 
     except Exception:

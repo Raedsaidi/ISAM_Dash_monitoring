@@ -69,8 +69,7 @@ class ISAMConnectionService:
                 f"[SSH-LEGACY] Test connexion à {self.instance.host}:{self.instance.ssh_port} "
                 f"avec algorithmes legacy..."
             )
-            
-            # Utiliser ssh via subprocess avec les options d'algorithmes legacy
+
             cmd = [
                 "ssh",
                 "-o", "HostKeyAlgorithms=+ssh-rsa",
@@ -81,14 +80,14 @@ class ISAMConnectionService:
                 "-p", str(self.instance.ssh_port),
                 "echo 'SSH Legacy connection successful'"
             ]
-            
+
             result = subprocess.run(
                 cmd,
                 input=f"{self.instance.password}\n".encode(),
                 capture_output=True,
                 timeout=timeout + 5,
             )
-            
+
             if result.returncode == 0:
                 msg = "[SSH-LEGACY] Connexion réussie avec algorithmes legacy."
                 logger.info(msg)
@@ -188,7 +187,7 @@ class ISAMConnectionService:
         """Exécute une commande SSH avec algorithmes legacy"""
         try:
             logger.info(f"[SSH-LEGACY] Exécution commande: {command!r}")
-            
+
             cmd = [
                 "ssh",
                 "-o", "HostKeyAlgorithms=+ssh-rsa",
@@ -199,17 +198,17 @@ class ISAMConnectionService:
                 "-p", str(self.instance.ssh_port),
                 command
             ]
-            
+
             result = subprocess.run(
                 cmd,
                 input=f"{self.instance.password}\n".encode(),
                 capture_output=True,
                 timeout=timeout + 5,
             )
-            
+
             out = result.stdout.decode("utf-8", errors="ignore")
             err = result.stderr.decode("utf-8", errors="ignore")
-            
+
             if result.returncode == 0:
                 logger.info(f"[SSH-LEGACY] Commande exécutée avec succès")
                 return True, out, err
@@ -251,13 +250,11 @@ class ISAMConnectionService:
                 tn.read_very_eager()
 
                 # --- Envoi de la commande ---
-                # Support des commandes multi-lignes type "show\ninterface\nport ..."
                 for line in command.split("\n"):
                     line = line.strip()
                     if not line:
                         continue
                     tn.write(line.encode("ascii") + b"\n")
-                    # petit délai pour laisser le CLI changer de contexte
                     time.sleep(0.2)
 
                 # --- Lecture de la sortie ---
@@ -271,11 +268,8 @@ class ISAMConnectionService:
                         buffer += chunk
                         last_data_time = time.time()
                     else:
-                        # Rien de nouveau : si on a déjà reçu des données
-                        # et qu'il n'y a plus rien depuis idle_timeout, on arrête.
                         if buffer and (time.time() - last_data_time) > idle_timeout:
                             break
-                        # Petit sleep pour éviter de tourner à vide
                         time.sleep(0.2)
 
                 output = buffer.decode("ascii", errors="ignore")
@@ -292,33 +286,22 @@ class ISAMConnectionService:
     def test_connection_preference(
         self, timeout: int = 10
     ) -> Tuple[bool, Optional[Protocol], str]:
-        """
-        Tente le protocole selon protocol_preference :
-        - 'ssh' : SSH standard → SSH legacy → Telnet
-        - 'telnet' : seulement Telnet
-        - 'auto' : SSH standard → SSH legacy → Telnet
-        """
         if self.instance.protocol_preference == "telnet":
             ok, msg = self.test_telnet_connection(timeout=timeout)
             return ok, "telnet" if ok else None, msg
 
-        # SSH (standard ou auto) : essayer SSH normal → SSH legacy → Telnet
         ssh_ok, ssh_msg = self.test_ssh_connection(timeout=timeout)
         if ssh_ok:
             return True, "ssh", ssh_msg
-        
-        # SSH standard échoué, essayer SSH legacy
+
         logger.info("[STRATEGY] SSH standard échoué, tentative SSH legacy...")
         ssh_legacy_ok, ssh_legacy_msg = self.test_ssh_connection_legacy(timeout=timeout)
         if ssh_legacy_ok:
             return True, "ssh-legacy", ssh_legacy_msg
-        
-        # SSH échoué (standard et legacy)
+
         if self.instance.protocol_preference == "ssh":
-            # Mode SSH uniquement : retourner l'erreur
             return False, None, f"SSH: {ssh_msg} ; SSH-LEGACY: {ssh_legacy_msg}"
-        
-        # Mode "auto" : essayer Telnet
+
         logger.info("[STRATEGY] SSH échoué, tentative Telnet...")
         telnet_ok, telnet_msg = self.test_telnet_connection(timeout=timeout)
         if telnet_ok:
@@ -329,33 +312,24 @@ class ISAMConnectionService:
     def execute_command_preference(
         self, command: str, timeout: int = 20
     ) -> Tuple[bool, Optional[Protocol], str, str]:
-        """
-        Exécute une commande selon protocol_preference ('ssh','telnet','auto').
-        SSH standard → SSH legacy → Telnet
-        """
         if self.instance.protocol_preference == "telnet":
             ok, out, err = self.execute_telnet_command(command, timeout=timeout)
             return ok, "telnet" if ok else None, out, err
 
-        # SSH (standard ou auto) : essayer SSH normal → SSH legacy → Telnet
         ok, out, err = self.execute_ssh_command(command, timeout=timeout)
         if ok:
             return True, "ssh", out, err
-        
-        # SSH standard échoué, essayer SSH legacy
+
         logger.info("[STRATEGY] SSH standard échoué, tentative SSH legacy...")
         ok_legacy, out_legacy, err_legacy = self.execute_ssh_command_legacy(
             command, timeout=timeout
         )
         if ok_legacy:
             return True, "ssh-legacy", out_legacy, err_legacy
-        
-        # SSH échoué (standard et legacy)
+
         if self.instance.protocol_preference == "ssh":
-            # Mode SSH uniquement : retourner l'erreur
             return False, None, out, f"SSH: {err} ; SSH-LEGACY: {err_legacy}"
-        
-        # Mode "auto" : essayer Telnet
+
         logger.info("[STRATEGY] SSH échoué, tentative Telnet...")
         ok_tel, out_tel, msg_tel = self.execute_telnet_command(
             command, timeout=timeout
@@ -364,6 +338,203 @@ class ISAMConnectionService:
             return True, "telnet", out_tel, msg_tel
 
         return False, None, "", f"SSH: {err} ; SSH-LEGACY: {err_legacy} ; TELNET: {msg_tel}"
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  SESSION TELNET PERSISTANTE (multi-commandes sur une seule connexion)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class ISAMPersistentTelnet:
+    """
+    Session Telnet persistante : UNE connexion, N commandes.
+
+    Résout deux problèmes :
+      1. Saturation des sessions ISAM (limite ~2-4 sessions simultanées)
+         → on n'ouvre qu'UNE session au lieu de 3×N_slots
+      2. idle_timeout trop court avec l'ancienne méthode
+         → on utilise 3s par défaut et on attend après l'envoi de commande
+    """
+
+    def __init__(self, instance: ISAMInstance, timeout: int = 30):
+        self.instance = instance
+        self.timeout = timeout
+        self._tn: Optional[telnetlib.Telnet] = None
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    # ── connect ─────────────────────────────────────────────────────
+
+    def connect(self) -> Tuple[bool, str]:
+        """Ouvre la connexion Telnet et effectue le login UNE SEULE FOIS."""
+        try:
+            logger.info(
+                "[TELNET-PERSIST] Ouverture session vers %s:%s …",
+                self.instance.host,
+                self.instance.telnet_port,
+            )
+            self._tn = telnetlib.Telnet(
+                self.instance.host,
+                self.instance.telnet_port,
+                timeout=self.timeout,
+            )
+
+            # ── Login ────────────────────────────────────────────────
+            idx, _, _ = self._tn.expect(
+                [b"login:", b"Login:", b"username:", b"Username:"],
+                timeout=self.timeout,
+            )
+            if idx == -1:
+                self._cleanup()
+                return False, "[TELNET-PERSIST] Prompt login non détecté."
+
+            self._tn.write(self.instance.username.encode("ascii") + b"\n")
+
+            idx2, _, _ = self._tn.expect(
+                [b"Password:", b"password:"],
+                timeout=self.timeout,
+            )
+            if idx2 == -1:
+                self._cleanup()
+                return False, "[TELNET-PERSIST] Prompt password non détecté."
+
+            self._tn.write(self.instance.password.encode("ascii") + b"\n")
+
+            # Laisser le MOTD / bannière arriver puis vider le buffer
+            time.sleep(2.0)
+            try:
+                self._tn.read_very_eager()
+            except Exception:
+                pass
+
+            self._connected = True
+            msg = "[TELNET-PERSIST] Session ouverte avec succès."
+            logger.info(msg)
+            return True, msg
+
+        except Exception as e:
+            self._cleanup()
+            msg = f"[TELNET-PERSIST] Échec connexion : {e}"
+            logger.exception(msg)
+            return False, msg
+
+    # ── close ───────────────────────────────────────────────────────
+
+    def close(self):
+        """Ferme proprement la session."""
+        self._cleanup()
+        logger.info("[TELNET-PERSIST] Session fermée.")
+
+    def _cleanup(self):
+        if self._tn:
+            try:
+                self._tn.close()
+            except Exception:
+                pass
+            self._tn = None
+        self._connected = False
+
+    # ── exécution d'une commande ────────────────────────────────────
+
+    def execute(
+        self,
+        command: str,
+        idle_timeout: float = 3.0,
+        post_send_delay: float = 1.0,
+    ) -> Tuple[bool, str, str]:
+        """
+        Exécute une commande sur la session déjà ouverte.
+
+        Paramètres :
+          - idle_timeout : secondes sans nouvelles données avant d'arrêter
+                           la lecture (3s au lieu de l'ancien 1s qui causait
+                           l'arrêt prématuré après l'écho de commande).
+          - post_send_delay : pause après envoi de la commande avant de
+                              commencer à lire, pour laisser l'ISAM
+                              traiter et commencer à envoyer la réponse.
+
+        Retourne (success, output, error_message).
+        """
+        if not self._connected or not self._tn:
+            return False, "", "[TELNET-PERSIST] Session non connectée."
+
+        try:
+            # Vider d'éventuels résidus du buffer
+            try:
+                self._tn.read_very_eager()
+            except Exception:
+                pass
+
+            logger.debug("[TELNET-PERSIST] >>> %r", command)
+
+            # Envoi de la commande (support multi-lignes)
+            for line in command.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                self._tn.write(line.encode("ascii") + b"\n")
+                time.sleep(0.3)
+
+            # ── Pause post-envoi ─────────────────────────────────────
+            # Crucial : laisser l'ISAM traiter la commande AVANT de
+            # démarrer le chrono idle_timeout. Sans cette pause,
+            # l'écho arrive immédiatement, puis idle_timeout se
+            # déclenche avant que les vraies données n'arrivent.
+            time.sleep(post_send_delay)
+
+            # ── Lecture de la réponse ────────────────────────────────
+            end_time = time.time() + self.timeout
+            last_data_time = time.time()
+            buf = b""
+
+            while time.time() < end_time:
+                try:
+                    chunk = self._tn.read_very_eager()
+                except EOFError:
+                    self._connected = False
+                    logger.warning("[TELNET-PERSIST] Connexion fermée par le serveur.")
+                    break
+
+                if chunk:
+                    buf += chunk
+                    last_data_time = time.time()
+                else:
+                    if buf and (time.time() - last_data_time) > idle_timeout:
+                        break
+                    time.sleep(0.2)
+
+            output = buf.decode("ascii", errors="ignore")
+            logger.debug(
+                "[TELNET-PERSIST] <<< %d octets pour %r",
+                len(buf),
+                command,
+            )
+            return True, output, ""
+
+        except Exception as e:
+            self._connected = False
+            msg = f"[TELNET-PERSIST] Erreur exécution : {e}"
+            logger.exception(msg)
+            return False, "", msg
+
+    # ── context-manager ─────────────────────────────────────────────
+
+    def __enter__(self):
+        ok, msg = self.connect()
+        if not ok:
+            raise ConnectionError(msg)
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Helper pour les health-checks
+# ─────────────────────────────────────────────────────────────────────
 
 
 def test_connection_for_instance(instance: ISAMInstance, timeout: int = 10):
