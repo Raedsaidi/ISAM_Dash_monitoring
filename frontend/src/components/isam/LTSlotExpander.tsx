@@ -31,6 +31,7 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [portLocks, setPortLocks] = useState<Record<string, boolean>>({});
+  const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
   function getSlotIcon() {
     const pt = slot.port_type.toLowerCase();
@@ -46,7 +47,7 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
 
     try {
       const encodedSlotId = encodeURIComponent(slot.slot_id);
-      const res = await fetch(`http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlotId}/ports`, {
+      const res = await fetch(`${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlotId}/ports`, {
         headers: { ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
       });
 

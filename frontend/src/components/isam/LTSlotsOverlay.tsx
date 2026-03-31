@@ -34,6 +34,7 @@ export default function LTSlotsOverlay({ instanceId, instanceName, instanceHost,
   const [filterType, setFilterType] = useState<'all' | 'xdsl' | 'pon' | 'ethernet'>('all');
   const [searchSlot, setSearchSlot] = useState('');
   const [cacheInfo, setCacheInfo] = useState({ cached_at: null, last_refresh_success: false, last_refresh_error: null as string | null });
+  const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
   useEffect(() => { loadSlots(); }, [instanceId]);
   useEffect(() => {
@@ -46,7 +47,7 @@ export default function LTSlotsOverlay({ instanceId, instanceName, instanceHost,
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots`, {
+      const res = await fetch(`${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots`, {
         headers: { ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
       });
       let data: any = null;
