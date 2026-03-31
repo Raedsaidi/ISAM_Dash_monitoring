@@ -22,12 +22,8 @@ import { useAuth } from '../../context/AuthContext';
 import TemplateWorkspaceOverlay from './TemplateWorkspaceOverlay';
 import LTSlotsOverlay from './LTSlotsOverlay';
 
-<<<<<<< HEAD:frontend/src/components/JunctionsSection.tsx
 // Ajuste si ton isam-service n'est pas sur 8001
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
-=======
-const ISAM_BASE_URL = 'http://127.0.0.1:8001';
->>>>>>> fd10cbc8934102393ea226c2ab4e29b2e1a71553:frontend/src/components/isam/JunctionsSection.tsx
 
 type StatusType = 'active' | 'inactive' | 'error';
 type ProtocolPreference = 'telnet' | 'ssh' | 'auto';
