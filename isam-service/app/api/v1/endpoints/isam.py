@@ -218,18 +218,22 @@ def log_config_history(
     db.commit()
 
 
-# ✅ NEW: Check port not locked
-def check_port_not_locked(
+# ✅ NOUVEAU COMPORTEMENT :
+#    - USER : interdit d'utiliser un port locké
+#    - ADMIN / SUPER_ADMIN : autorisés même si le port est locké
+def ensure_port_not_locked_for_user(
     db: Session,
     instance_id: int,
     port_id: str,
+    current_user: TokenUser,
 ):
     """
-    Vérifie qu'un port n'est pas locké.
-    Lève une HTTPException si le port est locké.
-    
-    À utiliser avant d'appliquer une template sur un port.
+    Bloque l'utilisation d'un port locké uniquement pour les USERS.
+    Les ADMIN / SUPER_ADMIN passent même si le port est locké.
     """
+    if current_user.role != "USER":
+        return
+
     lock = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
         PortLock.port_id == port_id
@@ -238,7 +242,7 @@ def check_port_not_locked(
     if lock:
         raise HTTPException(
             status_code=403,
-            detail=f"Port {port_id} is locked and cannot be used. Please contact your administrator.",
+            detail=f"Port {port_id} is locked and cannot be used by USERs. Please contact your administrator.",
         )
 
 
@@ -667,10 +671,6 @@ def create_wan_template(
     return tpl
 
 
-from fastapi import Query, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
-
 @router.get("/wan-templates", response_model=WanTemplateList)
 def list_wan_templates(
     instance_id: int | None = Query(None, ge=1),
@@ -678,7 +678,7 @@ def list_wan_templates(
     scope: str | None = Query(None),
     search: str | None = Query(None, min_length=1, max_length=200),
 
-    # NEW: filtre "mes templates"
+    # filtre "mes templates"
     mine: bool = Query(False, description="If true => only templates created by current user"),
 
     db: Session = Depends(get_db),
@@ -686,10 +686,7 @@ def list_wan_templates(
 ):
     q = db.query(WanTemplate)
 
-    # =========================================================
-    # NEW: mine=true => uniquement les templates créés par moi
-    # (On retourne des templates USER_INSTANCE seulement)
-    # =========================================================
+    # mine=true => uniquement les templates créés par moi (USER_INSTANCE)
     if mine:
         q = q.filter(
             WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
@@ -698,14 +695,8 @@ def list_wan_templates(
         if instance_id is not None:
             q = q.filter(WanTemplate.isam_instance_id == instance_id)
 
-        # (optionnel) si tu veux permettre scope=GLOBAL même en mine=true,
-        # supprime le filtre sur scope ci-dessus. Mais ton besoin dit "créés par lui même",
-        # donc USER_INSTANCE est logique.
-
     else:
-        # =========================================================
-        # Logique existante (inchangée)
-        # =========================================================
+        # Logique existante
         if is_admin_role(current_user.role):
             if instance_id is not None:
                 q = q.filter(
@@ -741,7 +732,7 @@ def list_wan_templates(
                     )
                 )
 
-    # --- server-side search ---
+    # server-side search
     if search:
         pattern = f"%{search}%"
         q = q.filter(
@@ -921,8 +912,13 @@ def apply_live_template(
         credentials=credentials,
     )
 
-    # ✅ NEW: Vérifier que le port n'est pas locké
-    check_port_not_locked(db, inst.id, body.selected_port.strip())
+    # Vérifier que le port n'est pas locké UNIQUEMENT pour les USERS
+    ensure_port_not_locked_for_user(
+        db=db,
+        instance_id=inst.id,
+        port_id=body.selected_port.strip(),
+        current_user=current_user,
+    )
 
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
@@ -973,8 +969,13 @@ def apply_template_to_port(
 
     ensure_template_applicable_to_instance(tpl, inst.id)
 
-    # ✅ NEW: Vérifier que le port n'est pas locké
-    check_port_not_locked(db, inst.id, port_id)
+    # Optionnel : ne bloque jamais ici car current_user est ADMIN/SUPER_ADMIN
+    ensure_port_not_locked_for_user(
+        db=db,
+        instance_id=inst.id,
+        port_id=port_id,
+        current_user=current_user,
+    )
 
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
@@ -1110,8 +1111,13 @@ def apply_template_to_my_port(
             detail="No port assigned to this user (port_value is empty).",
         )
 
-    # ✅ NEW: Vérifier que le port n'est pas locké
-    check_port_not_locked(db, inst.id, port_value)
+    # Vérifier que le port n'est pas locké (bloque uniquement pour USER)
+    ensure_port_not_locked_for_user(
+        db=db,
+        instance_id=inst.id,
+        port_id=port_value,
+        current_user=current_user,
+    )
 
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_wan_template(
@@ -1342,6 +1348,7 @@ def get_lt_slots(
         last_refresh_error=cached["last_refresh_error"],
     )
 
+
 @router.get(
     "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
     response_model=LTPortsResponse,
@@ -1390,6 +1397,7 @@ def get_lt_slot_ports(
         last_refresh_error=cached["last_refresh_error"],
     )
 
+
 @router.get(
     "/instances/{instance_id}/ports/{port_id:path}/lock-status",
     response_model=PortLockStatusResponse,
@@ -1402,8 +1410,7 @@ def get_port_lock_status(
 ):
     """
     Récupère le status de lock d'un port.
-    
-    Accessible par tous les rôles (pour vérifier si un port est locké).
+    Accessible par tous les rôles.
     """
     inst = get_instance_or_404(db, instance_id)
 
@@ -1441,12 +1448,10 @@ def lock_port(
 ):
     """
     Lock un port (empêche les USERs d'appliquer des templates dessus).
-    
     Admin/SuperAdmin only.
     """
     inst = get_instance_or_404(db, instance_id)
 
-    # Vérifier si déjà locké
     existing = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
         PortLock.port_id == port_id
@@ -1458,7 +1463,6 @@ def lock_port(
             detail=f"Port {port_id} is already locked by {existing.locked_by}."
         )
 
-    # Créer le lock
     now = datetime.utcnow()
     lock = PortLock(
         isam_instance_id=instance_id,
@@ -1508,12 +1512,10 @@ def unlock_port(
 ):
     """
     Unlock un port (permet aux USERs d'appliquer des templates).
-    
     Admin/SuperAdmin only.
     """
     inst = get_instance_or_404(db, instance_id)
 
-    # Trouver le lock
     lock = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
         PortLock.port_id == port_id

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Loader2, AlertCircle } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, AlertCircle, Zap, Radio, Wifi, Cable } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { toast } from 'sonner';
 import LTPortItem from './LTPortItem';
@@ -25,75 +25,41 @@ interface LTSlotExpanderProps {
   isAdmin: boolean;
 }
 
-export default function LTSlotExpander({
-  slot,
-  instanceId,
-  accessToken,
-  isAdmin,
-}: LTSlotExpanderProps) {
+export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin }: LTSlotExpanderProps) {
   const [expanded, setExpanded] = useState(false);
   const [ports, setPorts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [portLocks, setPortLocks] = useState<Record<string, boolean>>({});
 
-  const getStateColor = (state: string) => {
-    if (state === 'Up' || state === 'up') return 'text-green-600';
-    if (state === 'Down' || state === 'down') return 'text-red-600';
-    return 'text-slate-400';
-  };
+  function getSlotIcon() {
+    const pt = slot.port_type.toLowerCase();
+    if (pt.includes('xdsl')) return <Zap size={16} className="text-zinc-700" />;
+    if (pt.includes('pon') || pt.includes('ont')) return <Radio size={16} className="text-zinc-700" />;
+    if (pt.includes('ethernet')) return <Cable size={16} className="text-zinc-700" />;
+    return <Wifi size={16} className="text-zinc-700" />;
+  }
 
   async function loadPorts() {
     setLoading(true);
     setError(null);
 
     try {
-      // Encodage complet du slot_id (ex: "lt:1/1/5" -> "lt%3A1%2F1%2F5")
       const encodedSlotId = encodeURIComponent(slot.slot_id);
-
-      console.log('[LT_SLOT_EXPANDER] Loading ports for slot:', slot.slot_id);
-      console.log('[LT_SLOT_EXPANDER] Encoded slot_id:', encodedSlotId);
-
-      const res = await fetch(
-        `http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlotId}/ports`,
-        {
-          headers: {
-            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-          },
-        }
-      );
+      const res = await fetch(`http://127.0.0.1:8001/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlotId}/ports`, {
+        headers: { ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) },
+      });
 
       let data: any = null;
-      try {
-        data = await res.json();
-      } catch {
-        // not json
-      }
+      try { data = await res.json(); } catch {}
 
-      if (!res.ok) {
-        const detail =
-          data?.detail ||
-          data?.message ||
-          (Array.isArray(data) && data[0]?.msg) ||
-          `HTTP ${res.status}`;
-        throw new Error(detail);
-      }
-
-      console.log(
-        '[LT_SLOT_EXPANDER] Ports loaded:',
-        Array.isArray(data.ports) ? data.ports.length : 0
-      );
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
 
       setPorts(data.ports || []);
-
-      // Initialize lock status for each port
       const locks: Record<string, boolean> = {};
-      (data.ports || []).forEach((port: any) => {
-        locks[port.port_id] = port.locked || false;
-      });
+      (data.ports || []).forEach((port: any) => { locks[port.port_id] = port.locked || false; });
       setPortLocks(locks);
     } catch (err: any) {
-      console.error('[LT_SLOT_EXPANDER] Error loading ports:', err);
       setError(err.message || 'Failed to load ports');
       toast.error('Failed to load ports for this slot');
     } finally {
@@ -102,244 +68,169 @@ export default function LTSlotExpander({
   }
 
   function handleToggleExpand() {
-    if (!expanded && ports.length === 0 && !error) {
-      loadPorts();
-    }
+    if (!expanded && ports.length === 0 && !error) loadPorts();
     setExpanded(!expanded);
   }
 
   function handlePortLockToggle(portId: string) {
-    setPortLocks(prev => ({
-      ...prev,
-      [portId]: !prev[portId],
-    }));
+    setPortLocks((prev) => ({ ...prev, [portId]: !prev[portId] }));
   }
 
-  // --- Regroupement par type (calculé à chaque render) ---
-  const xdslPorts = ports.filter(p => p.port_type === 'xdsl-line');
-  const ethPorts = ports.filter(p => p.port_type === 'ethernet-line');
-  const ponPorts = ports.filter(p => p.port_type === 'pon');
-  const ontPorts = ports.filter(p => p.port_type === 'ont');
+  const xdslPorts = ports.filter((p) => p.port_type === 'xdsl-line');
+  const ethPorts = ports.filter((p) => p.port_type === 'ethernet-line');
+  const ponPorts = ports.filter((p) => p.port_type === 'pon');
+  const ontPorts = ports.filter((p) => p.port_type === 'ont');
 
-  // Groupe ONT -> PON1 -> liste d'ONTs
-  type PonGroup = {
-    pon: any;
-    onts: any[];
-  };
-  const ponMap: Record<string, PonGroup> = {};
-
-  // 1) Créer les groupes pour chaque PON
-  ponPorts.forEach(pon => {
-    const ponId = pon.port_id; // ex: "1/1/7/1"
-    if (!ponMap[ponId]) {
-      ponMap[ponId] = {
-        pon,
-        onts: [],
-      };
-    }
-  });
-
-  // 2) Attacher chaque ONT à son PON parent
-  ontPorts.forEach(ont => {
+  const ponMap: Record<string, { pon: any; onts: any[] }> = {};
+  ponPorts.forEach((pon) => { if (!ponMap[pon.port_id]) ponMap[pon.port_id] = { pon, onts: [] }; });
+  ontPorts.forEach((ont) => {
     const parts = (ont.port_id || '').split('/');
-    if (parts.length < 4) {
-      return;
-    }
-    const parentPonId = parts.slice(0, 4).join('/'); // "1/1/7/1" pour "1/1/7/1/17"
+    if (parts.length < 4) return;
+    const parentPonId = parts.slice(0, 4).join('/');
     if (!ponMap[parentPonId]) {
-      // Si jamais un ONT est présent sans ligne PON correspondante (rare),
-      // on crée un groupe PON "minimal" pour ne pas perdre l'ONT.
       ponMap[parentPonId] = {
-        pon: {
-          port_id: parentPonId,
-          port_type: 'pon',
-          admin_state: 'unknown',
-          link_state: 'unknown',
-          port_state: 'unknown',
-          cfg_mtu: 0,
-          oper_mtu: 0,
-          lag_bndl: '-',
-          mode: '-',
-          encap: '-',
-          board: slot.board,
-        },
+        pon: { port_id: parentPonId, port_type: 'pon', admin_state: 'unknown', port_state: 'unknown', board: slot.board },
         onts: [],
       };
     }
     ponMap[parentPonId].onts.push(ont);
   });
-
-  const ponGroups: PonGroup[] = Object.values(ponMap);
+  const ponGroups = Object.values(ponMap);
 
   return (
-    <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-      {/* Slot Header - Clickable to expand */}
+    <div className={cn(
+      'rounded-xl border transition-all duration-200 overflow-hidden',
+      expanded ? 'border-zinc-300 shadow-sm' : 'border-zinc-200 bg-white hover:border-zinc-300'
+    )}>
       <button
         onClick={handleToggleExpand}
-        className="w-full p-4 hover:bg-slate-50 transition-colors text-left flex items-center justify-between gap-3"
+        className={cn(
+          'w-full px-5 py-4 text-left flex items-center justify-between gap-4 transition-colors',
+          expanded ? 'bg-zinc-50/50' : 'bg-transparent'
+        )}
       >
-        <div className="flex items-center gap-3 flex-1 min-w-0">
-          {expanded ? (
-            <ChevronUp size={18} className="text-slate-600 shrink-0" />
-          ) : (
-            <ChevronDown size={18} className="text-slate-600 shrink-0" />
-          )}
-
-          {/* Slot info */}
+        <div className="flex items-center gap-4 flex-1 min-w-0">
+          <div className="p-2 border border-zinc-200 bg-white rounded-lg shrink-0">
+            {getSlotIcon()}
+          </div>
           <div className="flex-1 min-w-0">
-            <div className="font-mono font-semibold text-slate-900 text-lg">
-              {slot.slot_id}
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="font-mono font-semibold text-zinc-900 text-lg">{slot.slot_id}</span>
+              <span className="px-2 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider bg-zinc-100 text-zinc-600 border border-zinc-200/50">
+                {slot.port_type}
+              </span>
             </div>
-            <div className="text-sm text-slate-600 mt-1 flex items-center gap-3 flex-wrap">
-              <span>
-                Type:{' '}
-                <span className="font-mono font-medium">{slot.port_type}</span>
-              </span>
-              <span>
-                Board:{' '}
-                <span className="font-mono font-medium">{slot.board}</span>
-              </span>
+            <div className="text-sm text-zinc-500 mt-1 flex items-center gap-4 flex-wrap">
+              <span>Board: <span className="font-mono font-medium text-zinc-700">{slot.board}</span></span>
+              <span>MTU: <span className="font-mono font-medium text-zinc-700">{slot.cfg_mtu}</span></span>
+              <span>Mode: <span className="font-mono font-medium text-zinc-700">{slot.mode}</span></span>
             </div>
           </div>
-
-          {/* State indicators */}
-          <div className="flex items-center gap-4 text-sm">
-            <div className="flex flex-col items-end gap-1">
-              <div className="flex items-center gap-1">
-                <span className="text-slate-500">Admin:</span>
-                <span className={cn('font-semibold', getStateColor(slot.admin_state))}>
-                  {slot.admin_state}
-                </span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="text-slate-500">Port:</span>
-                <span className={cn('font-semibold', getStateColor(slot.port_state))}>
-                  {slot.port_state}
-                </span>
-              </div>
-            </div>
+          <div className="flex items-center gap-3 shrink-0">
+            <StatusPill label="Admin" state={slot.admin_state} />
+            <StatusPill label="Port" state={slot.port_state} />
+          </div>
+          <div className="p-1.5 rounded-md hover:bg-zinc-100 transition-colors shrink-0 text-zinc-400">
+            {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
           </div>
         </div>
       </button>
 
-      {/* Expanded content - Ports list */}
       {expanded && (
-        <div className="border-t border-slate-200 p-4 bg-slate-50">
+        <div className="border-t border-zinc-200 bg-zinc-50/30 p-5">
           {loading && (
-            <div className="flex items-center justify-center gap-2 py-8 text-slate-500">
-              <Loader2 size={16} className="animate-spin" />
-              Loading ports...
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <Loader2 size={20} className="animate-spin text-zinc-400" />
+              <p className="text-sm text-zinc-500 font-medium">Loading ports...</p>
             </div>
           )}
 
           {error && (
-            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-              <AlertCircle size={16} className="shrink-0 mt-0.5" />
+            <div className="flex items-start gap-3 p-4 bg-white border border-zinc-200 rounded-xl shadow-sm">
+              <AlertCircle size={18} className="text-zinc-800 shrink-0 mt-0.5" />
               <div>
-                <div className="font-semibold">Error loading ports</div>
-                <div className="text-xs mt-1">{error}</div>
+                <div className="font-medium text-zinc-900 text-sm">Error loading ports</div>
+                <div className="text-xs text-zinc-500 mt-1">{error}</div>
               </div>
             </div>
           )}
 
           {!loading && !error && ports.length === 0 && (
-            <div className="text-center py-8 text-slate-500">
+            <div className="text-center py-8 text-zinc-400 text-sm font-medium">
               No ports found for this slot
             </div>
           )}
 
           {!loading && !error && ports.length > 0 && (
-            <div className="space-y-6">
-              {/* XDSL-LINE */}
+            <div className="space-y-8">
               {xdslPorts.length > 0 && (
-                <div>
-                  <div className="text-sm font-semibold text-slate-700 mb-2">
-                    XDSL-LINE ports ({xdslPorts.length})
-                  </div>
-                  <div className="space-y-3">
-                    {xdslPorts.map(p => (
-                      <LTPortItem
-                        key={p.port_id}
-                        port={p}
-                        isLocked={portLocks[p.port_id] || false}
-                        instanceId={instanceId}
-                        accessToken={accessToken}
-                        isAdmin={isAdmin}
-                        onLockToggle={() => handlePortLockToggle(p.port_id)}
-                      />
-                    ))}
-                  </div>
-                </div>
+                <PortGroup title="XDSL-LINE" count={xdslPorts.length} icon={<Zap size={14} />}>
+                  {xdslPorts.map((p) => (
+                    <LTPortItem key={p.port_id} port={p} isLocked={portLocks[p.port_id] || false} instanceId={instanceId} accessToken={accessToken} isAdmin={isAdmin} onLockToggle={() => handlePortLockToggle(p.port_id)} />
+                  ))}
+                </PortGroup>
               )}
 
-              {/* ETHERNET-LINE */}
               {ethPorts.length > 0 && (
-                <div>
-                  <div className="text-sm font-semibold text-slate-700 mb-2">
-                    ETHERNET-LINE ports ({ethPorts.length})
-                  </div>
-                  <div className="space-y-3">
-                    {ethPorts.map(p => (
-                      <LTPortItem
-                        key={p.port_id}
-                        port={p}
-                        isLocked={portLocks[p.port_id] || false}
-                        instanceId={instanceId}
-                        accessToken={accessToken}
-                        isAdmin={isAdmin}
-                        onLockToggle={() => handlePortLockToggle(p.port_id)}
-                      />
-                    ))}
-                  </div>
-                </div>
+                <PortGroup title="ETHERNET-LINE" count={ethPorts.length} icon={<Cable size={14} />}>
+                  {ethPorts.map((p) => (
+                    <LTPortItem key={p.port_id} port={p} isLocked={portLocks[p.port_id] || false} instanceId={instanceId} accessToken={accessToken} isAdmin={isAdmin} onLockToggle={() => handlePortLockToggle(p.port_id)} />
+                  ))}
+                </PortGroup>
               )}
 
-              {/* ONT -> PON -> ONT ports */}
               {ponGroups.length > 0 && (
-                <div>
-                  <div className="text-sm font-semibold text-slate-700 mb-2">
-                    ONT / PON
-                  </div>
-                  <div className="space-y-4">
-                    {ponGroups.map(group => (
-                      <div
-                        key={group.pon.port_id}
-                        className="border border-slate-200 rounded-lg bg-white p-3"
-                      >
-                        <div className="text-xs font-semibold text-slate-700 mb-2">
-                          PON {group.pon.port_id}
+                <PortGroup title="PON / ONT" count={ponGroups.reduce((s, g) => s + 1 + g.onts.length, 0)} icon={<Radio size={14} />}>
+                  {ponGroups.map((group) => (
+                    <div key={group.pon.port_id} className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm">
+                      <div className="flex items-center gap-2 mb-4">
+                        <div className="p-1.5 bg-zinc-100 rounded-md border border-zinc-200">
+                          <Radio size={12} className="text-zinc-700" />
                         </div>
-
-                        {group.onts.length === 0 && (
-                          <div className="text-xs text-slate-500">
-                            No ONT ports on this PON
-                          </div>
-                        )}
-
-                        {group.onts.length > 0 && (
-                          <div className="space-y-3">
-                            {group.onts.map(ont => (
-                              <LTPortItem
-                                key={ont.port_id}
-                                port={ont}
-                                isLocked={portLocks[ont.port_id] || false}
-                                instanceId={instanceId}
-                                accessToken={accessToken}
-                                isAdmin={isAdmin}
-                                onLockToggle={() => handlePortLockToggle(ont.port_id)}
-                              />
-                            ))}
-                          </div>
-                        )}
+                        <span className="text-sm font-semibold text-zinc-900 font-mono">PON {group.pon.port_id}</span>
+                        <span className="text-xs text-zinc-400 font-medium">({group.onts.length} ONT{group.onts.length !== 1 ? 's' : ''})</span>
                       </div>
-                    ))}
-                  </div>
-                </div>
+                      {group.onts.length === 0 && <div className="text-xs text-zinc-400 pl-8">No ONT ports on this PON</div>}
+                      {group.onts.length > 0 && (
+                         <div className="space-y-2 border-l-2 border-zinc-100 pl-4 ml-3">
+                          {group.onts.map((ont) => (
+                            <LTPortItem key={ont.port_id} port={ont} isLocked={portLocks[ont.port_id] || false} instanceId={instanceId} accessToken={accessToken} isAdmin={isAdmin} onLockToggle={() => handlePortLockToggle(ont.port_id)} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </PortGroup>
               )}
             </div>
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function StatusPill({ label, state }: { label: string; state: string }) {
+  const up = state === 'Up' || state === 'up';
+  return (
+    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-zinc-200 bg-zinc-50 text-xs font-medium text-zinc-700">
+      <div className={cn('w-1.5 h-1.5 rounded-full', up ? 'bg-zinc-900' : 'bg-transparent border border-zinc-400')} />
+      <span className="text-zinc-500">{label}:</span> {state}
+    </div>
+  );
+}
+
+function PortGroup({ title, count, icon, children }: { title: string; count: number; icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-900">
+          {icon} {title}
+        </div>
+        <div className="h-px flex-1 bg-zinc-200" />
+        <span className="text-xs text-zinc-400 font-medium">{count} port{count !== 1 ? 's' : ''}</span>
+      </div>
+      <div className="space-y-2">{children}</div>
     </div>
   );
 }

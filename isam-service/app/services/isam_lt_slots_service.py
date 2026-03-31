@@ -228,6 +228,13 @@ class ISAMLTSlotsService:
                     slot_id,
                     "\n".join(raw_output.splitlines()[:10]),
                 )
+            
+            if raw_output is not None:
+                logger.info(
+                    "[LT_PORTS] RAW OUTPUT pour slot %s:\n%s",
+                    slot_id,
+                    raw_output,
+                )
 
             ports = self._parse_slot_ports(raw_output or "", slot_id, slot_short_id)
             logger.info(

@@ -15,13 +15,13 @@ import {
   Settings2,
   Database,
   Cable,
+  Layers,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../../context/AuthContext';
 import TemplateWorkspaceOverlay from './TemplateWorkspaceOverlay';
-import LTSlotsPanel from './LTSlotsPanel';
+import LTSlotsOverlay from './LTSlotsOverlay';
 
-// Ajuste si ton isam-service n'est pas sur 8001
 const ISAM_BASE_URL = 'http://127.0.0.1:8001';
 
 type StatusType = 'active' | 'inactive' | 'error';
@@ -91,16 +91,13 @@ function formatDateTime(value?: string | null) {
 
 function parseJwt(token: string | null): any | null {
   if (!token) return null;
-
   try {
     const parts = token.split('.');
     if (parts.length < 2) return null;
-
     const payload = parts[1];
     const base64 = payload.replace(/-/g, '+').replace(/_/g, '/');
     const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4);
     const json = atob(padded);
-
     return JSON.parse(json);
   } catch {
     return null;
@@ -139,6 +136,10 @@ async function authFetchJson<T>(
   return data as T;
 }
 
+/* ============================================================
+   MAIN COMPONENT
+   ============================================================ */
+
 export default function JunctionsSection() {
   const { accessToken, user } = useAuth();
 
@@ -150,9 +151,7 @@ export default function JunctionsSection() {
   const [loading, setLoading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
-  const [filter, setFilter] = useState<'all' | 'active' | 'inactive' | 'error'>(
-    'all',
-  );
+  const [filter, setFilter] = useState<'all' | 'active' | 'inactive' | 'error'>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -171,13 +170,16 @@ export default function JunctionsSection() {
   const [submitAdding, setSubmitAdding] = useState(false);
 
   const [showTemplateWorkspace, setShowTemplateWorkspace] = useState(false);
-  const [showLTSlotsPanel, setShowLTSlotsPanel] = useState(true);
+  const [showLTSlotsOverlay, setShowLTSlotsOverlay] = useState(false);
 
+  /* ---- Load on mount ---- */
   useEffect(() => {
     if (!accessToken) return;
     loadInstances();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
+
+  /* ---- API calls ---- */
 
   async function loadInstances(nextSelectedId?: number | null) {
     setLoading(true);
@@ -213,33 +215,15 @@ export default function JunctionsSection() {
 
   function validateForm(): boolean {
     const e: Record<string, string> = {};
-
-    if (!form.name.trim()) {
-      e.name = 'Name is required.';
-    } else if (form.name.length < 3) {
-      e.name = 'Name must be at least 3 characters.';
-    }
-
-    if (!form.host.trim()) {
-      e.host = 'Host is required.';
-    }
-
-    if (!form.username.trim()) {
-      e.username = 'Username is required.';
-    }
-
-    if (!form.password) {
-      e.password = 'Password is required.';
-    }
-
-    if (!form.telnet_port || form.telnet_port < 1 || form.telnet_port > 65535) {
+    if (!form.name.trim()) e.name = 'Name is required.';
+    else if (form.name.length < 3) e.name = 'Name must be at least 3 characters.';
+    if (!form.host.trim()) e.host = 'Host is required.';
+    if (!form.username.trim()) e.username = 'Username is required.';
+    if (!form.password) e.password = 'Password is required.';
+    if (!form.telnet_port || form.telnet_port < 1 || form.telnet_port > 65535)
       e.telnet_port = 'Telnet port must be between 1 and 65535.';
-    }
-
-    if (!form.ssh_port || form.ssh_port < 1 || form.ssh_port > 65535) {
+    if (!form.ssh_port || form.ssh_port < 1 || form.ssh_port > 65535)
       e.ssh_port = 'SSH port must be between 1 and 65535.';
-    }
-
     setFormErrors(e);
     return Object.keys(e).length === 0;
   }
@@ -247,9 +231,7 @@ export default function JunctionsSection() {
   async function handleAddIsam(e: React.FormEvent) {
     e.preventDefault();
     setFormErrors({});
-
     if (!validateForm()) return;
-
     setSubmitAdding(true);
 
     try {
@@ -258,9 +240,7 @@ export default function JunctionsSection() {
         accessToken,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(form),
         },
       );
@@ -277,7 +257,6 @@ export default function JunctionsSection() {
       });
 
       await loadInstances();
-
       toast.success('The ISAM instance has been created successfully.');
     } catch (err: any) {
       setFormErrors({ general: err.message || 'Failed to add ISAM.' });
@@ -295,9 +274,7 @@ export default function JunctionsSection() {
         accessToken,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
         },
       );
 
@@ -322,9 +299,7 @@ export default function JunctionsSection() {
         toast.error(res.message || 'Connection failed', { id: toastId });
       }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to test connection for this ISAM.', {
-        id: toastId,
-      });
+      toast.error(err.message || 'Failed to test connection.', { id: toastId });
     }
   }
 
@@ -335,17 +310,13 @@ export default function JunctionsSection() {
       await authFetchJson<void>(
         `${ISAM_BASE_URL}/api/v1/isam/instances/${id}`,
         accessToken,
-        {
-          method: 'DELETE',
-        },
+        { method: 'DELETE' },
       );
 
       await loadInstances(null);
-
       toast.success('The ISAM instance has been deleted successfully.', {
         id: toastId,
       });
-
       return true;
     } catch (err: any) {
       toast.error(err.message || 'Failed to delete this ISAM instance.', {
@@ -355,17 +326,16 @@ export default function JunctionsSection() {
     }
   }
 
+  /* ---- Filtering ---- */
+
   const filtered = instances.filter((inst) => {
     if (filter !== 'all' && inst.status !== filter) return false;
-
     if (
       searchTerm &&
       !inst.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
       !inst.host.toLowerCase().includes(searchTerm.toLowerCase())
-    ) {
+    )
       return false;
-    }
-
     return true;
   });
 
@@ -374,11 +344,14 @@ export default function JunctionsSection() {
     instances.find((i) => i.id === selectedInstanceId) ||
     null;
 
+  /* ---- Render ---- */
+
   return (
     <div className="space-y-6">
-      {/* Toolbar */}
+      {/* ══════════ Toolbar ══════════ */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3 flex-wrap">
+          {/* Search */}
           <div className="relative">
             <Search
               size={16}
@@ -393,6 +366,7 @@ export default function JunctionsSection() {
             />
           </div>
 
+          {/* Filter pills */}
           <div className="flex bg-slate-100 rounded-lg p-0.5">
             {(['all', 'active', 'inactive', 'error'] as const).map((f) => (
               <button
@@ -425,22 +399,6 @@ export default function JunctionsSection() {
             <RefreshCw size={14} /> Refresh
           </button>
 
-          {/* NEW: Show LT Slots button - Admin/SuperAdmin only */}
-          {isAdmin && selectedInstance && (
-            <button
-              onClick={() => setShowLTSlotsPanel(!showLTSlotsPanel)}
-              className={cn(
-                'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors',
-                showLTSlotsPanel
-                  ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-              )}
-            >
-              <Settings2 size={16} />
-              {showLTSlotsPanel ? 'Hide' : 'Show'} LT Slots
-            </button>
-          )}
-
           {isAdmin && (
             <button
               onClick={() => setShowAddModal(true)}
@@ -452,14 +410,14 @@ export default function JunctionsSection() {
         </div>
       </div>
 
-      {/* Global error */}
+      {/* ══════════ Global error ══════════ */}
       {globalError && (
         <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
           {globalError}
         </div>
       )}
 
-      {/* Cards */}
+      {/* ══════════ Instance Cards ══════════ */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {filtered.map((inst) => (
           <div
@@ -480,8 +438,8 @@ export default function JunctionsSection() {
                     inst.status === 'active'
                       ? 'text-green-500'
                       : inst.status === 'error'
-                      ? 'text-red-500'
-                      : 'text-slate-400',
+                        ? 'text-red-500'
+                        : 'text-slate-400',
                   )}
                 />
                 <h3 className="font-semibold text-slate-900 font-mono">
@@ -507,8 +465,8 @@ export default function JunctionsSection() {
                     inst.protocol_preference === 'ssh'
                       ? 'bg-green-100 text-green-700'
                       : inst.protocol_preference === 'telnet'
-                      ? 'bg-purple-100 text-purple-700'
-                      : 'bg-slate-100 text-slate-700',
+                        ? 'bg-purple-100 text-purple-700'
+                        : 'bg-slate-100 text-slate-700',
                   )}
                 >
                   {inst.protocol_preference}
@@ -529,14 +487,16 @@ export default function JunctionsSection() {
                 <span
                   className={cn(
                     'font-mono font-medium',
-                    !inst.last_response_time_ms || inst.last_response_time_ms === 0
+                    !inst.last_response_time_ms ||
+                      inst.last_response_time_ms === 0
                       ? 'text-red-500'
                       : inst.last_response_time_ms > 100
-                      ? 'text-amber-500'
-                      : 'text-green-600',
+                        ? 'text-amber-500'
+                        : 'text-green-600',
                   )}
                 >
-                  {!inst.last_response_time_ms || inst.last_response_time_ms === 0
+                  {!inst.last_response_time_ms ||
+                  inst.last_response_time_ms === 0
                     ? 'N/A'
                     : `${inst.last_response_time_ms}ms`}
                 </span>
@@ -568,12 +528,14 @@ export default function JunctionsSection() {
         ))}
       </div>
 
-      {/* Panels */}
+      {/* ══════════ Configuration + Details Panels ══════════ */}
       {selectedInstance && (
         <div className="space-y-4">
           <IsamConfigurationPanel
             instance={selectedInstance}
+            isAdmin={isAdmin}
             onOpenTemplateForm={() => setShowTemplateWorkspace(true)}
+            onOpenLTSlots={() => setShowLTSlotsOverlay(true)}
           />
 
           {isAdmin && (
@@ -581,6 +543,7 @@ export default function JunctionsSection() {
               instance={selectedInstance}
               onDeleted={() => {
                 setShowTemplateWorkspace(false);
+                setShowLTSlotsOverlay(false);
               }}
               onDeleteInstance={deleteInstance}
             />
@@ -588,16 +551,19 @@ export default function JunctionsSection() {
         </div>
       )}
 
-      {/* LT Slots Section - Admin/SuperAdmin only, NEW */}
-      {isAdmin && showLTSlotsPanel && selectedInstance && (
-        <LTSlotsPanel
+      {/* ══════════ LT Slots Overlay (full-page) ══════════ */}
+      {selectedInstance && showLTSlotsOverlay && (
+        <LTSlotsOverlay
           instanceId={selectedInstance.id}
+          instanceName={selectedInstance.name}
+          instanceHost={selectedInstance.host}
           accessToken={accessToken}
           isAdmin={isAdmin}
+          onClose={() => setShowLTSlotsOverlay(false)}
         />
       )}
 
-      {/* New configuration workspace */}
+      {/* ══════════ Template Workspace Overlay ══════════ */}
       {selectedInstance && showTemplateWorkspace && (
         <TemplateWorkspaceOverlay
           instance={selectedInstance}
@@ -605,7 +571,7 @@ export default function JunctionsSection() {
         />
       )}
 
-      {/* Add ISAM modal */}
+      {/* ══════════ Add ISAM Modal ══════════ */}
       {showAddModal && isAdmin && (
         <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-lg w-full max-w-lg p-6 relative">
@@ -620,6 +586,7 @@ export default function JunctionsSection() {
             )}
 
             <form onSubmit={handleAddIsam} className="space-y-3 text-sm">
+              {/* Name + Host */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
@@ -638,7 +605,9 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.name && (
-                    <div className="text-xs text-red-500 mt-1">{formErrors.name}</div>
+                    <div className="text-xs text-red-500 mt-1">
+                      {formErrors.name}
+                    </div>
                   )}
                 </div>
 
@@ -659,11 +628,14 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.host && (
-                    <div className="text-xs text-red-500 mt-1">{formErrors.host}</div>
+                    <div className="text-xs text-red-500 mt-1">
+                      {formErrors.host}
+                    </div>
                   )}
                 </div>
               </div>
 
+              {/* Telnet + SSH ports */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
@@ -720,6 +692,7 @@ export default function JunctionsSection() {
                 </div>
               </div>
 
+              {/* Protocol preference */}
               <div>
                 <label className="block font-medium text-slate-700 mb-1">
                   Protocol Preference
@@ -729,7 +702,8 @@ export default function JunctionsSection() {
                   onChange={(e) =>
                     setForm((f) => ({
                       ...f,
-                      protocol_preference: e.target.value as ProtocolPreference,
+                      protocol_preference: e.target
+                        .value as ProtocolPreference,
                     }))
                   }
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -740,6 +714,7 @@ export default function JunctionsSection() {
                 </select>
               </div>
 
+              {/* Username + Password */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
@@ -789,6 +764,7 @@ export default function JunctionsSection() {
                 </div>
               </div>
 
+              {/* Actions */}
               <div className="flex justify-end gap-2 pt-3">
                 <button
                   type="button"
@@ -813,7 +789,9 @@ export default function JunctionsSection() {
   );
 }
 
-/* ---------- Status Badge ---------- */
+/* ============================================================
+   STATUS BADGE
+   ============================================================ */
 
 function StatusBadge({ status }: { status: StatusType }) {
   return (
@@ -823,8 +801,8 @@ function StatusBadge({ status }: { status: StatusType }) {
         status === 'active'
           ? 'bg-green-100 text-green-700'
           : status === 'error'
-          ? 'bg-red-100 text-red-700'
-          : 'bg-slate-100 text-slate-600',
+            ? 'bg-red-100 text-red-700'
+            : 'bg-slate-100 text-slate-600',
       )}
     >
       {status}
@@ -832,14 +810,20 @@ function StatusBadge({ status }: { status: StatusType }) {
   );
 }
 
-/* ---------- Configuration Panel ---------- */
+/* ============================================================
+   CONFIGURATION PANEL
+   ============================================================ */
 
 function IsamConfigurationPanel({
   instance,
+  isAdmin,
   onOpenTemplateForm,
+  onOpenLTSlots,
 }: {
   instance: IsamInstance;
+  isAdmin: boolean;
   onOpenTemplateForm: () => void;
+  onOpenLTSlots: () => void;
 }) {
   const responseTime =
     !instance.last_response_time_ms || instance.last_response_time_ms === 0
@@ -848,26 +832,44 @@ function IsamConfigurationPanel({
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      {/* Header with 2 buttons */}
       <div className="p-5 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h3 className="font-semibold text-slate-900 text-lg">
             {instance.name} — Configuration
           </h3>
           <p className="text-sm text-slate-500">
-            {instance.host} (Telnet:{instance.telnet_port} / SSH:{instance.ssh_port})
+            {instance.host} (Telnet:{instance.telnet_port} / SSH:
+            {instance.ssh_port})
           </p>
         </div>
 
-        <button
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          onClick={onOpenTemplateForm}
-        >
-          <Settings2 size={16} />
-          Open Configuration Workspace
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Button 1: Open Configuration Workspace */}
+          <button
+            className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            onClick={onOpenTemplateForm}
+          >
+            <Settings2 size={16} />
+            Open Configuration Workspace
+          </button>
+
+          {/* Button 2: LT Slots & Ports (admin only) */}
+          {isAdmin && (
+            <button
+              className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg hover:from-violet-700 hover:to-purple-700 transition-all shadow-sm"
+              onClick={onOpenLTSlots}
+            >
+              <Layers size={16} />
+              LT Slots & Ports
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* Config grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-5">
+        {/* General */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             General Settings
@@ -875,7 +877,10 @@ function IsamConfigurationPanel({
           <div className="space-y-3">
             <ConfigRow label="Instance Name" value={instance.name} />
             <ConfigRow label="Host" value={instance.host} />
-            <ConfigRow label="Telnet Port" value={String(instance.telnet_port)} />
+            <ConfigRow
+              label="Telnet Port"
+              value={String(instance.telnet_port)}
+            />
             <ConfigRow label="SSH Port" value={String(instance.ssh_port)} />
             <ConfigRow
               label="Last Checked"
@@ -889,6 +894,7 @@ function IsamConfigurationPanel({
           </div>
         </div>
 
+        {/* Protocol */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             Protocol Settings
@@ -897,7 +903,9 @@ function IsamConfigurationPanel({
             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
               <div className="flex items-center gap-2">
                 <Lock size={16} className="text-green-500" />
-                <span className="text-sm text-slate-700">Preferred Protocol</span>
+                <span className="text-sm text-slate-700">
+                  Preferred Protocol
+                </span>
               </div>
               <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 uppercase">
                 {instance.protocol_preference}
@@ -923,11 +931,18 @@ function IsamConfigurationPanel({
               </span>
             </div>
 
-            <ConfigRow label="Status" value={instance.status.toUpperCase()} />
-            <ConfigRow label="Last Error" value={instance.last_error || 'None'} />
+            <ConfigRow
+              label="Status"
+              value={instance.status.toUpperCase()}
+            />
+            <ConfigRow
+              label="Last Error"
+              value={instance.last_error || 'None'}
+            />
           </div>
         </div>
 
+        {/* Session */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             Session Management
@@ -939,6 +954,7 @@ function IsamConfigurationPanel({
           </div>
         </div>
 
+        {/* Network */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             Network Settings
@@ -955,7 +971,9 @@ function IsamConfigurationPanel({
   );
 }
 
-/* ---------- Details Panel (admin only) ---------- */
+/* ============================================================
+   DETAILS PANEL (admin only)
+   ============================================================ */
 
 function IsamDetailsPanel({
   instance,
@@ -971,6 +989,7 @@ function IsamDetailsPanel({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
+  /* ---- Memory usage state ---- */
   const [memoryUsage, setMemoryUsage] = useState<{
     loading: boolean;
     error: string | null;
@@ -991,6 +1010,7 @@ function IsamDetailsPanel({
     last_refresh_error: null,
   });
 
+  /* ---- Ports state ---- */
   const [ports, setPorts] = useState<{
     loading: boolean;
     error: string | null;
@@ -1026,10 +1046,11 @@ function IsamDetailsPanel({
         `${ISAM_BASE_URL}/api/v1/isam/instances/${instance.id}/cached-memory-usage`,
         accessToken,
       );
-
       setMemoryUsage({
         loading: false,
-        error: res.success ? null : res.message || 'No cached memory usage available.',
+        error: res.success
+          ? null
+          : res.message || 'No cached memory usage available.',
         parsed: res.parsed || {},
         protocol_used: res.protocol_used,
         cached_at: res.cached_at,
@@ -1053,10 +1074,11 @@ function IsamDetailsPanel({
         `${ISAM_BASE_URL}/api/v1/isam/instances/${instance.id}/cached-ports`,
         accessToken,
       );
-
       setPorts({
         loading: false,
-        error: res.success ? null : res.message || 'No cached ports available.',
+        error: res.success
+          ? null
+          : res.message || 'No cached ports available.',
         ports: res.ports || [],
         port_count: res.port_count || 0,
         protocol_used: res.protocol_used,
@@ -1078,7 +1100,6 @@ function IsamDetailsPanel({
     setDeleting(true);
     const deleted = await onDeleteInstance(instance.id);
     setDeleting(false);
-
     if (deleted) {
       setShowDeleteDialog(false);
       onDeleted();
@@ -1088,16 +1109,17 @@ function IsamDetailsPanel({
   return (
     <>
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-5">
+        {/* Header */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h3 className="font-semibold text-slate-900 text-lg">
               {instance.name} — Details
             </h3>
             <p className="text-xs text-slate-500">
-              {instance.host} (telnet:{instance.telnet_port} / ssh:{instance.ssh_port})
+              {instance.host} (telnet:{instance.telnet_port} / ssh:
+              {instance.ssh_port})
             </p>
           </div>
-
           <button
             onClick={() => setShowDeleteDialog(true)}
             className="flex items-center gap-1 text-xs text-red-600 hover:text-red-800 border border-red-200 px-3 py-1.5 rounded-lg"
@@ -1108,7 +1130,7 @@ function IsamDetailsPanel({
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Memory */}
+          {/* ---- Memory ---- */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Database size={16} className="text-emerald-600" />
@@ -1120,7 +1142,9 @@ function IsamDetailsPanel({
             <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 text-[11px] text-slate-600 space-y-1">
               <div>
                 Last successful snapshot:{' '}
-                <span className="font-mono">{formatDateTime(memoryUsage.cached_at)}</span>
+                <span className="font-mono">
+                  {formatDateTime(memoryUsage.cached_at)}
+                </span>
               </div>
               <div>
                 Last refresh attempt:{' '}
@@ -1130,13 +1154,18 @@ function IsamDetailsPanel({
               </div>
               <div>
                 Protocol used:{' '}
-                <span className="font-mono">{memoryUsage.protocol_used || 'N/A'}</span>
+                <span className="font-mono">
+                  {memoryUsage.protocol_used || 'N/A'}
+                </span>
               </div>
             </div>
 
             {memoryUsage.loading && (
               <div className="text-xs text-slate-500">
-                <Loader2 size={14} className="inline-block animate-spin mr-1" />
+                <Loader2
+                  size={14}
+                  className="inline-block animate-spin mr-1"
+                />
                 Loading...
               </div>
             )}
@@ -1146,8 +1175,8 @@ function IsamDetailsPanel({
               memoryUsage.last_refresh_error &&
               memoryUsage.cached_at && (
                 <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
-                  Latest refresh failed. Displaying last successful snapshot. Error:{' '}
-                  {memoryUsage.last_refresh_error}
+                  Latest refresh failed. Displaying last successful snapshot.
+                  Error: {memoryUsage.last_refresh_error}
                 </div>
               )}
 
@@ -1172,26 +1201,31 @@ function IsamDetailsPanel({
                 {Array.isArray(memoryUsage.parsed?.entries) &&
                 memoryUsage.parsed.entries.length > 0 ? (
                   <ul className="space-y-1">
-                    {memoryUsage.parsed.entries.map((e: any, idx: number) => (
-                      <li
-                        key={idx}
-                        className="flex justify-between border-b border-slate-100 pb-0.5"
-                      >
-                        <span className="text-slate-500">{e.slot}</span>
-                        <span className="font-mono text-slate-900">
-                          {e.used_mb} / {e.total_mb} MB ({e.used_percent}%)
-                        </span>
-                      </li>
-                    ))}
+                    {memoryUsage.parsed.entries.map(
+                      (e: any, idx: number) => (
+                        <li
+                          key={idx}
+                          className="flex justify-between border-b border-slate-100 pb-0.5"
+                        >
+                          <span className="text-slate-500">{e.slot}</span>
+                          <span className="font-mono text-slate-900">
+                            {e.used_mb} / {e.total_mb} MB ({e.used_percent}
+                            %)
+                          </span>
+                        </li>
+                      ),
+                    )}
                   </ul>
                 ) : (
-                  <span className="text-slate-500">No memory usage data parsed.</span>
+                  <span className="text-slate-500">
+                    No memory usage data parsed.
+                  </span>
                 )}
               </div>
             )}
           </div>
 
-          {/* Ports */}
+          {/* ---- Ports ---- */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Cable size={16} className="text-blue-600" />
@@ -1203,21 +1237,30 @@ function IsamDetailsPanel({
             <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 text-[11px] text-slate-600 space-y-1">
               <div>
                 Last successful snapshot:{' '}
-                <span className="font-mono">{formatDateTime(ports.cached_at)}</span>
+                <span className="font-mono">
+                  {formatDateTime(ports.cached_at)}
+                </span>
               </div>
               <div>
                 Last refresh attempt:{' '}
-                <span className="font-mono">{formatDateTime(ports.last_refresh_at)}</span>
+                <span className="font-mono">
+                  {formatDateTime(ports.last_refresh_at)}
+                </span>
               </div>
               <div>
                 Protocol used:{' '}
-                <span className="font-mono">{ports.protocol_used || 'N/A'}</span>
+                <span className="font-mono">
+                  {ports.protocol_used || 'N/A'}
+                </span>
               </div>
             </div>
 
             {ports.loading && (
               <div className="text-xs text-slate-500">
-                <Loader2 size={14} className="inline-block animate-spin mr-1" />
+                <Loader2
+                  size={14}
+                  className="inline-block animate-spin mr-1"
+                />
                 Loading...
               </div>
             )}
@@ -1227,8 +1270,8 @@ function IsamDetailsPanel({
               ports.last_refresh_error &&
               ports.cached_at && (
                 <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
-                  Latest refresh failed. Displaying last successful snapshot. Error:{' '}
-                  {ports.last_refresh_error}
+                  Latest refresh failed. Displaying last successful snapshot.
+                  Error: {ports.last_refresh_error}
                 </div>
               )}
 
@@ -1241,13 +1284,17 @@ function IsamDetailsPanel({
             {!ports.loading && !ports.error && (
               <div className="bg-slate-50 rounded-lg p-2 text-xs max-h-48 overflow-y-auto">
                 <p className="text-slate-600 mb-1">
-                  Port count: <span className="font-mono">{ports.port_count}</span>
+                  Port count:{' '}
+                  <span className="font-mono">{ports.port_count}</span>
                 </p>
 
                 {ports.ports.length > 0 ? (
                   <ul className="space-y-1">
                     {ports.ports.slice(0, 12).map((p: any, idx: number) => (
-                      <li key={idx} className="flex justify-between items-center">
+                      <li
+                        key={idx}
+                        className="flex justify-between items-center"
+                      >
                         <div>
                           <span className="font-mono text-slate-900 mr-2">
                             {p.port_id}
@@ -1258,7 +1305,6 @@ function IsamDetailsPanel({
                         </div>
                       </li>
                     ))}
-
                     {ports.ports.length > 12 && (
                       <li className="text-slate-400">
                         +{ports.ports.length - 12} more...
@@ -1276,6 +1322,7 @@ function IsamDetailsPanel({
         </div>
       </div>
 
+      {/* Delete confirm dialog */}
       <ConfirmDialog
         open={showDeleteDialog}
         title="Delete this ISAM instance?"
@@ -1292,7 +1339,9 @@ function IsamDetailsPanel({
   );
 }
 
-/* ---------- Confirm Dialog ---------- */
+/* ============================================================
+   CONFIRM DIALOG
+   ============================================================ */
 
 function ConfirmDialog({
   open,
@@ -1362,7 +1411,9 @@ function ConfirmDialog({
   );
 }
 
-/* ---------- Simple config row ---------- */
+/* ============================================================
+   CONFIG ROW
+   ============================================================ */
 
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return (

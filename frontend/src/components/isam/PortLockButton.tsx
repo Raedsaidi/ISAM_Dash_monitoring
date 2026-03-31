@@ -41,26 +41,10 @@ export default function PortLockButton({
       });
 
       let data: any = null;
-      try {
-        data = await res.json();
-      } catch {
-        // not json
-      }
+      try { data = await res.json(); } catch {}
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
 
-      if (!res.ok) {
-        const detail =
-          data?.detail ||
-          data?.message ||
-          (Array.isArray(data) && data[0]?.msg) ||
-          `HTTP ${res.status}`;
-        throw new Error(detail);
-      }
-
-      toast.success(
-        isLocked ? `Port ${portId} unlocked successfully` : `Port ${portId} locked successfully`,
-        { id: toastId }
-      );
-
+      toast.success(isLocked ? `Port ${portId} unlocked` : `Port ${portId} locked`, { id: toastId });
       onLockToggle();
     } catch (err: any) {
       toast.error(err.message || 'Failed to toggle port lock', { id: toastId });
@@ -71,33 +55,28 @@ export default function PortLockButton({
 
   return (
     <button
-      onClick={handleToggleLock}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleToggleLock();
+      }}
       disabled={loading}
       className={cn(
-        'flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium',
-        'transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
+        'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all duration-200',
+        'disabled:opacity-50 disabled:cursor-not-allowed border',
         isLocked
-          ? 'bg-red-100 text-red-700 hover:bg-red-200'
-          : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+          ? 'bg-white text-zinc-900 border-zinc-200 hover:bg-zinc-50 hover:border-zinc-300 shadow-sm' 
+          : 'bg-zinc-900 text-white border-transparent hover:bg-zinc-800 shadow-sm'
       )}
       title={isLocked ? 'Click to unlock' : 'Click to lock'}
     >
       {loading ? (
-        <>
-          <Loader2 size={14} className="animate-spin" />
-          {isLocked ? 'Unlocking...' : 'Locking...'}
-        </>
+        <Loader2 size={13} className="animate-spin" />
       ) : isLocked ? (
-        <>
-          <Lock size={14} />
-          Unlock
-        </>
+        <Unlock size={13} />
       ) : (
-        <>
-          <Unlock size={14} />
-          Lock
-        </>
+        <Lock size={13} />
       )}
+      {isLocked ? 'Unlock' : 'Lock'}
     </button>
   );
 }

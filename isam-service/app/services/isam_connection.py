@@ -227,27 +227,58 @@ class ISAMConnectionService:
             return False, "", msg
 
     def execute_telnet_command(
-        self, command: str, timeout: int = 20, read_delay: float = 2.0
+        self, command: str, timeout: int = 20, idle_timeout: float = 1.0
     ) -> Tuple[bool, str, str]:
+        """
+        Exécute une commande via Telnet en lisant la sortie jusqu'à ce qu'il
+        n'y ait plus de données pendant idle_timeout secondes, ou qu'on dépasse
+        timeout au total.
+        """
         try:
             logger.info(f"[TELNET] Exécution commande: {command!r}")
             with telnetlib.Telnet(
                 self.instance.host, self.instance.telnet_port, timeout=timeout
             ) as tn:
+                # --- Login ---
                 tn.read_until(b"login: ", timeout=timeout)
                 tn.write(self.instance.username.encode("ascii") + b"\n")
 
                 tn.read_until(b"Password: ", timeout=timeout)
                 tn.write(self.instance.password.encode("ascii") + b"\n")
 
+                # On laisse le prompt arriver puis on vide le buffer
                 time.sleep(1)
-                _ = tn.read_very_eager()
+                tn.read_very_eager()
 
-                tn.write(command.encode("ascii") + b"\n")
+                # --- Envoi de la commande ---
+                # Support des commandes multi-lignes type "show\ninterface\nport ..."
+                for line in command.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    tn.write(line.encode("ascii") + b"\n")
+                    # petit délai pour laisser le CLI changer de contexte
+                    time.sleep(0.2)
 
-                time.sleep(read_delay)
-                output = tn.read_very_eager().decode("ascii", errors="ignore")
+                # --- Lecture de la sortie ---
+                end_time = time.time() + timeout
+                last_data_time = time.time()
+                buffer = b""
 
+                while time.time() < end_time:
+                    chunk = tn.read_very_eager()
+                    if chunk:
+                        buffer += chunk
+                        last_data_time = time.time()
+                    else:
+                        # Rien de nouveau : si on a déjà reçu des données
+                        # et qu'il n'y a plus rien depuis idle_timeout, on arrête.
+                        if buffer and (time.time() - last_data_time) > idle_timeout:
+                            break
+                        # Petit sleep pour éviter de tourner à vide
+                        time.sleep(0.2)
+
+                output = buffer.decode("ascii", errors="ignore")
                 logger.info("[TELNET] Commande exécutée.")
                 return True, output, ""
 
