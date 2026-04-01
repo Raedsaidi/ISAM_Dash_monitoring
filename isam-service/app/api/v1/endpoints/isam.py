@@ -1,11 +1,12 @@
 from datetime import datetime
 import logging
-from typing import List
+import math
+from typing import List, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import func, and_, or_
 from urllib.parse import unquote
 
 from app.core.db import get_db
@@ -18,6 +19,8 @@ from app.models.isam_data import ISAMDataType
 from app.models.port_lock import PortLock
 from app.services.isam_cache import get_cached_isam_data, load_cached_parsed_data
 from app.models.wan_template import WanTemplate, WanTemplateScope
+from app.models.wan_model import WanModel
+from app.models.template_project import TemplateProject
 from app.models.isam_schemas import (
     ISAMInstanceCreate,
     ISAMInstanceUpdate,
@@ -51,6 +54,15 @@ from app.models.isam_schemas import (
     LTPortsResponse,
     LTPortItem,
     LTSlotItem,
+    WanModelCreate,
+    WanModelUpdate,
+    WanModelRead,
+    WanModelList,
+    TemplateProjectCreate,
+    TemplateProjectUpdate,
+    TemplateProjectRead,
+    TemplateProjectList,
+    PortTemplateStatusResponse,
 )
 from app.services.isam_connection import (
     ISAMConnectionService,
@@ -218,18 +230,15 @@ def log_config_history(
     db.commit()
 
 
-# ✅ NEW: Check port not locked
-def check_port_not_locked(
+def ensure_port_not_locked_for_user(
     db: Session,
     instance_id: int,
     port_id: str,
+    current_user: TokenUser,
 ):
-    """
-    Vérifie qu'un port n'est pas locké.
-    Lève une HTTPException si le port est locké.
-    
-    À utiliser avant d'appliquer une template sur un port.
-    """
+    if current_user.role != "USER":
+        return
+
     lock = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
         PortLock.port_id == port_id
@@ -238,8 +247,70 @@ def check_port_not_locked(
     if lock:
         raise HTTPException(
             status_code=403,
-            detail=f"Port {port_id} is locked and cannot be used. Please contact your administrator.",
+            detail=f"Port {port_id} is locked and cannot be used by USERs. Please contact your administrator.",
         )
+
+
+def get_all_wan_model_names(db: Session) -> list[str]:
+    """Récupère tous les noms de modèles WAN de la base."""
+    models = db.query(WanModel.name).all()
+    return [m.name for m in models]
+
+
+def validate_template_wan_model(
+    db: Session,
+    template_name: str,
+) -> str:
+    """
+    Vérifie que le nom du template contient un modèle WAN valide.
+    Retourne le nom du modèle trouvé.
+    Lève HTTPException 400 si aucun modèle n'est trouvé.
+    """
+    known_models = get_all_wan_model_names(db)
+
+    if not known_models:
+        logger.warning(
+            "[WAN_MODEL] No WAN models defined in database. "
+            "Skipping WAN model validation for template '%s'.",
+            template_name,
+        )
+        return ""
+
+    found_model = ISAMDataService.extract_wan_model_from_template_name(
+        template_name,
+        known_models,
+    )
+
+    if not found_model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No valid WAN model found in template name '{template_name}'. "
+                f"The template name must contain one of the known WAN models. "
+                f"Known models: {', '.join(sorted(known_models))}. "
+                f"Example: 'GPON-DHCP_Orange' or 'ETHERNET_Djezzy'."
+            ),
+        )
+
+    return found_model
+
+
+# ── Helper pour WAN Models ──
+
+def get_wan_model_or_404(db: Session, model_id: int) -> WanModel:
+    m = db.query(WanModel).filter(WanModel.id == model_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail=f"WAN Model #{model_id} not found.")
+    return m
+
+
+# ── Helper pour Template Projects ──
+
+def get_template_project_or_404(db: Session, project_id: int) -> TemplateProject:
+    p = db.query(TemplateProject).filter(TemplateProject.id == project_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Template Project #{project_id} not found.")
+    return p
 
 
 # -------- INSTANCES --------
@@ -458,7 +529,7 @@ def run_command_on_isam(
     )
 
 
-# -------- MEMORY USAGE (show -> system -> memory-usage) --------
+# -------- MEMORY USAGE --------
 
 @router.get(
     "/instances/{instance_id}/memory-usage",
@@ -482,7 +553,7 @@ def get_memory_usage(
     )
 
 
-# -------- PORTS (show -> port) --------
+# -------- PORTS --------
 
 def parse_show_port(raw_output: str) -> List[PortItem]:
     ports: List[PortItem] = []
@@ -598,7 +669,224 @@ def get_isam_ports(
     )
 
 
-# -------- WAN TEMPLATES (global admin + user instance copies) --------
+# ================================================================
+# ========  WAN MODELS  ==========================================
+# ================================================================
+
+@router.post("/wan-models", response_model=WanModelRead)
+def create_wan_model(
+    body: WanModelCreate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    existing = db.query(WanModel).filter(WanModel.name == body.name.strip()).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A WAN model with name '{body.name.strip()}' already exists.",
+        )
+
+    model = WanModel(
+        name=body.name.strip(),
+        description=body.description.strip() if body.description else None,
+        created_by=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+@router.get("/wan-models", response_model=WanModelList)
+def list_wan_models(
+    search: str | None = Query(None, min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(WanModel)
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                WanModel.name.ilike(pattern),
+                WanModel.description.ilike(pattern),
+            )
+        )
+
+    models = q.order_by(WanModel.name.asc()).all()
+    return WanModelList(models=models)
+
+
+@router.get("/wan-models/{model_id}", response_model=WanModelRead)
+def get_wan_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    return get_wan_model_or_404(db, model_id)
+
+
+@router.patch("/wan-models/{model_id}", response_model=WanModelRead)
+def update_wan_model(
+    model_id: int,
+    body: WanModelUpdate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    model = get_wan_model_or_404(db, model_id)
+    data = body.model_dump(exclude_unset=True)
+
+    if "name" in data and data["name"]:
+        new_name = data["name"].strip()
+        existing = db.query(WanModel).filter(
+            WanModel.name == new_name,
+            WanModel.id != model_id,
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A WAN model with name '{new_name}' already exists.",
+            )
+        data["name"] = new_name
+
+    for field, value in data.items():
+        setattr(model, field, value)
+
+    model.updated_at = datetime.utcnow()
+    db.add(model)
+    db.commit()
+    db.refresh(model)
+    return model
+
+
+@router.delete("/wan-models/{model_id}", status_code=204)
+def delete_wan_model(
+    model_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    model = get_wan_model_or_404(db, model_id)
+    db.delete(model)
+    db.commit()
+    return
+
+
+# ================================================================
+# ========  TEMPLATE PROJECTS  ===================================
+# ================================================================
+
+@router.post("/template-projects", response_model=TemplateProjectRead)
+def create_template_project(
+    body: TemplateProjectCreate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    existing = db.query(TemplateProject).filter(
+        TemplateProject.name == body.name.strip()
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A template project with name '{body.name.strip()}' already exists.",
+        )
+
+    project = TemplateProject(
+        name=body.name.strip(),
+        description=body.description.strip() if body.description else None,
+        created_by=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.get("/template-projects", response_model=TemplateProjectList)
+def list_template_projects(
+    search: str | None = Query(None, min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(TemplateProject)
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                TemplateProject.name.ilike(pattern),
+                TemplateProject.description.ilike(pattern),
+            )
+        )
+
+    projects = q.order_by(TemplateProject.name.asc()).all()
+    return TemplateProjectList(projects=projects)
+
+
+@router.get("/template-projects/{project_id}", response_model=TemplateProjectRead)
+def get_template_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    return get_template_project_or_404(db, project_id)
+
+
+@router.patch("/template-projects/{project_id}", response_model=TemplateProjectRead)
+def update_template_project(
+    project_id: int,
+    body: TemplateProjectUpdate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    project = get_template_project_or_404(db, project_id)
+    data = body.model_dump(exclude_unset=True)
+
+    if "name" in data and data["name"]:
+        new_name = data["name"].strip()
+        existing = db.query(TemplateProject).filter(
+            TemplateProject.name == new_name,
+            TemplateProject.id != project_id,
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A template project with name '{new_name}' already exists.",
+            )
+        data["name"] = new_name
+
+    if "description" in data and data["description"]:
+        data["description"] = data["description"].strip()
+
+    for field, value in data.items():
+        setattr(project, field, value)
+
+    project.updated_at = datetime.utcnow()
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.delete("/template-projects/{project_id}", status_code=204)
+def delete_template_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    project = get_template_project_or_404(db, project_id)
+    db.delete(project)
+    db.commit()
+    return
+
+
+# ================================================================
+# ========  WAN TEMPLATES  =======================================
+# ================================================================
 
 @router.post("/wan-templates", response_model=WanTemplateRead)
 def create_wan_template(
@@ -639,6 +927,7 @@ def create_wan_template(
     tpl = WanTemplate(
         isam_instance_id=instance_id,
         name=body.name.strip(),
+        project=body.project.strip() if body.project else None,
         commands_template=body.commands_template,
         created_by=current_user.username,
         scope=body.scope,
@@ -667,29 +956,46 @@ def create_wan_template(
     return tpl
 
 
-from fastapi import Query, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import or_, and_
-
 @router.get("/wan-templates", response_model=WanTemplateList)
 def list_wan_templates(
     instance_id: int | None = Query(None, ge=1),
     creator: str | None = Query(None),
-    scope: str | None = Query(None),
+    scope: str | None = Query(None, description="Filter by scope: GLOBAL or USER_INSTANCE"),
     search: str | None = Query(None, min_length=1, max_length=200),
-
-    # NEW: filtre "mes templates"
+    project: str | None = Query(None, min_length=1, max_length=100, description="Filter by project"),
     mine: bool = Query(False, description="If true => only templates created by current user"),
+
+    # NEW: pagination
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
 
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
+    PROJECT_NONE = "__NONE__"  # convention front -> backend
+
     q = db.query(WanTemplate)
 
-    # =========================================================
-    # NEW: mine=true => uniquement les templates créés par moi
-    # (On retourne des templates USER_INSTANCE seulement)
-    # =========================================================
+    # ----- Scope filter -----
+    if scope:
+        scope_upper = scope.upper().strip()
+        if scope_upper in (
+            WanTemplateScope.GLOBAL.value,
+            WanTemplateScope.USER_INSTANCE.value,
+        ):
+            q = q.filter(WanTemplate.scope == scope_upper)
+
+    # ----- Project filter (backend) -----
+    # - "__NONE__" => project IS NULL (ou vide si tu veux)
+    # - sinon => match EXACT (case-insensitive), plus adapté à un dropdown
+    if project:
+        p = project.strip()
+        if p == PROJECT_NONE:
+            q = q.filter(or_(WanTemplate.project.is_(None), func.trim(WanTemplate.project) == ""))
+        else:
+            q = q.filter(func.lower(func.trim(WanTemplate.project)) == p.lower())
+
+    # ----- Visibility rules -----
     if mine:
         q = q.filter(
             WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
@@ -698,26 +1004,24 @@ def list_wan_templates(
         if instance_id is not None:
             q = q.filter(WanTemplate.isam_instance_id == instance_id)
 
-        # (optionnel) si tu veux permettre scope=GLOBAL même en mine=true,
-        # supprime le filtre sur scope ci-dessus. Mais ton besoin dit "créés par lui même",
-        # donc USER_INSTANCE est logique.
-
     else:
-        # =========================================================
-        # Logique existante (inchangée)
-        # =========================================================
         if is_admin_role(current_user.role):
             if instance_id is not None:
-                q = q.filter(
-                    or_(
-                        WanTemplate.scope == WanTemplateScope.GLOBAL.value,
-                        WanTemplate.isam_instance_id == instance_id,
+                if not scope:
+                    q = q.filter(
+                        or_(
+                            WanTemplate.scope == WanTemplateScope.GLOBAL.value,
+                            WanTemplate.isam_instance_id == instance_id,
+                        )
                     )
-                )
+                else:
+                    scope_upper = scope.upper().strip() if scope else ""
+                    if scope_upper == WanTemplateScope.USER_INSTANCE.value:
+                        q = q.filter(WanTemplate.isam_instance_id == instance_id)
+
             if creator:
                 q = q.filter(WanTemplate.created_by == creator)
-            if scope:
-                q = q.filter(WanTemplate.scope == scope)
+
         else:
             if instance_id is not None:
                 q = q.filter(
@@ -741,7 +1045,7 @@ def list_wan_templates(
                     )
                 )
 
-    # --- server-side search ---
+    # ----- Search filter -----
     if search:
         pattern = f"%{search}%"
         q = q.filter(
@@ -750,11 +1054,34 @@ def list_wan_templates(
                 WanTemplate.created_by.ilike(pattern),
                 WanTemplate.commands_template.ilike(pattern),
                 WanTemplate.scope.ilike(pattern),
+                WanTemplate.project.ilike(pattern),
             )
         )
 
-    templates = q.order_by(WanTemplate.updated_at.desc(), WanTemplate.id.desc()).all()
-    return WanTemplateList(templates=templates)
+    # ===== Pagination backend =====
+    total = q.order_by(None).count()
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+
+    # clamp page to avoid empty pages after filters
+    if page > total_pages:
+        page = total_pages
+
+    offset = (page - 1) * page_size
+
+    templates = (
+        q.order_by(WanTemplate.updated_at.desc(), WanTemplate.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    return WanTemplateList(
+        templates=templates,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 
 @router.get("/wan-templates/{template_id}", response_model=WanTemplateRead)
@@ -887,6 +1214,10 @@ def test_wan_template(
     )
 
 
+# ================================================================
+# ========  APPLY LIVE (avec validation WAN model + cycle)  ======
+# ================================================================
+
 @router.post("/wan-templates/apply-live", response_model=ApplyWanTemplateResponse)
 def apply_live_template(
     body: TemplateApplyLiveRequest,
@@ -898,6 +1229,8 @@ def apply_live_template(
     inst = get_instance_or_404(db, body.instance_id)
 
     template_id = body.template_id
+    tpl = None
+
     if current_user.role == "USER" and template_id is None:
         raise HTTPException(
             status_code=400,
@@ -915,33 +1248,96 @@ def apply_live_template(
             detail="selected_port is required.",
         )
 
+    selected_port = body.selected_port.strip()
+
     ensure_selected_port_allowed_for_user(
         current_user=current_user,
-        selected_port=body.selected_port.strip(),
+        selected_port=selected_port,
         credentials=credentials,
     )
 
-    # ✅ NEW: Vérifier que le port n'est pas locké
-    check_port_not_locked(db, inst.id, body.selected_port.strip())
+    ensure_port_not_locked_for_user(
+        db=db,
+        instance_id=inst.id,
+        port_id=selected_port,
+        current_user=current_user,
+    )
 
+    # ── ÉTAPE 1 : Déterminer le nom du template pour la validation WAN model ──
+    template_name_for_validation = ""
+    if tpl:
+        template_name_for_validation = tpl.name
+    else:
+        template_name_for_validation = ""
+
+    # ── ÉTAPE 2 : Valider le WAN model dans le nom du template ──
+    wan_model_found = ""
+    if template_name_for_validation:
+        wan_model_found = validate_template_wan_model(db, template_name_for_validation)
+        logger.info(
+            "[APPLY_LIVE] WAN model validated: '%s' (from template '%s')",
+            wan_model_found,
+            template_name_for_validation,
+        )
+
+    # ── ÉTAPE 3 : Exécuter les commandes du template ──
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
         commands_template=body.commands_template,
-        selected_port=body.selected_port.strip(),
+        selected_port=selected_port,
         variables=body.variables,
         timeout=60,
     )
 
+    # ── ÉTAPE 4 : Si succès ET WAN model trouvé, exécuter le cycle admin-state ──
+    cycle_message = ""
+    if success and wan_model_found:
+        logger.info(
+            "[APPLY_LIVE] Template applied successfully. "
+            "Executing admin-state cycle (down → up) on port %s...",
+            selected_port,
+        )
+
+        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
+            port=selected_port,
+            delay_seconds=2.0,
+            timeout=30,
+        )
+
+        commands_executed.extend(cycle_commands)
+        raw_output = (raw_output or "") + "\n" + cycle_output
+
+        if cycle_ok:
+            cycle_message = f" | Admin-state cycle OK (down → up) for WAN model '{wan_model_found}'."
+            logger.info(
+                "[APPLY_LIVE] Admin-state cycle completed successfully on port %s",
+                selected_port,
+            )
+        else:
+            cycle_message = (
+                f" | WARNING: Admin-state cycle FAILED for WAN model '{wan_model_found}': {cycle_msg}. "
+                f"Template commands were applied successfully but the port restart failed."
+            )
+            logger.warning(
+                "[APPLY_LIVE] Admin-state cycle FAILED on port %s: %s",
+                selected_port,
+                cycle_msg,
+            )
+
+    # ── ÉTAPE 5 : Construire le message final ──
+    final_message = msg + cycle_message
+
+    # ── ÉTAPE 6 : Logger dans l'historique ──
     client_ip = request.client.host if request.client else None
     log_config_history(
         db,
         username=current_user.username,
         action="APPLY_TEMPLATE_LIVE",
         isam_instance_id=inst.id,
-        port_id=body.selected_port.strip(),
+        port_id=selected_port,
         template_id=template_id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -952,7 +1348,7 @@ def apply_live_template(
         protocol_used=proto,
         commands_executed=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
 
 
@@ -973,8 +1369,15 @@ def apply_template_to_port(
 
     ensure_template_applicable_to_instance(tpl, inst.id)
 
-    # ✅ NEW: Vérifier que le port n'est pas locké
-    check_port_not_locked(db, inst.id, port_id)
+    ensure_port_not_locked_for_user(
+        db=db,
+        instance_id=inst.id,
+        port_id=port_id,
+        current_user=current_user,
+    )
+
+    # ── Valider le WAN model ──
+    wan_model_found = validate_template_wan_model(db, tpl.name)
 
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
@@ -982,6 +1385,25 @@ def apply_template_to_port(
         selected_port=port_id,
         variables={},
     )
+
+    # ── Si succès et WAN model trouvé, cycle admin-state ──
+    cycle_message = ""
+    if success and wan_model_found:
+        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
+            port=port_id,
+            delay_seconds=2.0,
+            timeout=30,
+        )
+
+        commands_executed.extend(cycle_commands)
+        raw_output = (raw_output or "") + "\n" + cycle_output
+
+        if cycle_ok:
+            cycle_message = f" | Admin-state cycle OK for WAN model '{wan_model_found}'."
+        else:
+            cycle_message = f" | WARNING: Admin-state cycle FAILED: {cycle_msg}."
+
+    final_message = msg + cycle_message
 
     client_ip = request.client.host if request.client else None
     log_config_history(
@@ -992,7 +1414,7 @@ def apply_template_to_port(
         port_id=port_id,
         template_id=tpl.id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -1003,11 +1425,11 @@ def apply_template_to_port(
         protocol_used=proto,
         commands_executed=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
 
 
-# -------- MY ACCOUNT (PORT UTILISATEUR) --------
+# -------- MY ACCOUNT --------
 
 @router.get("/my-port", response_model=MyPortResponse)
 def get_my_port(
@@ -1110,14 +1532,40 @@ def apply_template_to_my_port(
             detail="No port assigned to this user (port_value is empty).",
         )
 
-    # ✅ NEW: Vérifier que le port n'est pas locké
-    check_port_not_locked(db, inst.id, port_value)
+    ensure_port_not_locked_for_user(
+        db=db,
+        instance_id=inst.id,
+        port_id=port_value,
+        current_user=current_user,
+    )
+
+    # ── Valider le WAN model ──
+    wan_model_found = validate_template_wan_model(db, tpl.name)
 
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_wan_template(
         port_id=port_value,
         template=tpl,
     )
+
+    # ── Si succès et WAN model trouvé, cycle admin-state ──
+    cycle_message = ""
+    if success and wan_model_found:
+        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
+            port=port_value,
+            delay_seconds=2.0,
+            timeout=30,
+        )
+
+        commands_executed.extend(cycle_commands)
+        raw_output = (raw_output or "") + "\n" + cycle_output
+
+        if cycle_ok:
+            cycle_message = f" | Admin-state cycle OK for WAN model '{wan_model_found}'."
+        else:
+            cycle_message = f" | WARNING: Admin-state cycle FAILED: {cycle_msg}."
+
+    final_message = msg + cycle_message
 
     client_ip = request.client.host if request.client else None
     log_config_history(
@@ -1128,7 +1576,7 @@ def apply_template_to_my_port(
         port_id=port_value,
         template_id=tpl.id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -1139,49 +1587,11 @@ def apply_template_to_my_port(
         protocol_used=proto,
         commands_executed=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
 
 
 # -------- CONFIG HISTORY --------
-
-@router.get("/my-config-history", response_model=ConfigHistoryList)
-def list_my_config_history(
-    instance_id: int | None = Query(None, ge=1),
-    action: str | None = Query(None),
-    success: bool | None = Query(None),
-    search: str | None = Query(None, min_length=1, max_length=200),
-    limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    q = db.query(ConfigHistory).order_by(ConfigHistory.created_at.desc())
-    q = q.filter(ConfigHistory.username == current_user.username)
-
-    if instance_id is not None:
-        q = q.filter(ConfigHistory.isam_instance_id == instance_id)
-    if action:
-        q = q.filter(ConfigHistory.action == action)
-    if success is not None:
-        q = q.filter(ConfigHistory.success == success)
-
-    if search:
-        pattern = f"%{search}%"
-        q = q.filter(
-            or_(
-                ConfigHistory.username.ilike(pattern),
-                ConfigHistory.action.ilike(pattern),
-                ConfigHistory.port_id.ilike(pattern),
-                ConfigHistory.message.ilike(pattern),
-                ConfigHistory.ip_address.ilike(pattern),
-                ConfigHistory.commands_executed.ilike(pattern),
-                ConfigHistory.raw_output.ilike(pattern),
-            )
-        )
-
-    items = q.limit(limit).all()
-    return ConfigHistoryList(items=items)
-
 
 @router.get("/config-history", response_model=ConfigHistoryList)
 def list_config_history(
@@ -1191,7 +1601,8 @@ def list_config_history(
     action: str | None = Query(None),
     success: bool | None = Query(None),
     search: str | None = Query(None, min_length=1, max_length=200),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(25, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
@@ -1222,9 +1633,51 @@ def list_config_history(
             )
         )
 
-    items = q.limit(limit).all()
-    return ConfigHistoryList(items=items)
+    total = q.count()
+    items = q.offset(offset).limit(limit).all()
 
+    return ConfigHistoryList(items=items, total=total)
+
+
+@router.get("/my-config-history", response_model=ConfigHistoryList)
+def list_my_config_history(
+    instance_id: int | None = Query(None, ge=1),
+    action: str | None = Query(None),
+    success: bool | None = Query(None),
+    search: str | None = Query(None, min_length=1, max_length=200),
+    limit: int = Query(25, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(ConfigHistory).order_by(ConfigHistory.created_at.desc())
+    q = q.filter(ConfigHistory.username == current_user.username)
+
+    if instance_id is not None:
+        q = q.filter(ConfigHistory.isam_instance_id == instance_id)
+    if action:
+        q = q.filter(ConfigHistory.action == action)
+    if success is not None:
+        q = q.filter(ConfigHistory.success == success)
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                ConfigHistory.username.ilike(pattern),
+                ConfigHistory.action.ilike(pattern),
+                ConfigHistory.port_id.ilike(pattern),
+                ConfigHistory.message.ilike(pattern),
+                ConfigHistory.ip_address.ilike(pattern),
+                ConfigHistory.commands_executed.ilike(pattern),
+                ConfigHistory.raw_output.ilike(pattern),
+            )
+        )
+
+    total = q.count()
+    items = q.offset(offset).limit(limit).all()
+
+    return ConfigHistoryList(items=items, total=total)
 
 # -------- CACHED DATA --------
 
@@ -1314,7 +1767,7 @@ def get_cached_ports(
     )
 
 
-# ========== LT SLOTS & PORTS (NEW) ==========
+# ========== LT SLOTS & PORTS ==========
 
 @router.get(
     "/instances/{instance_id}/lt-slots",
@@ -1342,6 +1795,7 @@ def get_lt_slots(
         last_refresh_error=cached["last_refresh_error"],
     )
 
+
 @router.get(
     "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
     response_model=LTPortsResponse,
@@ -1349,46 +1803,166 @@ def get_lt_slots(
 def get_lt_slot_ports(
     instance_id: int,
     slot_id: str,
+    search: Optional[str] = Query(None, description="Recherche libre"),
+    port_type: Optional[str] = Query(None, description="Filtrer par type"),
+    state: Optional[str] = Query(None, description="Filtrer par état"),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
     slot_id = unquote(slot_id)
-
     inst = get_instance_or_404(db, instance_id)
-
     cached = load_cached_lt_ports(db, instance_id, slot_id)
 
-    locks_dict = {}
-    locks = db.query(PortLock).filter(
-        PortLock.isam_instance_id == instance_id,
-        PortLock.port_id.in_([p.get("port_id") for p in cached["ports"]])
-    ).all()
+    all_ports = cached["ports"]
+    total_all = len(all_ports)
+    filtered_ports = list(all_ports)
 
-    for lock in locks:
-        locks_dict[lock.port_id] = lock
+    if search:
+        s = search.strip().lower()
+        filtered_ports = [
+            p for p in filtered_ports
+            if s in p.get("port_id", "").lower()
+            or s in p.get("port_type", "").lower()
+            or s in p.get("board", "").lower()
+            or s in p.get("admin_state", "").lower()
+            or s in p.get("port_state", "").lower()
+            or s in p.get("mode", "").lower()
+            or s in p.get("encap", "").lower()
+        ]
+
+    if port_type:
+        pt = port_type.strip().lower()
+        filtered_ports = [
+            p for p in filtered_ports
+            if pt in p.get("port_type", "").lower()
+        ]
+
+    if state:
+        st = state.strip().lower()
+        filtered_ports = [
+            p for p in filtered_ports
+            if p.get("port_state", "").lower() == st
+            or p.get("admin_state", "").lower() == st
+        ]
+
+    port_ids = [p.get("port_id") for p in filtered_ports]
+    locks_dict = {}
+    if port_ids:
+        locks = db.query(PortLock).filter(
+            PortLock.isam_instance_id == instance_id,
+            PortLock.port_id.in_(port_ids)
+        ).all()
+        for lock in locks:
+            locks_dict[lock.port_id] = lock
 
     ports_with_lock = []
-    for port in cached["ports"]:
+    for port in filtered_ports:
         port_id = port.get("port_id")
-        is_locked = port_id in locks_dict
-        port["locked"] = is_locked
+        port["locked"] = port_id in locks_dict
         ports_with_lock.append(LTPortItem(**port))
 
     return LTPortsResponse(
         success=cached["last_refresh_success"],
         protocol_used=cached["protocol_used"],
-        port_count=cached["port_count"],
+        port_count=len(ports_with_lock),
+        total_count=total_all,
         ports=ports_with_lock,
         slot_id=cached["slot_id"],
         raw_output=cached["raw_output"],
-        message="OK" if cached["last_refresh_success"] else 
-                "No snapshot available yet" if not cached["last_success_at"] else 
+        message="OK" if cached["last_refresh_success"] else
+                "No snapshot available yet" if not cached["last_success_at"] else
                 "Showing last successful snapshot (latest refresh failed)",
+        search_query=search,
+        filters_applied={
+            k: v for k, v in {"port_type": port_type, "state": state}.items() if v
+        } or None,
         cached_at=cached["last_success_at"],
         last_refresh_at=cached["last_refresh_at"],
         last_refresh_success=cached["last_refresh_success"],
         last_refresh_error=cached["last_refresh_error"],
     )
+
+# ========== PORT TEMPLATE STATUS ==========
+
+@router.get(
+    "/instances/{instance_id}/ports/{port_id:path}/template-status",
+    response_model=PortTemplateStatusResponse,
+)
+def get_port_template_status(
+    instance_id: int,
+    port_id: str,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """Vérifie si un port a déjà été configuré par un template."""
+    _ = get_instance_or_404(db, instance_id)
+
+    apply_actions = [
+        "APPLY_TEMPLATE",
+        "APPLY_TEMPLATE_LIVE",
+        "APPLY_TEMPLATE_MY_PORT",
+    ]
+
+    last_apply = (
+        db.query(ConfigHistory)
+        .filter(
+            ConfigHistory.isam_instance_id == instance_id,
+            ConfigHistory.port_id == port_id,
+            ConfigHistory.success == True,
+            ConfigHistory.action.in_(apply_actions),
+        )
+        .order_by(ConfigHistory.created_at.desc())
+        .first()
+    )
+
+    if not last_apply:
+        return PortTemplateStatusResponse(
+            configured=False,
+            port_id=port_id,
+            instance_id=instance_id,
+            last_template_id=None,
+            last_template_name=None,
+            last_project=None,
+            last_applied_by=None,
+            last_applied_at=None,
+            apply_count=0,
+            message="This port has never been configured by a template.",
+        )
+
+    template_name = None
+    project = None
+    if last_apply.template_id:
+        tpl = db.query(WanTemplate).filter(
+            WanTemplate.id == last_apply.template_id
+        ).first()
+        if tpl:
+            template_name = tpl.name
+            project = tpl.project
+
+    apply_count = (
+        db.query(ConfigHistory)
+        .filter(
+            ConfigHistory.isam_instance_id == instance_id,
+            ConfigHistory.port_id == port_id,
+            ConfigHistory.success == True,
+            ConfigHistory.action.in_(apply_actions),
+        )
+        .count()
+    )
+
+    return PortTemplateStatusResponse(
+        configured=True,
+        port_id=port_id,
+        instance_id=instance_id,
+        last_template_id=last_apply.template_id,
+        last_template_name=template_name,
+        last_project=project,
+        last_applied_by=last_apply.username,
+        last_applied_at=last_apply.created_at,
+        apply_count=apply_count,
+        message=f"Last configured by '{last_apply.username}' on {last_apply.created_at}.",
+    )
+# ========== PORT LOCK ==========
 
 @router.get(
     "/instances/{instance_id}/ports/{port_id:path}/lock-status",
@@ -1400,11 +1974,6 @@ def get_port_lock_status(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Récupère le status de lock d'un port.
-    
-    Accessible par tous les rôles (pour vérifier si un port est locké).
-    """
     inst = get_instance_or_404(db, instance_id)
 
     lock = db.query(PortLock).filter(
@@ -1439,14 +2008,8 @@ def lock_port(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Lock un port (empêche les USERs d'appliquer des templates dessus).
-    
-    Admin/SuperAdmin only.
-    """
     inst = get_instance_or_404(db, instance_id)
 
-    # Vérifier si déjà locké
     existing = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
         PortLock.port_id == port_id
@@ -1458,7 +2021,6 @@ def lock_port(
             detail=f"Port {port_id} is already locked by {existing.locked_by}."
         )
 
-    # Créer le lock
     now = datetime.utcnow()
     lock = PortLock(
         isam_instance_id=instance_id,
@@ -1506,14 +2068,8 @@ def unlock_port(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Unlock un port (permet aux USERs d'appliquer des templates).
-    
-    Admin/SuperAdmin only.
-    """
     inst = get_instance_or_404(db, instance_id)
 
-    # Trouver le lock
     lock = db.query(PortLock).filter(
         PortLock.isam_instance_id == instance_id,
         PortLock.port_id == port_id

@@ -1,5 +1,6 @@
 import logging
 import re
+import time
 from typing import Dict, Optional, Tuple, List, Any
 
 from app.services.isam_connection import ISAMConnectionService, Protocol
@@ -17,6 +18,7 @@ class ISAMDataService:
     TEMPLATE_VAR_REGEX = re.compile(r"\[\[\$(.+?)\]\]")
 
     def __init__(self, instance: ISAMInstance):
+        self.instance = instance
         self.conn_service = ISAMConnectionService(instance)
 
     # ---------- 1) Utilisation mémoire ----------
@@ -335,6 +337,130 @@ class ISAMDataService:
             return False, proto, out or "", msg, commands_executed
 
         return True, proto, out or "", "OK", commands_executed
+
+    # ---------- 5) Admin-state cycle (down + up) ----------
+
+    def execute_admin_state_cycle(
+        self,
+        port: str,
+        delay_seconds: float = 2.0,
+        timeout: int = 30,
+    ) -> Tuple[bool, str, List[str], str]:
+        """
+        Exécute un cycle admin-state down puis up sur le port spécifié.
+
+        1. configure equipment ont interface {port} admin-state down
+        2. Pause de delay_seconds secondes
+        3. configure equipment ont interface {port} admin-state up
+
+        Retourne:
+            (success, raw_output_combined, commands_list, message)
+        """
+        cmd_down = f"configure "
+        cmd_up = f"configure "
+
+        commands = [cmd_down, cmd_up]
+        combined_output = ""
+
+        logger.info(
+            "[DATA] Admin-state cycle: executing DOWN on port %s", port
+        )
+
+        # ── Step 1: admin-state down ──
+        ok_down, proto_down, out_down, err_down = self.conn_service.execute_command_preference(
+            command=cmd_down,
+            timeout=timeout,
+        )
+
+        combined_output += f"\n--- admin-state down ---\n{out_down or ''}"
+
+        if not ok_down:
+            msg = f"Admin-state DOWN failed: {err_down}"
+            logger.warning("[DATA] %s", msg)
+            return False, combined_output, commands, msg
+
+        logger.info(
+            "[DATA] Admin-state DOWN OK. Waiting %.1f seconds before UP...",
+            delay_seconds,
+        )
+
+        # ── Step 2: pause ──
+        time.sleep(delay_seconds)
+
+        # ── Step 3: admin-state up ──
+        logger.info(
+            "[DATA] Admin-state cycle: executing UP on port %s", port
+        )
+
+        ok_up, proto_up, out_up, err_up = self.conn_service.execute_command_preference(
+            command=cmd_up,
+            timeout=timeout,
+        )
+
+        combined_output += f"\n--- admin-state up ---\n{out_up or ''}"
+
+        if not ok_up:
+            msg = f"Admin-state UP failed: {err_up}"
+            logger.warning("[DATA] %s", msg)
+            return False, combined_output, commands, msg
+
+        logger.info(
+            "[DATA] Admin-state cycle completed successfully on port %s",
+            port,
+        )
+
+        return True, combined_output, commands, "Admin-state cycle OK (down → up)"
+
+    # ---------- 6) WAN Model extraction from template name ----------
+
+    @staticmethod
+    def extract_wan_model_from_template_name(
+        template_name: str,
+        known_model_names: List[str],
+    ) -> Optional[str]:
+        """
+        Extrait le modèle WAN du nom d'un template.
+
+        Logique :
+          1. Splitter le nom par "_" → chaque segment est un candidat
+          2. Chercher chaque segment (tel quel, avec ses "-") dans known_model_names
+          3. Retourner le premier match (case-insensitive)
+
+    
+        """
+        if not template_name or not known_model_names:
+            return None
+
+        # Construire un lookup case-insensitive
+        # Clé = nom en majuscules, Valeur = nom original tel qu'en base
+        models_lookup: Dict[str, str] = {}
+        for model_name in known_model_names:
+            models_lookup[model_name.upper().strip()] = model_name.strip()
+
+        # Splitter par "_"
+        segments = template_name.split("_")
+
+        # Chercher chaque segment dans les modèles connus
+        for segment in segments:
+            segment_upper = segment.strip().upper()
+            if segment_upper in models_lookup:
+                found = models_lookup[segment_upper]
+                logger.info(
+                    "[DATA] WAN model '%s' found in template name '%s' (segment: '%s')",
+                    found,
+                    template_name,
+                    segment,
+                )
+                return found
+
+        logger.warning(
+            "[DATA] No WAN model found in template name '%s'. "
+            "Segments tested: %s. Known models: %s",
+            template_name,
+            segments,
+            known_model_names,
+        )
+        return None
 
     # ---------- 4) Compat old endpoint ----------
 

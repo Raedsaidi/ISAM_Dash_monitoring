@@ -38,7 +38,7 @@ class ConfigHistory(Base):
 
     # Résultat
     success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    message: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Adresse IP de la requête
     ip_address: Mapped[str | None] = mapped_column(

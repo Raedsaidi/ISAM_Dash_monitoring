@@ -17,6 +17,7 @@ from app.models.isam_data import ISAMData
 from app.models.isam_lt_slot import ISAMLTSlot
 from app.models.isam_lt_port import ISAMLTPort
 from app.models.port_lock import PortLock
+from app.models.template_project import TemplateProject   
 from app.services.isam_connection import test_connection_for_instance
 from app.services.isam_cache import refresh_isam_data_snapshot_for_instance
 from app.services.isam_lt_cache import refresh_lt_slots_snapshot
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 FIRST_RUN_DELAY_SECONDS = 60
 DATA_REFRESH_INTERVAL_SECONDS = 1800
-LT_REFRESH_INTERVAL_SECONDS = 21600
+LT_REFRESH_INTERVAL_SECONDS = 120
 RETRY_ON_ERROR_SECONDS = 300
 LT_REFRESH_TIMEOUT_SECONDS = 30
 
@@ -149,8 +150,8 @@ def _refresh_lt_snapshot(db: Session, inst: ISAMInstance) -> None:
 
 def run_isam_lt_refresh_once() -> bool:
     return _run_refresh_for_all_instances(
-        log_prefix="[CACHE-6H]",
-        start_message="[CACHE-6H] Démarrage du refresh périodique LT (slots + ports).",
+        log_prefix="[CACHE-1M]",
+        start_message="[CACHE-1M] Démarrage du refresh périodique LT (slots + ports).",
         refresh_func=_refresh_lt_snapshot,
     )
 
@@ -208,7 +209,7 @@ async def isam_data_refresh_loop():
 
 async def isam_lt_data_refresh_loop():
     await periodic_refresh_loop(
-        loop_name="[CACHE-6H]",
+        loop_name="[CACHE-1m]",
         run_once_func=run_isam_lt_refresh_once,
         first_delay_seconds=FIRST_RUN_DELAY_SECONDS,
         success_interval_seconds=LT_REFRESH_INTERVAL_SECONDS,
