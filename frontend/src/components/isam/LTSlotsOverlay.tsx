@@ -4,12 +4,13 @@ import {
   Loader2,
   AlertCircle,
   RefreshCw,
-  Cpu,
-  Signal,
-  Activity,
   Layers,
   Search,
   ChevronRight,
+  Zap,
+  Cable,
+  Radio,
+  Server
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "../../utils/cn";
@@ -41,51 +42,32 @@ interface LTSlotsOverlayProps {
 function getSlotCategory(portType: string): string {
   const pt = portType.toLowerCase();
   if (pt.includes("xdsl")) return "XDSL";
-  if (pt.includes("pon") || pt.includes("ont") || pt.includes("gpon"))
-    return "PON";
+  if (pt.includes("pon") || pt.includes("ont") || pt.includes("gpon")) return "PON";
   if (pt.includes("ethernet")) return "Ethernet";
   return "Other";
 }
 
-function getCategoryColor(category: string): {
-  bg: string;
-  text: string;
-  border: string;
-  dot: string;
-  headerBg: string;
-} {
+function getCategoryStyle(category: string) {
   switch (category) {
     case "XDSL":
       return {
-        bg: "bg-blue-50",
-        text: "text-blue-700",
-        border: "border-blue-200",
-        dot: "bg-blue-500",
-        headerBg: "bg-blue-50/80",
+        icon: <Zap size={16} className="text-blue-700" />,
+        iconBg: "bg-blue-100",
       };
     case "PON":
       return {
-        bg: "bg-violet-50",
-        text: "text-violet-700",
-        border: "border-violet-200",
-        dot: "bg-violet-500",
-        headerBg: "bg-violet-50/80",
+        icon: <Radio size={16} className="text-blue-700" />,
+        iconBg: "bg-blue-100",
       };
     case "Ethernet":
       return {
-        bg: "bg-emerald-50",
-        text: "text-emerald-700",
-        border: "border-emerald-200",
-        dot: "bg-emerald-500",
-        headerBg: "bg-emerald-50/80",
+        icon: <Cable size={16} className="text-blue-700" />,
+        iconBg: "bg-blue-100",
       };
     default:
       return {
-        bg: "bg-slate-50",
-        text: "text-slate-700",
-        border: "border-slate-200",
-        dot: "bg-slate-500",
-        headerBg: "bg-slate-50/80",
+        icon: <Server size={16} className="text-slate-600" />,
+        iconBg: "bg-slate-200",
       };
   }
 }
@@ -103,61 +85,42 @@ function SlotCategoryGroup({
   accessToken: string | null;
   isAdmin: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const colors = getCategoryColor(category);
-
-  const activeCount = slots.filter(
-    (s) => s.admin_state.toLowerCase() === "up",
-  ).length;
+  const [expanded, setExpanded] = useState(true);
+  const style = getCategoryStyle(category);
 
   return (
-    <div className={cn("rounded-lg border overflow-hidden", colors.border)}>
+    <div className="mb-5 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden transition-all hover:shadow-md">
       <button
         onClick={() => setExpanded(!expanded)}
-        className={cn(
-          "w-full flex items-center justify-between px-4 py-2.5 transition-colors",
-          colors.headerBg,
-          "hover:brightness-95",
-        )}
+        className="w-full flex items-center justify-between p-4 hover:bg-slate-50 transition-colors focus:outline-none"
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-3">
+          <div className={cn("p-2 rounded-lg", style.iconBg)}>
+            {style.icon}
+          </div>
+          <div>
+            <h3 className="font-semibold text-blue-950 text-sm text-left">
+              {category} Slots
+            </h3>
+            <p className="text-xs text-slate-500 font-medium text-left mt-0.5">
+              {slots.length} slot{slots.length !== 1 ? "s" : ""} available
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
           <ChevronRight
-            size={14}
+            size={18}
             className={cn(
-              "transition-transform duration-200",
-              colors.text,
-              expanded && "rotate-90",
+              "text-slate-400 transition-transform duration-200",
+              expanded && "rotate-90"
             )}
           />
-          <span className={cn("h-2 w-2 rounded-full", colors.dot)} />
-          <span className={cn("text-xs font-bold", colors.text)}>
-            {category}
-          </span>
-          <span className="text-[10px] text-slate-400 font-medium">
-            {slots.length} slot{slots.length !== 1 ? "s" : ""}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "text-[10px] font-semibold px-2 py-0.5 rounded-full",
-              activeCount > 0
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-slate-100 text-slate-500",
-            )}
-          >
-            {activeCount} active
-          </span>
-          <span className="text-[10px] font-medium text-slate-400 px-2 py-0.5 rounded-full bg-slate-100">
-            {slots.length - activeCount} other
-          </span>
         </div>
       </button>
 
       {expanded && (
-        <div className="border-t border-slate-100 bg-white">
-          <div className="p-3 space-y-2">
+        <div className="p-4 pt-0 border-t border-slate-100 bg-slate-50/50">
+          <div className="mt-4 grid grid-cols-1 gap-3">
             {slots.map((slot) => (
               <LTSlotExpander
                 key={slot.slot_id}
@@ -186,7 +149,7 @@ function SlotFlatGroup({
   isAdmin: boolean;
 }) {
   return (
-    <div className="space-y-2">
+    <div className="grid grid-cols-1 gap-3">
       {slots.map((slot) => (
         <LTSlotExpander
           key={slot.slot_id}
@@ -237,7 +200,7 @@ export default function LTSlotsOverlay({
           headers: accessToken
             ? { Authorization: `Bearer ${accessToken}` }
             : {},
-        },
+        }
       );
       let data: any = null;
       try {
@@ -254,13 +217,6 @@ export default function LTSlotsOverlay({
       setLoading(false);
     }
   }
-
-  const active = slots.filter(
-    (s) => s.admin_state.toLowerCase() === "up",
-  ).length;
-  const down = slots.filter(
-    (s) => s.port_state.toLowerCase() === "down",
-  ).length;
 
   const filtered = useMemo(() => {
     return slots.filter((s) => {
@@ -297,143 +253,118 @@ export default function LTSlotsOverlay({
   }, [filtered]);
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm font-sans">
-      <div className="w-[95vw] max-w-[1400px] h-[92vh] bg-slate-50 rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-slate-200">
-        {/* Header */}
-        <div className="bg-white border-b border-slate-200 shrink-0">
-          <div className="px-8 py-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-600 rounded-lg">
-                <Layers size={18} className="text-white" />
-              </div>
-              <div>
-                <h1 className="text-base font-bold text-slate-700">
-                  LT Slots & Ports
-                </h1>
-                <p className="text-xs text-slate-400 flex items-center gap-1">
-                  <span className="font-medium text-slate-600">
-                    {instanceName}
-                  </span>
-                  <span className="text-slate-300">·</span>
-                  <span className="font-mono">{instanceHost}</span>
-                </p>
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-blue-950/60 backdrop-blur-sm p-4 sm:p-6 animate-in fade-in duration-200">
+      <div className="w-full max-w-[1200px] h-full max-h-[90vh] bg-slate-50 rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-white/20 animate-in zoom-in-95 duration-200">
+        
+        {/* ================= HEADER ================= */}
+        <div className="flex-none bg-white border-b border-slate-200 px-6 py-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="h-12 w-12 rounded-xl bg-blue-900 flex items-center justify-center shadow-inner">
+              <Layers className="text-white" size={24} />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-blue-950 tracking-tight">
+                LT Slots & Ports
+              </h2>
+              <div className="flex items-center gap-2 text-xs text-slate-500 mt-1">
+                <span className="font-semibold text-slate-700">
+                  {instanceName}
+                </span>
+                <span className="text-slate-300">•</span>
+                <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">
+                  {instanceHost}
+                </span>
               </div>
             </div>
+          </div>
+
+          {/* Controls: Search, Refresh, Close */}
+          <div className="flex items-center gap-3">
+            {/* Search Input */}
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type="text"
+                placeholder="Search slot or board..."
+                value={searchSlot}
+                onChange={(e) => setSearchSlot(e.target.value)}
+                className="pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm 
+                           focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-900 focus:border-blue-900 
+                           transition-all w-full sm:w-64 placeholder:text-slate-400 shadow-sm"
+              />
+              {searchSlot && (
+                <button
+                  onClick={() => setSearchSlot("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-blue-900 p-1"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+
+            {/* Refresh Button */}
+            <button
+              onClick={loadSlots}
+              disabled={loading}
+              title="Refresh Slots"
+              className="p-2 border border-slate-200 bg-white rounded-lg text-slate-600 
+                         hover:bg-blue-50 hover:text-blue-900 hover:border-blue-200 
+                         transition-colors disabled:opacity-50 shadow-sm"
+            >
+              <RefreshCw size={18} className={loading ? "animate-spin text-blue-900" : ""} />
+            </button>
+
+            <div className="w-px h-8 bg-slate-200 mx-1 hidden sm:block"></div>
+
+            {/* Close Button */}
             <button
               onClick={onClose}
-              className="p-2 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+              title="Close Overlay"
+              className="p-2 bg-slate-100 hover:bg-red-50 text-slate-500 hover:text-red-600 
+                         rounded-lg transition-colors border border-transparent hover:border-red-100"
             >
               <X size={18} />
             </button>
           </div>
         </div>
 
-        {/* Toolbar */}
-        <div className="shrink-0 bg-white border-b border-slate-100">
-          <div className="px-8 py-2.5 flex items-center gap-3 flex-wrap">
-            <StatBadge
-              icon={<Cpu size={12} />}
-              value={slots.length}
-              label="Total"
-            />
-            <StatBadge
-              icon={<Signal size={12} />}
-              value={active}
-              label="Active"
-              variant="success"
-            />
-            <StatBadge
-              icon={<Activity size={12} />}
-              value={down}
-              label="Down"
-              variant={down > 0 ? "warning" : "default"}
-            />
-
-            <div className="h-5 w-px bg-slate-200 hidden sm:block" />
-
-            <div className="ml-auto flex items-center gap-2.5">
-              {/* Search only — no type filter buttons */}
-              <div className="relative">
-                <Search
-                  size={12}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  type="text"
-                  placeholder="Search slot..."
-                  value={searchSlot}
-                  onChange={(e) => setSearchSlot(e.target.value)}
-                  className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-xs w-48
-                             focus:outline-none focus:border-blue-400 focus:ring-1
-                             focus:ring-blue-100 bg-slate-50 placeholder:text-slate-400
-                             transition-all duration-150"
-                />
-                {searchSlot && (
-                  <button
-                    onClick={() => setSearchSlot("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2
-                               text-slate-400 hover:text-slate-600"
-                  >
-                    <X size={11} />
-                  </button>
-                )}
-              </div>
-
-              <button
-                onClick={loadSlots}
-                disabled={loading}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold
-                           border border-blue-200 bg-blue-600 text-white
-                           hover:bg-blue-700 disabled:opacity-50 shadow-sm
-                           transition-all duration-150"
-              >
-                <RefreshCw
-                  size={11}
-                  className={loading ? "animate-spin" : ""}
-                />
-                Refresh
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto">
-          <div className="px-8 py-6">
+        {/* ================= BODY ================= */}
+        <div className="flex-1 overflow-y-auto p-6 scroll-smooth">
+          <div className="max-w-5xl mx-auto">
             {loading && (
-              <div className="flex flex-col items-center justify-center py-24 gap-3">
-                <Loader2 size={22} className="animate-spin text-blue-500" />
-                <p className="text-xs text-slate-500 font-medium">
-                  Loading slots...
+              <div className="flex flex-col items-center justify-center py-24 gap-4">
+                <Loader2 size={28} className="animate-spin text-blue-900" />
+                <p className="text-sm text-slate-500 font-medium">
+                  Fetching slots configuration...
                 </p>
               </div>
             )}
 
             {error && !loading && (
-              <div className="flex items-start gap-3 p-4 bg-white border border-red-200 rounded-lg shadow-sm">
-                <AlertCircle
-                  size={18}
-                  className="text-red-500 shrink-0 mt-0.5"
-                />
+              <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl shadow-sm">
+                <AlertCircle size={20} className="text-red-600 shrink-0 mt-0.5" />
                 <div>
-                  <div className="text-sm font-semibold text-slate-700">
-                    Error
+                  <div className="text-sm font-bold text-red-800">
+                    Failed to load data
                   </div>
-                  <div className="text-xs text-slate-500 mt-0.5">{error}</div>
+                  <div className="text-sm text-red-600 mt-1">{error}</div>
                 </div>
               </div>
             )}
 
             {!loading && !error && filtered.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-24 gap-3">
-                <Cpu size={24} className="text-slate-200" />
-                <p className="text-xs text-slate-400 font-medium">
-                  No slots found
+              <div className="flex flex-col items-center justify-center py-24 gap-3 bg-white border border-slate-200 border-dashed rounded-xl">
+                <Server size={32} className="text-slate-300" />
+                <p className="text-sm text-slate-500 font-medium">
+                  No slots match your criteria.
                 </p>
                 {searchSlot && (
                   <button
                     onClick={() => setSearchSlot("")}
-                    className="text-[11px] text-blue-600 hover:text-blue-700 underline"
+                    className="text-sm text-blue-900 hover:text-blue-950 font-semibold"
                   >
                     Clear search
                   </button>
@@ -442,77 +373,36 @@ export default function LTSlotsOverlay({
             )}
 
             {!loading && !error && grouped.length > 0 && (
-              <div className="space-y-5">
-                <div className="flex items-center justify-between">
-                  <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-                    {filtered.length} slot{filtered.length !== 1 ? "s" : ""} in{" "}
-                    {grouped.length} group{grouped.length !== 1 ? "s" : ""}
-                  </p>
-                </div>
-
-                <div className="space-y-4">
-                  {grouped.map(([category, categorySlots]) =>
-                    category === "Other" ? (
-                      <div key={category}>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
-                          Other ({categorySlots.length} slot
-                          {categorySlots.length !== 1 ? "s" : ""})
-                        </p>
-                        <SlotFlatGroup
-                          slots={categorySlots}
-                          instanceId={instanceId}
-                          accessToken={accessToken}
-                          isAdmin={isAdmin}
-                        />
-                      </div>
-                    ) : (
-                      <SlotCategoryGroup
-                        key={category}
-                        category={category}
+              <div className="space-y-6">
+                {grouped.map(([category, categorySlots]) =>
+                  category === "Other" ? (
+                    <div key={category} className="mt-8">
+                      <h3 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-4 ml-1">
+                        Other Slots ({categorySlots.length})
+                      </h3>
+                      <SlotFlatGroup
                         slots={categorySlots}
                         instanceId={instanceId}
                         accessToken={accessToken}
                         isAdmin={isAdmin}
                       />
-                    ),
-                  )}
-                </div>
+                    </div>
+                  ) : (
+                    <SlotCategoryGroup
+                      key={category}
+                      category={category}
+                      slots={categorySlots}
+                      instanceId={instanceId}
+                      accessToken={accessToken}
+                      isAdmin={isAdmin}
+                    />
+                  )
+                )}
               </div>
             )}
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function StatBadge({
-  icon,
-  value,
-  label,
-  variant = "default",
-}: {
-  icon: React.ReactNode;
-  value: number;
-  label: string;
-  variant?: "default" | "success" | "warning";
-}) {
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium",
-        variant === "success" && value > 0
-          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-          : variant === "warning" && value > 0
-            ? "border-orange-200 bg-orange-50 text-orange-700"
-            : "border-slate-200 bg-slate-50 text-slate-700",
-      )}
-    >
-      <span className="text-slate-400">{icon}</span>
-      <span className="font-bold tabular-nums">{value}</span>
-      <span className="text-[9px] font-bold uppercase tracking-widest opacity-60">
-        {label}
-      </span>
     </div>
   );
 }

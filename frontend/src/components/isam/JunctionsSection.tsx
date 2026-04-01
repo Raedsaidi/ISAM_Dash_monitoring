@@ -16,6 +16,10 @@ import {
   Database,
   Cable,
   Layers,
+  HardDrive,
+  Clock,
+  AlertCircle,
+  Server
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../../context/AuthContext';
@@ -1107,219 +1111,206 @@ function IsamDetailsPanel({
     }
   }
 
+  const memoryEntries = Array.isArray(memoryUsage.parsed?.entries) ? memoryUsage.parsed.entries : [];
+
   return (
     <>
-      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-5">
+      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h3 className="font-semibold text-slate-900 text-lg">
-              {instance.name} — Details
+              Hardware & Resources
             </h3>
-            <p className="text-xs text-slate-500">
-              {instance.host} (telnet:{instance.telnet_port} / ssh:
-              {instance.ssh_port})
+            <p className="text-sm text-slate-500">
+              Cached snapshots for performance analysis.
             </p>
           </div>
           <button
             onClick={() => setShowDeleteDialog(true)}
-            className="flex items-center gap-1 text-xs text-red-600 hover:text-red-800 border border-red-200 px-3 py-1.5 rounded-lg"
+            className="flex items-center gap-2 text-sm font-medium text-red-600 hover:text-white bg-red-50 hover:bg-red-600 border border-red-200 hover:border-red-600 px-4 py-2 rounded-lg transition-colors"
           >
-            <Trash2 size={14} />
-            Delete
+            <Trash2 size={16} />
+            Delete Instance
           </button>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* ---- Memory ---- */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Database size={16} className="text-emerald-600" />
-              <h4 className="text-sm font-semibold text-slate-800">
-                Memory Usage (last successful snapshot)
-              </h4>
-            </div>
-
-            <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 text-[11px] text-slate-600 space-y-1">
-              <div>
-                Last successful snapshot:{' '}
-                <span className="font-mono">
-                  {formatDateTime(memoryUsage.cached_at)}
-                </span>
-              </div>
-              <div>
-                Last refresh attempt:{' '}
-                <span className="font-mono">
-                  {formatDateTime(memoryUsage.last_refresh_at)}
-                </span>
-              </div>
-              <div>
-                Protocol used:{' '}
-                <span className="font-mono">
-                  {memoryUsage.protocol_used || 'N/A'}
-                </span>
-              </div>
-            </div>
-
-            {memoryUsage.loading && (
-              <div className="text-xs text-slate-500">
-                <Loader2
-                  size={14}
-                  className="inline-block animate-spin mr-1"
-                />
-                Loading...
-              </div>
-            )}
-
-            {!memoryUsage.loading &&
-              !memoryUsage.last_refresh_success &&
-              memoryUsage.last_refresh_error &&
-              memoryUsage.cached_at && (
-                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
-                  Latest refresh failed. Displaying last successful snapshot.
-                  Error: {memoryUsage.last_refresh_error}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          
+          {/* ==================== MEMORY USAGE CARD ==================== */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col">
+            {/* Memory Header */}
+            <div className="bg-white p-4 border-b border-slate-200 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <div className="bg-indigo-100 p-2 rounded-lg">
+                  <HardDrive size={18} className="text-indigo-600" />
                 </div>
-              )}
-
-            {memoryUsage.error && (
-              <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1">
-                {memoryUsage.error}
-              </div>
-            )}
-
-            {!memoryUsage.loading && !memoryUsage.error && (
-              <div className="bg-slate-50 rounded-lg p-2 text-xs max-h-48 overflow-y-auto">
-                <p className="text-slate-600 mb-1">
-                  Entry count:{' '}
-                  <span className="font-mono">
-                    {memoryUsage.parsed?.entry_count ??
-                      (Array.isArray(memoryUsage.parsed?.entries)
-                        ? memoryUsage.parsed.entries.length
-                        : 'N/A')}
-                  </span>
-                </p>
-
-                {Array.isArray(memoryUsage.parsed?.entries) &&
-                memoryUsage.parsed.entries.length > 0 ? (
-                  <ul className="space-y-1">
-                    {memoryUsage.parsed.entries.map(
-                      (e: any, idx: number) => (
-                        <li
-                          key={idx}
-                          className="flex justify-between border-b border-slate-100 pb-0.5"
-                        >
-                          <span className="text-slate-500">{e.slot}</span>
-                          <span className="font-mono text-slate-900">
-                            {e.used_mb} / {e.total_mb} MB ({e.used_percent}
-                            %)
-                          </span>
-                        </li>
-                      ),
-                    )}
-                  </ul>
-                ) : (
-                  <span className="text-slate-500">
-                    No memory usage data parsed.
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* ---- Ports ---- */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Cable size={16} className="text-blue-600" />
-              <h4 className="text-sm font-semibold text-slate-800">
-                Ports (last successful snapshot)
-              </h4>
-            </div>
-
-            <div className="bg-slate-50 rounded-lg border border-slate-200 p-2 text-[11px] text-slate-600 space-y-1">
-              <div>
-                Last successful snapshot:{' '}
-                <span className="font-mono">
-                  {formatDateTime(ports.cached_at)}
-                </span>
-              </div>
-              <div>
-                Last refresh attempt:{' '}
-                <span className="font-mono">
-                  {formatDateTime(ports.last_refresh_at)}
-                </span>
-              </div>
-              <div>
-                Protocol used:{' '}
-                <span className="font-mono">
-                  {ports.protocol_used || 'N/A'}
-                </span>
-              </div>
-            </div>
-
-            {ports.loading && (
-              <div className="text-xs text-slate-500">
-                <Loader2
-                  size={14}
-                  className="inline-block animate-spin mr-1"
-                />
-                Loading...
-              </div>
-            )}
-
-            {!ports.loading &&
-              !ports.last_refresh_success &&
-              ports.last_refresh_error &&
-              ports.cached_at && (
-                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
-                  Latest refresh failed. Displaying last successful snapshot.
-                  Error: {ports.last_refresh_error}
+                <div>
+                  <h4 className="font-semibold text-slate-800">Memory Allocation</h4>
+                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                    <Clock size={12} />
+                    {formatDateTime(memoryUsage.cached_at)} 
+                    {memoryUsage.protocol_used && <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">{memoryUsage.protocol_used}</span>}
+                  </div>
                 </div>
-              )}
-
-            {ports.error && (
-              <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1">
-                {ports.error}
               </div>
-            )}
+              <div className="text-right">
+                <span className="text-2xl font-bold text-slate-700">{memoryEntries.length}</span>
+                <span className="text-xs text-slate-500 block uppercase tracking-wider">Slots</span>
+              </div>
+            </div>
 
-            {!ports.loading && !ports.error && (
-              <div className="bg-slate-50 rounded-lg p-2 text-xs max-h-48 overflow-y-auto">
-                <p className="text-slate-600 mb-1">
-                  Port count:{' '}
-                  <span className="font-mono">{ports.port_count}</span>
-                </p>
+            {/* Memory Body */}
+            <div className="p-4 flex-1 overflow-y-auto max-h-[360px] custom-scrollbar">
+              {memoryUsage.loading ? (
+                <div className="flex flex-col items-center justify-center py-8 text-slate-400">
+                  <Loader2 size={24} className="animate-spin mb-2" />
+                  <span className="text-sm">Fetching memory stats...</span>
+                </div>
+              ) : memoryUsage.error ? (
+                <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">
+                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  <p>{memoryUsage.error}</p>
+                </div>
+              ) : memoryEntries.length > 0 ? (
+                <div className="space-y-5">
+                  {!memoryUsage.last_refresh_success && memoryUsage.last_refresh_error && (
+                    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                       <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                       <p>Refresh failed: {memoryUsage.last_refresh_error}</p>
+                    </div>
+                  )}
 
-                {ports.ports.length > 0 ? (
-                  <ul className="space-y-1">
-                    {ports.ports.slice(0, 12).map((p: any, idx: number) => (
-                      <li
-                        key={idx}
-                        className="flex justify-between items-center"
-                      >
-                        <div>
-                          <span className="font-mono text-slate-900 mr-2">
-                            {p.port_id}
-                          </span>
-                          <span className="text-slate-500">
-                            {p.admin_state}/{p.port_state} ({p.board})
+                  {memoryEntries.map((entry: any, idx: number) => {
+                    const pct = Number(entry.used_percent) || 0;
+                    const colorClass = pct > 85 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
+                    const lightColorClass = pct > 85 ? 'bg-red-100' : pct > 60 ? 'bg-amber-100' : 'bg-emerald-100';
+                    
+                    return (
+                      <div key={idx} className="relative">
+                        <div className="flex justify-between items-end mb-1.5">
+                          <div className="flex items-center gap-2">
+                            <Server size={14} className="text-slate-400" />
+                            <span className="font-semibold text-slate-700 text-sm">{entry.slot}</span>
+                          </div>
+                          <div className="text-xs text-slate-500 font-mono">
+                            <span className="text-slate-900 font-medium">{entry.used_mb}</span> / {entry.total_mb} MB
+                          </div>
+                        </div>
+                        
+                        <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden flex">
+                          <div 
+                            className={`h-full ${colorClass} transition-all duration-1000 ease-out`} 
+                            style={{ width: `${pct}%` }}
+                          />
+                        </div>
+                        
+                        <div className="flex justify-end mt-1">
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${lightColorClass} ${colorClass.replace('bg-', 'text-')}`}>
+                            {pct}% Used
                           </span>
                         </div>
-                      </li>
-                    ))}
-                    {ports.ports.length > 12 && (
-                      <li className="text-slate-400">
-                        +{ports.ports.length - 12} more...
-                      </li>
-                    )}
-                  </ul>
-                ) : (
-                  <span className="text-slate-500">
-                    No ports parsed from cached snapshot.
-                  </span>
-                )}
-              </div>
-            )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-sm text-slate-500">
+                  No memory usage data available in the current snapshot.
+                </div>
+              )}
+            </div>
           </div>
+
+          {/* ==================== PORTS CARD ==================== */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col">
+            {/* Ports Header */}
+            <div className="bg-white p-4 border-b border-slate-200 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <div className="bg-blue-100 p-2 rounded-lg">
+                  <Cable size={18} className="text-blue-600" />
+                </div>
+                <div>
+                  <h4 className="font-semibold text-slate-800">Port Status</h4>
+                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                    <Clock size={12} />
+                    {formatDateTime(ports.cached_at)}
+                    {ports.protocol_used && <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">{ports.protocol_used}</span>}
+                  </div>
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-bold text-slate-700">{ports.port_count}</span>
+                <span className="text-xs text-slate-500 block uppercase tracking-wider">Total</span>
+              </div>
+            </div>
+
+            {/* Ports Body */}
+            <div className="p-4 flex-1 overflow-y-auto max-h-[360px] custom-scrollbar">
+              {ports.loading ? (
+                <div className="flex flex-col items-center justify-center py-8 text-slate-400">
+                  <Loader2 size={24} className="animate-spin mb-2" />
+                  <span className="text-sm">Fetching ports data...</span>
+                </div>
+              ) : ports.error ? (
+                <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">
+                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  <p>{ports.error}</p>
+                </div>
+              ) : ports.ports.length > 0 ? (
+                <div className="space-y-4">
+                  {!ports.last_refresh_success && ports.last_refresh_error && (
+                    <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                       <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                       <p>Refresh failed: {ports.last_refresh_error}</p>
+                    </div>
+                  )}
+
+                  {/* Grid of ports */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {ports.ports.map((p: any, idx: number) => {
+                      // Détermine le statut du port pour la couleur
+                      const isUp = p.port_state?.toLowerCase().includes('up');
+                      const isAdminDown = p.admin_state?.toLowerCase().includes('down');
+                      
+                      let dotColor = 'bg-slate-300';
+                      let dotShadow = '';
+                      
+                      if (isUp) {
+                        dotColor = 'bg-emerald-500';
+                        dotShadow = 'shadow-[0_0_6px_rgba(16,185,129,0.6)]'; // Glow effect
+                      } else if (isAdminDown) {
+                        dotColor = 'bg-slate-400';
+                      } else {
+                        dotColor = 'bg-red-500';
+                      }
+
+                      return (
+                        <div 
+                          key={idx} 
+                          className="bg-white border border-slate-200 rounded-lg p-2.5 flex items-center justify-between hover:border-slate-300 transition-colors"
+                          title={`Admin: ${p.admin_state} | Port: ${p.port_state}`}
+                        >
+                          <div className="flex flex-col truncate pr-2">
+                            <span className="font-mono text-[13px] font-bold text-slate-800">{p.port_id}</span>
+                            <span className="text-[10px] text-slate-500 uppercase truncate">{p.board || 'Unknown'}</span>
+                          </div>
+                          <div className="flex items-center justify-center shrink-0 w-6 h-6 rounded-full bg-slate-50">
+                            <div className={`w-2.5 h-2.5 rounded-full ${dotColor} ${dotShadow}`} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-sm text-slate-500">
+                  No ports data available in the current snapshot.
+                </div>
+              )}
+            </div>
+          </div>
+          
         </div>
       </div>
 
@@ -1336,6 +1327,20 @@ function IsamDetailsPanel({
         }}
         onConfirm={handleDelete}
       />
+      
+      {/* Styles personnalisés pour la scrollbar dans ce composant si nécessaire */}
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background-color: #cbd5e1;
+          border-radius: 20px;
+        }
+      `}</style>
     </>
   );
 }

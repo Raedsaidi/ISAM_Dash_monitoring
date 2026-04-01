@@ -56,9 +56,9 @@ export default function LoginForm({ onShowRegister }: LoginFormProps) {
           <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center mb-3">
             <span className="text-white text-2xl font-bold">I</span>
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">ISAM Central</h1>
+          <h1 className="text-2xl font-bold text-slate-900">ISAM & CISCO Central</h1>
           <p className="text-slate-500 text-sm mt-1">
-            Access your centralized ISAM platform
+            Access your centralized platform
           </p>
         </div>
 

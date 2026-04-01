@@ -73,7 +73,6 @@ interface WanTemplate {
   updated_at: string;
 }
 
-/** Backend pagination response (à implémenter côté backend) */
 interface WanTemplateListResponse {
   templates: WanTemplate[];
   total: number;
@@ -82,7 +81,6 @@ interface WanTemplateListResponse {
   total_pages: number;
 }
 
-/** Template Projects */
 interface TemplateProject {
   id: number;
   name: string;
@@ -137,24 +135,50 @@ interface CachedPortsResponse {
   last_refresh_error: string | null;
 }
 
+function getReadableErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    const message = error.message?.trim();
+
+    if (!message) return "An unexpected error occurred.";
+
+    if (
+      message.toLowerCase() === "failed to fetch" ||
+      message.toLowerCase().includes("networkerror") ||
+      message.toLowerCase().includes("load failed")
+    ) {
+      return "Unable to reach the server. Please check your network connection, CORS configuration, or backend availability.";
+    }
+
+    return message;
+  }
+
+  return "An unexpected error occurred.";
+}
+
 async function authFetchJson<T>(
   url: string,
   accessToken: string | null,
   options: RequestInit = {},
 ): Promise<T> {
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      ...(options.headers || {}),
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-    },
-  });
+  let res: Response;
+
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers: {
+        ...(options.headers || {}),
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+    });
+  } catch (error) {
+    throw new Error(getReadableErrorMessage(error));
+  }
 
   let data: any = null;
   try {
     data = await res.json();
   } catch {
-    // no json body
+    // body is not json
   }
 
   if (!res.ok) {
@@ -173,9 +197,11 @@ async function authFetchJson<T>(
                   .map((d: any) => d?.msg || d?.message)
                   .filter(Boolean)
                   .join(", ")
-              : "Unknown error";
+              : null;
 
-    throw new Error(detail || "Unknown error");
+    throw new Error(
+      detail || `Request failed with status ${res.status}.`,
+    );
   }
 
   return data as T;
@@ -201,6 +227,17 @@ function extractTemplateVariables(template: string): string[] {
 function isPortVariable(name: string) {
   const v = name.trim().toLowerCase();
   return v === "port" || v === "port_id";
+}
+
+function getMissingRequiredVariables(
+  variables: string[],
+  values: Record<string, string>,
+) {
+  return variables.filter((v) => !isPortVariable(v) && !values[v]?.trim());
+}
+
+function getEffectivePort(selectedPort: string, manualPort: string) {
+  return (manualPort || "").trim() || selectedPort || "";
 }
 
 function formatPortForName(port: string) {
@@ -492,18 +529,7 @@ function AlertBanner({
         variants[variant],
       )}
     >
-      {variant === "error" && (
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      )}
-      {variant === "success" && (
-        <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
-      )}
-      {variant === "warning" && (
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      )}
-      {variant === "info" && (
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      )}
+      <AlertCircle size={14} className="mt-0.5 shrink-0" />
       <div>{children}</div>
     </div>
   );
@@ -554,8 +580,8 @@ export default function TemplateWorkspaceOverlay({
   const currentRole = (user?.role ?? "USER") as UserRole;
   const isUser = currentRole === "USER";
   const isAdmin = currentRole === "ADMIN" || currentRole === "SUPER_ADMIN";
+  const isSuperAdmin = currentRole === "SUPER_ADMIN";
 
-  // Templates (paged)
   const [templates, setTemplates] = useState<WanTemplate[]>([]);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [templatesError, setTemplatesError] = useState<string | null>(null);
@@ -564,22 +590,18 @@ export default function TemplateWorkspaceOverlay({
   const [totalTemplates, setTotalTemplates] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
 
-  // Filters
   const [templateSearch, setTemplateSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [ownerFilter, setOwnerFilter] = useState<TemplateOwnerFilter>("ALL");
 
-  // Projects list (from backend)
   const [projects, setProjects] = useState<string[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [projectFilter, setProjectFilter] = useState<string>("ALL");
 
-  // Ports
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
   const [portsError, setPortsError] = useState<string | null>(null);
 
-  // Workspace state
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(
     null,
   );
@@ -636,7 +658,6 @@ export default function TemplateWorkspaceOverlay({
     confirmText: "Confirm",
   });
 
-  // Request guards (avoid race conditions)
   const templatesRequestIdRef = useRef(0);
   const portsRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef(0);
@@ -656,6 +677,11 @@ export default function TemplateWorkspaceOverlay({
   const customVariables = useMemo(
     () => detectedVariables.filter((v) => !isPortVariable(v)),
     [detectedVariables],
+  );
+
+  const missingRequiredVariables = useMemo(
+    () => getMissingRequiredVariables(detectedVariables, variableValues),
+    [detectedVariables, variableValues],
   );
 
   const currentPreviewFingerprint = useMemo(
@@ -688,7 +714,6 @@ export default function TemplateWorkspaceOverlay({
     ],
   );
 
-  // Project: read-only / inherited
   const inheritedProject = useMemo(
     () => selectedTemplate?.project ?? null,
     [selectedTemplate],
@@ -717,6 +742,44 @@ export default function TemplateWorkspaceOverlay({
       raw_output: "",
     });
   }, []);
+
+  const validateWorkspace = useCallback(
+    (mode: "preview" | "apply" | "save") => {
+      if (!selectedTemplate) {
+        return "Please select a template first.";
+      }
+
+      if (!commands.trim()) {
+        return "Template content is required.";
+      }
+
+      const effectivePort = getEffectivePort(selectedPort, manualPort);
+
+      if (portIsRequired && !effectivePort) {
+        return "Please select a port from the list or enter one manually.";
+      }
+
+      if (missingRequiredVariables.length > 0) {
+        return `Please fill in all required variables: ${missingRequiredVariables.join(", ")}.`;
+      }
+
+      if (mode === "apply" && lastPreviewFingerprint !== currentPreviewFingerprint) {
+        return "Please preview the current template version before applying.";
+      }
+
+      return null;
+    },
+    [
+      selectedTemplate,
+      commands,
+      selectedPort,
+      manualPort,
+      portIsRequired,
+      missingRequiredVariables,
+      lastPreviewFingerprint,
+      currentPreviewFingerprint,
+    ],
+  );
 
   const loadProjects = useCallback(async () => {
     const requestId = ++projectsRequestIdRef.current;
@@ -771,8 +834,6 @@ export default function TemplateWorkspaceOverlay({
     try {
       const params = new URLSearchParams();
       params.set("instance_id", String(instance.id));
-
-      // backend pagination
       params.set("page", String(page));
       params.set("page_size", String(PAGE_SIZE));
 
@@ -785,7 +846,6 @@ export default function TemplateWorkspaceOverlay({
       }
 
       if (projectFilter !== "ALL") {
-        // projectFilter: either a real project name OR "__NONE__"
         params.set("project", projectFilter);
       }
 
@@ -801,12 +861,12 @@ export default function TemplateWorkspaceOverlay({
       setTotalPages(
         typeof res.total_pages === "number" ? res.total_pages : 1,
       );
-    } catch (err: any) {
+    } catch (err) {
       if (requestId !== templatesRequestIdRef.current) return;
 
       setTemplates([]);
       setSelectedTemplateId(null);
-      setTemplatesError(err.message || "Failed to load templates.");
+      setTemplatesError(getReadableErrorMessage(err) || "Failed to load templates.");
       setTotalTemplates(0);
       setTotalPages(1);
     } finally {
@@ -826,7 +886,7 @@ export default function TemplateWorkspaceOverlay({
   const loadPorts = useCallback(async () => {
     const requestId = ++portsRequestIdRef.current;
 
-    if (!accessToken || !user?.role) {
+    if (!accessToken || !user?.role || isSuperAdmin) {
       setAvailablePorts([]);
       setSelectedPort("");
       setPortsError(null);
@@ -838,7 +898,7 @@ export default function TemplateWorkspaceOverlay({
     setPortsError(null);
 
     try {
-      if (isUser) {
+      if (isUser || currentRole === "ADMIN") {
         const me = await authFetchJson<MeResponse>(
           `${AUTH_BASE_URL}/api/v1/auth/me`,
           accessToken,
@@ -875,20 +935,19 @@ export default function TemplateWorkspaceOverlay({
           prev && ports.includes(prev) ? prev : ports[0] || "",
         );
       }
-    } catch (err: any) {
+    } catch (err) {
       if (requestId !== portsRequestIdRef.current) return;
 
       setAvailablePorts([]);
       setSelectedPort("");
-      setPortsError(err.message || "Failed to load ports.");
+      setPortsError(getReadableErrorMessage(err) || "Failed to load ports.");
     } finally {
       if (requestId === portsRequestIdRef.current) {
         setLoadingPorts(false);
       }
     }
-  }, [accessToken, user?.role, isUser, instance.id]);
+  }, [accessToken, user?.role, isUser, isSuperAdmin, currentRole, instance.id]);
 
-  // debounce search (and reset page)
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(templateSearch);
@@ -897,7 +956,6 @@ export default function TemplateWorkspaceOverlay({
     return () => clearTimeout(timer);
   }, [templateSearch]);
 
-  // reset when instance changes
   useEffect(() => {
     setTemplates([]);
     setSelectedTemplateId(null);
@@ -923,7 +981,6 @@ export default function TemplateWorkspaceOverlay({
     setLastPreviewFingerprint("");
   }, [instance.id, resetExecutionStates]);
 
-  // clamp page if totalPages decreases
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
   }, [page, totalPages]);
@@ -940,7 +997,6 @@ export default function TemplateWorkspaceOverlay({
     loadPorts();
   }, [loadPorts]);
 
-  // Keep selection consistent with current page
   useEffect(() => {
     if (templates.length === 0) {
       setSelectedTemplateId(null);
@@ -957,7 +1013,6 @@ export default function TemplateWorkspaceOverlay({
     }
   }, [templates, selectedTemplateId]);
 
-  // When selected template changes -> load into workspace
   useEffect(() => {
     if (!selectedTemplate) return;
 
@@ -981,7 +1036,7 @@ export default function TemplateWorkspaceOverlay({
       selectedTemplate.name,
       user?.username,
     );
-    const effectivePort = (manualPort || "").trim() || selectedPort;
+    const effectivePort = getEffectivePort(selectedPort, manualPort);
 
     const autoName = buildUserTemplateName(
       user?.username,
@@ -1065,23 +1120,20 @@ export default function TemplateWorkspaceOverlay({
   async function handlePreview() {
     const requestId = ++previewRequestIdRef.current;
 
-    if (!selectedTemplate) {
+    const validationError = validateWorkspace("preview");
+    if (validationError) {
       setPreviewState((s) => ({
         ...s,
-        error: "Please select a template first.",
+        loading: false,
+        error: validationError,
+        rendered_script: "",
+        rendered_commands: [],
       }));
+      toast.error(validationError);
       return;
     }
 
-    const effectivePort = (manualPort || "").trim() || selectedPort;
-
-    if (detectedVariables.some(isPortVariable) && !effectivePort) {
-      setPreviewState((s) => ({
-        ...s,
-        error: "Please select a port from the list or enter one manually.",
-      }));
-      return;
-    }
+    const effectivePort = getEffectivePort(selectedPort, manualPort);
 
     setPreviewState((s) => ({ ...s, loading: true, error: null }));
 
@@ -1109,40 +1161,37 @@ export default function TemplateWorkspaceOverlay({
         rendered_commands: res.rendered_commands,
       });
       setLastPreviewFingerprint(currentPreviewFingerprint);
-    } catch (err: any) {
+    } catch (err) {
       if (requestId !== previewRequestIdRef.current) return;
 
+      const message = getReadableErrorMessage(err) || "Failed to render template.";
       setPreviewState({
         loading: false,
-        error: err.message || "Failed to render template.",
+        error: message,
         rendered_script: "",
         rendered_commands: [],
       });
+      toast.error(message);
     }
   }
 
   async function handleApply() {
     const requestId = ++applyRequestIdRef.current;
 
+    const validationError = validateWorkspace("apply");
+    if (validationError) {
+      setApplyState((s) => ({
+        ...s,
+        loading: false,
+        error: validationError,
+      }));
+      toast.error(validationError);
+      return;
+    }
+
     if (!selectedTemplate) return;
 
-    const effectivePort = (manualPort || "").trim() || selectedPort;
-
-    if (detectedVariables.some(isPortVariable) && !effectivePort) {
-      setApplyState((s) => ({
-        ...s,
-        error: "Please select a port from the list or enter one manually.",
-      }));
-      return;
-    }
-
-    if (lastPreviewFingerprint !== currentPreviewFingerprint) {
-      setApplyState((s) => ({
-        ...s,
-        error: "Please preview the current template version before applying.",
-      }));
-      return;
-    }
+    const effectivePort = getEffectivePort(selectedPort, manualPort);
 
     setApplyState({
       loading: true,
@@ -1185,18 +1234,19 @@ export default function TemplateWorkspaceOverlay({
 
       if (res.success) toast.success(res.message || "Template applied.");
       else toast.error(res.message || "Template application failed.");
-    } catch (err: any) {
+    } catch (err) {
       if (requestId !== applyRequestIdRef.current) return;
 
+      const message = getReadableErrorMessage(err) || "Failed to apply template.";
       setApplyState({
         loading: false,
-        error: err.message || "Failed to apply template.",
+        error: message,
         successMessage: null,
         protocol_used: null,
         commands_executed: [],
         raw_output: "",
       });
-      toast.error(err.message || "Failed to apply template.");
+      toast.error(message);
     }
   }
 
@@ -1208,12 +1258,13 @@ export default function TemplateWorkspaceOverlay({
       return;
     }
 
-    if (!commands.trim()) {
-      toast.error("Template content is required.");
+    const validationError = validateWorkspace("save");
+    if (validationError) {
+      toast.error(validationError);
       return;
     }
 
-    const effectivePort = (manualPort || "").trim() || selectedPort;
+    const effectivePort = getEffectivePort(selectedPort, manualPort);
 
     if (isUser && !effectivePort) {
       toast.error(
@@ -1273,7 +1324,7 @@ export default function TemplateWorkspaceOverlay({
               scope: scopeForNew,
               isam_instance_id: instanceIdForNew,
               source_template_id: selectedTemplate.id,
-              project: inheritedProject, // hérite
+              project: inheritedProject,
             }),
           },
         );
@@ -1301,8 +1352,8 @@ export default function TemplateWorkspaceOverlay({
       toast.success(
         isCopyAction ? "Template copy created." : "Template updated.",
       );
-    } catch (err: any) {
-      toast.error(err.message || "Failed to save.");
+    } catch (err) {
+      toast.error(getReadableErrorMessage(err) || "Failed to save.");
     } finally {
       setSaving(false);
     }
@@ -1373,7 +1424,6 @@ export default function TemplateWorkspaceOverlay({
           </header>
 
           <div className="flex min-h-0 flex-1">
-            {/* ================= LEFT SIDEBAR ================= */}
             <aside className="flex w-[320px] shrink-0 flex-col border-r border-slate-200 bg-white">
               <div className="border-b border-slate-200 p-4">
                 <div className="mb-3 flex items-center justify-between">
@@ -1524,7 +1574,6 @@ export default function TemplateWorkspaceOverlay({
                 )}
               </div>
 
-              {/* Pagination controls */}
               <div className="border-t border-slate-200 bg-slate-50/60 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <Btn
@@ -1557,7 +1606,6 @@ export default function TemplateWorkspaceOverlay({
               </div>
             </aside>
 
-            {/* ================= MAIN ================= */}
             <main className="flex min-w-0 flex-1 flex-col">
               {!selectedTemplate ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 text-slate-400">
@@ -1579,7 +1627,6 @@ export default function TemplateWorkspaceOverlay({
                                 variant="outline"
                                 onClick={() => setEditMode(true)}
                                 className="h-8 w-8 rounded-lg border-slate-200 p-0 hover:bg-white"
-                                title=""
                               >
                                 <Edit3 size={14} />
                               </Btn>
@@ -1623,7 +1670,6 @@ export default function TemplateWorkspaceOverlay({
                         </div>
                       </div>
 
-                      {/* ── TEMPLATE NAME ── */}
                       <div className="p-5">
                         <FieldLabel>Template Name</FieldLabel>
                         <Input
@@ -1654,7 +1700,6 @@ export default function TemplateWorkspaceOverlay({
                         )}
                       </div>
 
-                      {/* ── PROJECT (read-only, inherited) ── */}
                       <div className="p-5">
                         <FieldLabel>Project</FieldLabel>
                         <Input
@@ -1665,7 +1710,6 @@ export default function TemplateWorkspaceOverlay({
                         />
                       </div>
 
-                      {/* ── COMMANDS TEMPLATE ── */}
                       <div className="p-5">
                         <div className="mb-1.5 flex items-center justify-between">
                           <FieldLabel required>Commands Template</FieldLabel>
@@ -1716,9 +1760,17 @@ export default function TemplateWorkspaceOverlay({
                             </div>
                           </div>
                         )}
+
+                        {missingRequiredVariables.length > 0 && (
+                          <div className="mt-3">
+                            <AlertBanner variant="warning">
+                              Missing required variables:{" "}
+                              <strong>{missingRequiredVariables.join(", ")}</strong>
+                            </AlertBanner>
+                          </div>
+                        )}
                       </div>
 
-                      {/* ── INPUT VARIABLES ── */}
                       <div className="space-y-4 p-5">
                         <SectionTitle
                           icon={Cable}
@@ -1729,15 +1781,28 @@ export default function TemplateWorkspaceOverlay({
                         <div>
                           <FieldLabel required={portIsRequired}>Port</FieldLabel>
 
-                          <div className="space-y-3">
+                          {!isSuperAdmin && (
                             <div>
                               <label className="mb-1 block text-[11px] font-medium text-slate-600">
                                 From list
                               </label>
                               <Select
                                 value={selectedPort}
-                                onChange={(e) => setSelectedPort(e.target.value)}
-                                disabled={loadingPorts || availablePorts.length === 0}
+                                onChange={(e) => {
+                                  setSelectedPort(e.target.value);
+                                  if (e.target.value) {
+                                    setManualPort("");
+                                  }
+                                }}
+                                disabled={
+                                  loadingPorts ||
+                                  availablePorts.length === 0 ||
+                                  manualPort.trim().length > 0
+                                }
+                                className={cn(
+                                  manualPort.trim().length > 0 &&
+                                    "cursor-not-allowed bg-slate-100 text-slate-400 opacity-60"
+                                )}
                               >
                                 <option value="">— Select port —</option>
                                 {availablePorts.map((p) => (
@@ -1746,32 +1811,61 @@ export default function TemplateWorkspaceOverlay({
                                   </option>
                                 ))}
                               </Select>
-                            </div>
 
-                            <div>
-                              <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                                Manual entry
-                              </label>
-                              <Input
-                                value={manualPort}
-                                onChange={(e) => setManualPort(e.target.value)}
-                                placeholder="e.g. 1/1/5/3"
-                                className="py-1.5 text-xs"
-                              />
+                              {manualPort.trim().length > 0 && (
+                                <p className="mt-1 text-[10px] text-amber-600">
+                                  Disabled — clear manual port to use this list.
+                                </p>
+                              )}
                             </div>
+                          )}
+
+                          <div className="mt-2">
+                            <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                              {isSuperAdmin ? "Port (manual entry)" : "Manual entry"}
+                            </label>
+                            <Input
+                              value={manualPort}
+                              onChange={(e) => {
+                                setManualPort(e.target.value);
+                                if (e.target.value.trim()) {
+                                  setSelectedPort("");
+                                }
+                              }}
+                              placeholder="e.g. 1/1/5/3"
+                              disabled={!isSuperAdmin && selectedPort.length > 0}
+                              className={cn(
+                                "py-1.5 text-xs",
+                                !isSuperAdmin &&
+                                  selectedPort.length > 0 &&
+                                  "cursor-not-allowed bg-slate-100 text-slate-400 opacity-60"
+                              )}
+                            />
+
+                            {!isSuperAdmin && selectedPort.length > 0 && (
+                              <p className="mt-1 text-[10px] text-amber-600">
+                                Disabled — deselect list port to type manually.
+                              </p>
+                            )}
                           </div>
 
                           <div className="mt-1.5 text-[11px] text-slate-500">
-                            If you enter a manual port, it will be used instead of the selected one.
+                            {isSuperAdmin
+                              ? "As Super Admin, enter the target port manually."
+                              : manualPort.trim()
+                                ? "Manual port will be used. Clear it to pick from the list instead."
+                                : selectedPort
+                                  ? "List port selected. Deselect it to type manually."
+                                  : "Choose a port from the list OR type one manually."}
                           </div>
 
-                          {loadingPorts && (
+                          {!isSuperAdmin && loadingPorts && (
                             <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
                               <Loader2 size={11} className="animate-spin" /> Loading ports...
                             </div>
                           )}
 
-                          {portsError && (
+                          {!isSuperAdmin && portsError && (
                             <div className="mt-1.5">
                               <AlertBanner variant="error">{portsError}</AlertBanner>
                             </div>
@@ -1795,7 +1889,11 @@ export default function TemplateWorkspaceOverlay({
                                         [v]: e.target.value,
                                       }))
                                     }
-                                    className="py-1.5 text-xs"
+                                    className={cn(
+                                      "py-1.5 text-xs",
+                                      !variableValues[v]?.trim() &&
+                                        "border-amber-300 focus:border-amber-400 focus:ring-amber-200"
+                                    )}
                                   />
                                 </div>
                               ))}
@@ -1803,7 +1901,6 @@ export default function TemplateWorkspaceOverlay({
                           </div>
                         )}
 
-                        {/* ── ACTION BUTTONS ── */}
                         <div className="flex flex-wrap items-center gap-2 pt-2">
                           <Btn onClick={handlePreview} disabled={previewState.loading}>
                             {previewState.loading ? (
@@ -1875,7 +1972,6 @@ export default function TemplateWorkspaceOverlay({
                       </div>
                     </div>
 
-                    {/* ── RIGHT PANEL : PREVIEW + EXECUTION ── */}
                     <div className="divide-y divide-slate-200 bg-slate-50/40">
                       <div className="p-5">
                         <SectionTitle
@@ -1895,8 +1991,7 @@ export default function TemplateWorkspaceOverlay({
                           {isPreviewStale && (
                             <div className="mb-3">
                               <AlertBanner variant="warning">
-                                Preview is outdated. Click{" "}
-                                <strong>Preview</strong> again before applying.
+                                Preview is outdated. Click <strong>Preview</strong> again before applying.
                               </AlertBanner>
                             </div>
                           )}
@@ -1913,8 +2008,7 @@ export default function TemplateWorkspaceOverlay({
                                 className="mb-2 text-slate-300"
                               />
                               <p className="text-xs text-slate-500">
-                                Fill variables, then click{" "}
-                                <strong>Preview</strong>.
+                                Fill variables, then click <strong>Preview</strong>.
                               </p>
                             </div>
                           )}

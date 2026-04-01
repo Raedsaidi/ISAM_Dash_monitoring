@@ -98,17 +98,6 @@ export default function Sidebar({
         ))}
       </nav>
 
-      <div className={cn('p-4 border-t border-slate-700', collapsed && 'px-2')}>
-        {!collapsed ? (
-          <div className="bg-slate-800 rounded-lg p-3">
-            <p className="text-xs text-slate-400">Environment</p>
-            <p className="text-sm font-medium text-green-400">DEV</p>
-            <p className="text-xs text-slate-500 mt-1">v10.0.6.0</p>
-          </div>
-        ) : (
-          <div className="w-3 h-3 rounded-full bg-green-400 mx-auto" title="Production" />
-        )}
-      </div>
     </aside>
   );
 }
