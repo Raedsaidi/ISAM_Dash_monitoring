@@ -9,7 +9,7 @@ import React, {
 } from "react";
 import type { AuthUser, AuthTokens } from "../types/auth";
 
-const AUTH_BASE_URL = "http://127.0.0.1:9000";
+const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
 
 /* ---------- types ---------- */
 

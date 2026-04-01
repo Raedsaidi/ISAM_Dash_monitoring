@@ -19,6 +19,7 @@ from app.models.port_lock import PortLock
 from app.services.isam_cache import get_cached_isam_data, load_cached_parsed_data
 from app.models.wan_template import WanTemplate, WanTemplateScope
 from app.models.wan_model import WanModel
+from app.models.template_project import TemplateProject
 from app.models.isam_schemas import (
     ISAMInstanceCreate,
     ISAMInstanceUpdate,
@@ -56,6 +57,10 @@ from app.models.isam_schemas import (
     WanModelUpdate,
     WanModelRead,
     WanModelList,
+    TemplateProjectCreate,
+    TemplateProjectUpdate,
+    TemplateProjectRead,
+    TemplateProjectList,
 )
 from app.services.isam_connection import (
     ISAMConnectionService,
@@ -286,6 +291,24 @@ def validate_template_wan_model(
         )
 
     return found_model
+
+
+# ── Helper pour WAN Models ──
+
+def get_wan_model_or_404(db: Session, model_id: int) -> WanModel:
+    m = db.query(WanModel).filter(WanModel.id == model_id).first()
+    if not m:
+        raise HTTPException(status_code=404, detail=f"WAN Model #{model_id} not found.")
+    return m
+
+
+# ── Helper pour Template Projects ──
+
+def get_template_project_or_404(db: Session, project_id: int) -> TemplateProject:
+    p = db.query(TemplateProject).filter(TemplateProject.id == project_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Template Project #{project_id} not found.")
+    return p
 
 
 # -------- INSTANCES --------
@@ -644,15 +667,6 @@ def get_isam_ports(
     )
 
 
-# ── Helper pour WAN Models ──
-
-def get_wan_model_or_404(db: Session, model_id: int) -> WanModel:
-    m = db.query(WanModel).filter(WanModel.id == model_id).first()
-    if not m:
-        raise HTTPException(status_code=404, detail=f"WAN Model #{model_id} not found.")
-    return m
-
-
 # ================================================================
 # ========  WAN MODELS  ==========================================
 # ================================================================
@@ -754,6 +768,116 @@ def delete_wan_model(
 ):
     model = get_wan_model_or_404(db, model_id)
     db.delete(model)
+    db.commit()
+    return
+
+
+# ================================================================
+# ========  TEMPLATE PROJECTS  ===================================
+# ================================================================
+
+@router.post("/template-projects", response_model=TemplateProjectRead)
+def create_template_project(
+    body: TemplateProjectCreate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    existing = db.query(TemplateProject).filter(
+        TemplateProject.name == body.name.strip()
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A template project with name '{body.name.strip()}' already exists.",
+        )
+
+    project = TemplateProject(
+        name=body.name.strip(),
+        description=body.description.strip() if body.description else None,
+        created_by=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.get("/template-projects", response_model=TemplateProjectList)
+def list_template_projects(
+    search: str | None = Query(None, min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(TemplateProject)
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                TemplateProject.name.ilike(pattern),
+                TemplateProject.description.ilike(pattern),
+            )
+        )
+
+    projects = q.order_by(TemplateProject.name.asc()).all()
+    return TemplateProjectList(projects=projects)
+
+
+@router.get("/template-projects/{project_id}", response_model=TemplateProjectRead)
+def get_template_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    return get_template_project_or_404(db, project_id)
+
+
+@router.patch("/template-projects/{project_id}", response_model=TemplateProjectRead)
+def update_template_project(
+    project_id: int,
+    body: TemplateProjectUpdate,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    project = get_template_project_or_404(db, project_id)
+    data = body.model_dump(exclude_unset=True)
+
+    if "name" in data and data["name"]:
+        new_name = data["name"].strip()
+        existing = db.query(TemplateProject).filter(
+            TemplateProject.name == new_name,
+            TemplateProject.id != project_id,
+        ).first()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A template project with name '{new_name}' already exists.",
+            )
+        data["name"] = new_name
+
+    if "description" in data and data["description"]:
+        data["description"] = data["description"].strip()
+
+    for field, value in data.items():
+        setattr(project, field, value)
+
+    project.updated_at = datetime.utcnow()
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+@router.delete("/template-projects/{project_id}", status_code=204)
+def delete_template_project(
+    project_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    project = get_template_project_or_404(db, project_id)
+    db.delete(project)
     db.commit()
     return
 
@@ -1095,14 +1219,10 @@ def apply_live_template(
     )
 
     # ── ÉTAPE 1 : Déterminer le nom du template pour la validation WAN model ──
-    # On utilise le nom du template en base si disponible,
-    # sinon on essaie de déduire depuis les commandes (fallback)
     template_name_for_validation = ""
     if tpl:
         template_name_for_validation = tpl.name
     else:
-        # Pour les admins qui appliquent sans template_id,
-        # on ne peut pas valider le WAN model → skip
         template_name_for_validation = ""
 
     # ── ÉTAPE 2 : Valider le WAN model dans le nom du template ──
@@ -1139,7 +1259,6 @@ def apply_live_template(
             timeout=30,
         )
 
-        # Ajouter les commandes du cycle au résultat
         commands_executed.extend(cycle_commands)
         raw_output = (raw_output or "") + "\n" + cycle_output
 
@@ -1631,11 +1750,6 @@ def get_lt_slots(
     "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
     response_model=LTPortsResponse,
 )
-# ✅ UNE SEULE DÉFINITION
-@router.get(
-    "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
-    response_model=LTPortsResponse,
-)
 def get_lt_slot_ports(
     instance_id: int,
     slot_id: str,
@@ -1717,6 +1831,7 @@ def get_lt_slot_ports(
         last_refresh_success=cached["last_refresh_success"],
         last_refresh_error=cached["last_refresh_error"],
     )
+
 
 # ========== PORT LOCK ==========
 

@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const ISAM_BASE_URL = "http://127.0.0.1:8001";
+const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
 // ── Types ──
 
@@ -69,6 +69,16 @@ interface WanTemplate {
 }
 
 interface WanModel {
+  id: number;
+  name: string;
+  description: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── NOUVEAU : Type pour les projets de templates ──
+interface TemplateProject {
   id: number;
   name: string;
   description: string | null;
@@ -155,10 +165,6 @@ function instName(instances: IsamInstance[], id: number | null | undefined) {
   return f ? `${f.name} (${f.host})` : `ISAM #${id}`;
 }
 
-/**
- * Construit le nom final : templateName_projectName
- * Si pas de projet, retourne juste le templateName
- */
 function buildFinalName(baseName: string, projectName: string): string {
   const n = baseName.trim();
   const p = projectName.trim();
@@ -166,17 +172,16 @@ function buildFinalName(baseName: string, projectName: string): string {
   return p ? `${n}_${p}` : n;
 }
 
-/**
- * Sépare un nom sauvegardé au format "templateName_projectName"
- * en { baseName, project } en se basant sur le champ project connu.
- */
 function splitSavedName(
   savedName: string,
   knownProject: string | null
 ): { baseName: string; project: string } {
   if (knownProject && savedName.endsWith(`_${knownProject}`)) {
     return {
-      baseName: savedName.slice(0, savedName.length - knownProject.length - 1),
+      baseName: savedName.slice(
+        0,
+        savedName.length - knownProject.length - 1
+      ),
       project: knownProject,
     };
   }
@@ -267,10 +272,13 @@ function Btn({
   const vars: Record<string, string> = {
     primary:
       "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
-    outline: "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
-    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
+    outline:
+      "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
+    subtle:
+      "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
     danger: "bg-white text-red-600 hover:bg-red-50 border-red-200",
-    ghost: "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
+    ghost:
+      "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
   };
   const sizes: Record<string, string> = {
     sm: "px-2.5 py-1.5 text-xs gap-1.5",
@@ -473,8 +481,8 @@ function TemplateNameHint() {
       <div className="flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0 text-sky-600" />
         <div className="text-[11px] text-sky-700 leading-relaxed">
-          <span className="font-semibold">Naming Convention :</span>{" "}
-          Please use a descriptive name like{" "}
+          <span className="font-semibold">Naming Convention :</span> Please
+          use a descriptive name like{" "}
           <span className="font-mono font-semibold bg-sky-100 px-1 rounded">
             GPON-DHCP
           </span>{" "}
@@ -487,7 +495,6 @@ function TemplateNameHint() {
     </div>
   );
 }
-
 
 // ── Final Name Preview ──
 
@@ -517,6 +524,181 @@ function FinalNamePreview({
           </Badge>
         )}
       </div>
+    </div>
+  );
+}
+
+// ================================================================
+// ========  PROJECT SELECTOR (NOUVEAU)  ==========================
+// ================================================================
+
+function ProjectSelector({
+  projects,
+  value,
+  onChange,
+  onProjectCreated,
+  accessToken,
+  loading: externalLoading,
+}: {
+  projects: TemplateProject[];
+  value: string;
+  onChange: (projectName: string) => void;
+  onProjectCreated: () => Promise<void>;
+  accessToken: string | null;
+  loading?: boolean;
+}) {
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [creating, setCreating] = useState(false);
+
+  async function handleCreate() {
+    const trimmedName = newName.trim();
+    if (!trimmedName) return;
+
+    setCreating(true);
+    try {
+      await authFetch<TemplateProject>(
+        `${ISAM_BASE_URL}/api/v1/isam/template-projects`,
+        accessToken,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: trimmedName,
+            description: newDesc.trim() || null,
+          }),
+        }
+      );
+
+      toast.success(`Project "${trimmedName}" created.`);
+
+      // Rafraîchir la liste des projets
+      await onProjectCreated();
+
+      // Sélectionner automatiquement le nouveau projet
+      onChange(trimmedName);
+
+      // Reset le formulaire
+      setNewName("");
+      setNewDesc("");
+      setShowCreateForm(false);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to create project.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  function handleCancel() {
+    setNewName("");
+    setNewDesc("");
+    setShowCreateForm(false);
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <div className="flex-1">
+          <Select
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            disabled={externalLoading}
+          >
+            <option value="">— No project —</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.name}>
+                {p.name}
+                {p.description ? ` — ${p.description}` : ""}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <Btn
+          type="button"
+          size="sm"
+          variant={showCreateForm ? "danger" : "outline"}
+          onClick={() => {
+            if (showCreateForm) {
+              handleCancel();
+            } else {
+              setShowCreateForm(true);
+            }
+          }}
+          disabled={creating}
+          className="shrink-0"
+        >
+          {showCreateForm ? <X size={14} /> : <Plus size={14} />}
+          {showCreateForm ? "Cancel" : "New"}
+        </Btn>
+      </div>
+
+      {/* ── Inline Create Form ── */}
+      {showCreateForm && (
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 space-y-3">
+          <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
+            Create New Project
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                Name <span className="text-red-500">*</span>
+              </label>
+              <Input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="e.g. Orange"
+                className="text-xs py-1.5"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                Description
+              </label>
+              <Input
+                value={newDesc}
+                onChange={(e) => setNewDesc(e.target.value)}
+                placeholder="Optional"
+                className="text-xs py-1.5"
+              />
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Btn
+              type="button"
+              size="sm"
+              variant="primary"
+              onClick={handleCreate}
+              disabled={creating || !newName.trim()}
+              className="bg-emerald-600 hover:bg-emerald-700 border-emerald-600"
+            >
+              {creating ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Plus size={12} />
+              )}
+              Create Project
+            </Btn>
+            <Btn
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleCancel}
+              disabled={creating}
+            >
+              Cancel
+            </Btn>
+          </div>
+        </div>
+      )}
+
+      {/* Info text */}
+      {!showCreateForm && (
+        <div className="text-[11px] text-slate-500">
+          Select an existing project or create a new one. Leave empty for no
+          project.
+        </div>
+      )}
     </div>
   );
 }
@@ -661,7 +843,6 @@ function WanModelsModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {/* Create form */}
           <form
             onSubmit={handleCreate}
             className="rounded-xl border border-slate-200 bg-slate-50/50 p-4 space-y-3"
@@ -702,7 +883,6 @@ function WanModelsModal({
             </Btn>
           </form>
 
-          {/* List */}
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-8 text-sm text-slate-500">
               <Loader2 size={16} className="animate-spin" /> Loading...
@@ -757,7 +937,10 @@ function WanModelsModal({
                           disabled={saving || !editName.trim()}
                         >
                           {saving ? (
-                            <Loader2 size={12} className="animate-spin" />
+                            <Loader2
+                              size={12}
+                              className="animate-spin"
+                            />
                           ) : (
                             "Save"
                           )}
@@ -787,7 +970,10 @@ function WanModelsModal({
                           disabled={deletingId === m.id}
                         >
                           {deletingId === m.id ? (
-                            <Loader2 size={12} className="animate-spin" />
+                            <Loader2
+                              size={12}
+                              className="animate-spin"
+                            />
                           ) : (
                             <Trash2 size={12} />
                           )}
@@ -814,6 +1000,8 @@ export default function WanTemplatesSection() {
 
   const [instances, setInstances] = useState<IsamInstance[]>([]);
   const [templates, setTemplates] = useState<WanTemplate[]>([]);
+  const [projects, setProjects] = useState<TemplateProject[]>([]);
+  const [loadingProjects, setLoadingProjects] = useState(false);
   const [loading, setLoading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -858,17 +1046,21 @@ export default function WanTemplatesSection() {
   const [confirmDialog, setConfirmDialog] =
     useState<ConfirmDialogState>(EMPTY_CONFIRM);
 
-  // ── Nom final calculé en temps réel ──
   const finalName = useMemo(
     () => buildFinalName(name, project),
     [name, project]
   );
 
-  // ── Load data when scope filter or token changes ──
   useEffect(() => {
     if (!accessToken) return;
     loadData();
   }, [accessToken, scopeFilter]);
+
+  // ── Charger les projets au mount ──
+  useEffect(() => {
+    if (!accessToken) return;
+    loadProjects();
+  }, [accessToken]);
 
   const detectedVariables = useMemo(
     () => extractVars(commandsTemplate),
@@ -910,6 +1102,22 @@ export default function WanTemplatesSection() {
       return next;
     });
   }, [customVariables]);
+
+  // ── Load projects ──
+  async function loadProjects() {
+    setLoadingProjects(true);
+    try {
+      const res = await authFetch<{ projects: TemplateProject[] }>(
+        `${ISAM_BASE_URL}/api/v1/isam/template-projects`,
+        accessToken
+      );
+      setProjects(res.projects || []);
+    } catch (err: any) {
+      console.error("Failed to load projects:", err.message);
+    } finally {
+      setLoadingProjects(false);
+    }
+  }
 
   async function loadData() {
     setLoading(true);
@@ -980,7 +1188,6 @@ export default function WanTemplatesSection() {
     resetModalState();
     setEditingTemplate(t);
 
-    // ── Séparer le nom sauvegardé pour l'édition ──
     const { baseName, project: proj } = splitSavedName(t.name, t.project);
     setName(baseName);
     setProject(proj);
@@ -1108,7 +1315,6 @@ export default function WanTemplatesSection() {
       return;
     }
 
-    // ── Construire le nom final : templateName_projectName ──
     const saveName = finalName;
     const saveProject = project.trim() || null;
 
@@ -1263,7 +1469,6 @@ export default function WanTemplatesSection() {
             </div>
           </div>
 
-          {/* Search + Scope Switch */}
           <div className="border-t border-slate-200 bg-slate-50/70 p-4 flex items-center gap-4 flex-wrap">
             <div className="relative max-w-md flex-1">
               <Search
@@ -1350,7 +1555,9 @@ export default function WanTemplatesSection() {
                               {t.project}
                             </Badge>
                           ) : (
-                            <span className="text-xs text-slate-400">—</span>
+                            <span className="text-xs text-slate-400">
+                              —
+                            </span>
                           )}
                         </td>
                         <td className="px-5 py-4 align-top">
@@ -1415,7 +1622,6 @@ export default function WanTemplatesSection() {
         {showModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4">
             <div className="mx-auto max-w-6xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl max-h-[92vh] overflow-y-auto">
-              {/* Top bar */}
               <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4">
                 <SectionTitle
                   icon={editingTemplate ? Edit : Plus}
@@ -1472,18 +1678,24 @@ export default function WanTemplatesSection() {
                         <TemplateNameHint />
                       </div>
 
-                      {/* Project */}
+                      {/* ── Project : LISTE DÉROULANTE ── */}
                       <div>
                         <FieldLabel>Project</FieldLabel>
-                        <Input
+                        <ProjectSelector
+                          projects={projects}
                           value={project}
-                          onChange={(e) => setProject(e.target.value)}
-                          placeholder="Example: Orange"
+                          onChange={setProject}
+                          onProjectCreated={loadProjects}
+                          accessToken={accessToken}
+                          loading={loadingProjects}
                         />
                       </div>
 
                       {/* ── Final Name Preview ── */}
-                      <FinalNamePreview baseName={name} project={project} />
+                      <FinalNamePreview
+                        baseName={name}
+                        project={project}
+                      />
 
                       {editingTemplate?.scope === "USER_INSTANCE" && (
                         <Badge variant="default">
@@ -1498,7 +1710,9 @@ export default function WanTemplatesSection() {
                       {/* Commands */}
                       <div>
                         <div className="mb-1.5 flex items-center justify-between gap-2">
-                          <FieldLabel required>Commands Template</FieldLabel>
+                          <FieldLabel required>
+                            Commands Template
+                          </FieldLabel>
                           <Btn
                             type="button"
                             size="sm"
@@ -1655,7 +1869,9 @@ export default function WanTemplatesSection() {
                           type="button"
                           variant="primary"
                           onClick={handleTestTemplate}
-                          disabled={testState.loading || !testInstanceId}
+                          disabled={
+                            testState.loading || !testInstanceId
+                          }
                           title={
                             !testInstanceId
                               ? "Select an ISAM to enable test"
@@ -1704,7 +1920,9 @@ export default function WanTemplatesSection() {
                           <div className="flex items-center gap-2">
                             <Badge
                               variant={
-                                testState.success ? "success" : "warning"
+                                testState.success
+                                  ? "success"
+                                  : "warning"
                               }
                             >
                               <Play size={12} /> Tested Commands
@@ -1778,8 +1996,13 @@ export default function WanTemplatesSection() {
                     >
                       {submitting ? (
                         <>
-                          <Loader2 size={14} className="animate-spin" />
-                          {editingTemplate ? "Saving..." : "Creating..."}
+                          <Loader2
+                            size={14}
+                            className="animate-spin"
+                          />
+                          {editingTemplate
+                            ? "Saving..."
+                            : "Creating..."}
                         </>
                       ) : editingTemplate ? (
                         "Save Changes"
@@ -1923,7 +2146,9 @@ function ConfirmDialog({
                 "bg-red-600 hover:bg-red-700 border-red-600"
             )}
           >
-            {loading && <Loader2 size={14} className="animate-spin" />}
+            {loading && (
+              <Loader2 size={14} className="animate-spin" />
+            )}
             {confirmText}
           </Btn>
         </div>

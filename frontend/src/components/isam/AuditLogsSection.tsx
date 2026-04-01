@@ -15,7 +15,7 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { JSX } from "react/jsx-runtime";
 
-const ISAM_BASE_URL = "http://127.0.0.1:8001";
+const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
 /* ---------- types ---------- */
 

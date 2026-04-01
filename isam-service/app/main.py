@@ -17,6 +17,7 @@ from app.models.isam_data import ISAMData
 from app.models.isam_lt_slot import ISAMLTSlot
 from app.models.isam_lt_port import ISAMLTPort
 from app.models.port_lock import PortLock
+from app.models.template_project import TemplateProject   
 from app.services.isam_connection import test_connection_for_instance
 from app.services.isam_cache import refresh_isam_data_snapshot_for_instance
 from app.services.isam_lt_cache import refresh_lt_slots_snapshot

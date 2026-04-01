@@ -5,7 +5,7 @@ import React, {
   useCallback,
   useRef,
 } from "react";
-import { cn } from "../../utils/cn";      
+import { cn } from "../../utils/cn";
 import { useAuth } from "../../context/AuthContext";
 import {
   X,
@@ -27,11 +27,12 @@ import {
   Zap,
   Terminal,
   Network,
+  FolderOpen,
 } from "lucide-react";
 import { toast } from "sonner";
 
-const ISAM_BASE_URL = "http://127.0.0.1:8001";
-const AUTH_BASE_URL = "http://127.0.0.1:9000";
+const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
+const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type TemplateScope = "GLOBAL" | "USER_INSTANCE";
@@ -61,6 +62,7 @@ interface IsamInstance {
 interface WanTemplate {
   id: number;
   name: string;
+  project: string | null;               // ← AJOUTÉ
   commands_template: string;
   scope: TemplateScope;
   isam_instance_id: number | null;
@@ -230,7 +232,9 @@ function buildPreviewFingerprint(params: {
   variableValues: Record<string, string>;
 }) {
   const sortedVariables = Object.fromEntries(
-    Object.entries(params.variableValues).sort(([a], [b]) => a.localeCompare(b)),
+    Object.entries(params.variableValues).sort(([a], [b]) =>
+      a.localeCompare(b),
+    ),
   );
 
   return JSON.stringify({
@@ -343,10 +347,14 @@ function Btn({
   const variants = {
     primary:
       "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
-    outline: "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
-    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
-    danger: "bg-white text-red-600 hover:bg-red-50 border-red-200",
-    ghost: "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
+    outline:
+      "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
+    subtle:
+      "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
+    danger:
+      "bg-white text-red-600 hover:bg-red-50 border-red-200",
+    ghost:
+      "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
   };
 
   const sizes = {
@@ -547,9 +555,9 @@ export default function TemplateWorkspaceOverlay({
   const [editMode, setEditMode] = useState(false);
   const [selectedPort, setSelectedPort] = useState("");
   const [manualPort, setManualPort] = useState("");
-  const [variableValues, setVariableValues] = useState<Record<string, string>>(
-    {},
-  );
+  const [variableValues, setVariableValues] = useState<
+    Record<string, string>
+  >({});
 
   const [previewState, setPreviewState] = useState<{
     loading: boolean;
@@ -643,6 +651,12 @@ export default function TemplateWorkspaceOverlay({
       lastPreviewFingerprint,
       currentPreviewFingerprint,
     ],
+  );
+
+  // ─── PROJECT : toujours hérité du template source, non modifiable ───
+  const inheritedProject = useMemo(
+    () => selectedTemplate?.project ?? null,
+    [selectedTemplate],
   );
 
   const resetExecutionStates = useCallback(() => {
@@ -942,7 +956,8 @@ export default function TemplateWorkspaceOverlay({
     if (detectedVariables.some(isPortVariable) && !effectivePort) {
       setPreviewState((s) => ({
         ...s,
-        error: "Please select a port from the list or enter one manually.",
+        error:
+          "Please select a port from the list or enter one manually.",
       }));
       return;
     }
@@ -995,7 +1010,8 @@ export default function TemplateWorkspaceOverlay({
     if (detectedVariables.some(isPortVariable) && !effectivePort) {
       setApplyState((s) => ({
         ...s,
-        error: "Please select a port from the list or enter one manually.",
+        error:
+          "Please select a port from the list or enter one manually.",
       }));
       return;
     }
@@ -1003,7 +1019,8 @@ export default function TemplateWorkspaceOverlay({
     if (lastPreviewFingerprint !== currentPreviewFingerprint) {
       setApplyState((s) => ({
         ...s,
-        error: "Please preview the current template version before applying.",
+        error:
+          "Please preview the current template version before applying.",
       }));
       return;
     }
@@ -1039,7 +1056,9 @@ export default function TemplateWorkspaceOverlay({
       setApplyState({
         loading: false,
         error: res.success ? null : res.message,
-        successMessage: res.success ? res.message || "Applied successfully." : null,
+        successMessage: res.success
+          ? res.message || "Applied successfully."
+          : null,
         protocol_used: res.protocol_used,
         commands_executed: res.commands_executed || [],
         raw_output: res.raw_output || "",
@@ -1123,6 +1142,7 @@ export default function TemplateWorkspaceOverlay({
             ? null
             : selectedTemplate.isam_instance_id ?? instance.id;
 
+        // ─── PROJET HÉRITÉ : on envoie le project du template source ───
         saved = await authFetchJson<WanTemplate>(
           `${ISAM_BASE_URL}/api/v1/isam/wan-templates`,
           accessToken,
@@ -1135,10 +1155,12 @@ export default function TemplateWorkspaceOverlay({
               scope: scopeForNew,
               isam_instance_id: instanceIdForNew,
               source_template_id: selectedTemplate.id,
+              project: inheritedProject,  // ← AJOUTÉ : hérite du projet source
             }),
           },
         );
       } else {
+        // ─── UPDATE : on ne touche PAS au project (le backend le garde) ───
         saved = await authFetchJson<WanTemplate>(
           `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${selectedTemplate.id}`,
           accessToken,
@@ -1148,6 +1170,7 @@ export default function TemplateWorkspaceOverlay({
             body: JSON.stringify({
               name: finalName,
               commands_template: commands,
+              // project n'est PAS envoyé → le backend conserve la valeur existante
             }),
           },
         );
@@ -1268,7 +1291,9 @@ export default function TemplateWorkspaceOverlay({
                   <Select
                     value={ownerFilter}
                     onChange={(e) =>
-                      setOwnerFilter(e.target.value as TemplateOwnerFilter)
+                      setOwnerFilter(
+                        e.target.value as TemplateOwnerFilter,
+                      )
                     }
                     className="py-1.5 text-xs"
                   >
@@ -1294,7 +1319,9 @@ export default function TemplateWorkspaceOverlay({
 
                 {templatesError && (
                   <div className="mx-3 mt-3">
-                    <AlertBanner variant="error">{templatesError}</AlertBanner>
+                    <AlertBanner variant="error">
+                      {templatesError}
+                    </AlertBanner>
                   </div>
                 )}
 
@@ -1323,16 +1350,34 @@ export default function TemplateWorkspaceOverlay({
                         </span>
 
                         {tpl.scope === "GLOBAL" ? (
-                          <Globe size={12} className="shrink-0 text-violet-500" />
+                          <Globe
+                            size={12}
+                            className="shrink-0 text-violet-500"
+                          />
                         ) : (
-                          <User size={12} className="shrink-0 text-sky-500" />
+                          <User
+                            size={12}
+                            className="shrink-0 text-sky-500"
+                          />
                         )}
                       </div>
 
                       <div className="flex items-center gap-2 text-[10px] text-slate-400">
                         <span>{tpl.created_by || "system"}</span>
+                        {/* ── Affiche le project dans la sidebar si présent ── */}
+                        {tpl.project && (
+                          <>
+                            <span>·</span>
+                            <span className="flex items-center gap-0.5">
+                              <FolderOpen size={9} />
+                              {tpl.project}
+                            </span>
+                          </>
+                        )}
                         <span>·</span>
-                        <span>{new Date(tpl.updated_at).toLocaleDateString()}</span>
+                        <span>
+                          {new Date(tpl.updated_at).toLocaleDateString()}
+                        </span>
                       </div>
                     </button>
                   ))}
@@ -1353,24 +1398,23 @@ export default function TemplateWorkspaceOverlay({
               {!selectedTemplate ? (
                 <div className="flex flex-1 flex-col items-center justify-center gap-3 text-slate-400">
                   <FileText size={36} strokeWidth={1.2} />
-                  <p className="text-sm">Select a template from the sidebar.</p>
+                  <p className="text-sm">
+                    Select a template from the sidebar.
+                  </p>
                 </div>
               ) : (
                 <div className="flex-1 overflow-y-auto">
                   <div className="grid min-h-full grid-cols-1 gap-0 xl:grid-cols-2 xl:divide-x xl:divide-slate-200">
                     <div className="space-y-0 divide-y divide-slate-200">
                       <div className="p-5">
-                        {/* Conteneur Flex pour aligner le bouton et le titre sur la même ligne */}
                         <div className="flex items-start gap-3">
-                          
-                          {/* Bouton placé à gauche */}
                           {!editMode && (
-                            <div className="mt-1 shrink-0"> 
+                            <div className="mt-1 shrink-0">
                               <Btn
                                 size="sm"
                                 variant="outline"
                                 onClick={() => setEditMode(true)}
-                                className="h-8 w-8 p-0 rounded-lg border-slate-200 hover:bg-white" 
+                                className="h-8 w-8 p-0 rounded-lg border-slate-200 hover:bg-white"
                                 title=""
                               >
                                 <Edit3 size={14} />
@@ -1378,7 +1422,6 @@ export default function TemplateWorkspaceOverlay({
                             </div>
                           )}
 
-                          {/* SectionTitle qui contient l'icône FileText et le texte */}
                           <div className="flex-1">
                             <SectionTitle
                               icon={FileText}
@@ -1416,6 +1459,7 @@ export default function TemplateWorkspaceOverlay({
                         </div>
                       </div>
 
+                      {/* ── TEMPLATE NAME ── */}
                       <div className="p-5">
                         <FieldLabel>Template Name</FieldLabel>
                         <Input
@@ -1446,9 +1490,73 @@ export default function TemplateWorkspaceOverlay({
                         )}
                       </div>
 
+                      {/* ── PROJECT (lecture seule, hérité du template source) ── */}
+                      <div className="p-5">
+                        <FieldLabel>Project</FieldLabel>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            value={inheritedProject || ""}
+                            disabled
+                            placeholder="No project assigned"
+                            className="cursor-not-allowed bg-slate-50 text-slate-500"
+                          />
+                          
+                        </div>
+                      </div>
+
+                      {/*
+                       * ─── VERSION ALTERNATIVE : PROJECT MODIFIABLE ───
+                       *
+                       * Si vous souhaitez que le project soit modifiable,
+                       * remplacez la section ci-dessus par le code suivant :
+                       *
+                       * // Ajoutez ce state en haut du composant, après les autres useState :
+                       * // const [projectValue, setProjectValue] = useState("");
+                       *
+                       * // Ajoutez ce useEffect après les autres useEffect :
+                       * // useEffect(() => {
+                       * //   setProjectValue(selectedTemplate?.project || "");
+                       * // }, [selectedTemplate]);
+                       *
+                       * // Remplacez la section PROJECT ci-dessus par :
+                       * // <div className="p-5">
+                       * //   <FieldLabel>Project</FieldLabel>
+                       * //   <Input
+                       * //     value={projectValue}
+                       * //     onChange={(e) => {
+                       * //       if (editMode) setProjectValue(e.target.value);
+                       * //     }}
+                       * //     disabled={!editMode}
+                       * //     placeholder="e.g. FTTH_ROLLOUT_2025"
+                       * //     className={cn(
+                       * //       !editMode &&
+                       * //         "cursor-not-allowed bg-slate-50 text-slate-500",
+                       * //     )}
+                       * //   />
+                       * //   <div className="mt-1 text-[11px] text-slate-500">
+                       * //     Optional project label. Will be saved with the template.
+                       * //   </div>
+                       * // </div>
+                       *
+                       * // Dans handleSave, pour le cas isCopyAction (POST), changez :
+                       * //   project: inheritedProject,
+                       * // en :
+                       * //   project: projectValue.trim() || null,
+                       *
+                       * // Dans handleSave, pour le cas update (PATCH), ajoutez :
+                       * //   project: projectValue.trim() || null,
+                       * // dans le body JSON du PATCH.
+                       *
+                       * // Dans handleClearAll (action "clear-all"), ajoutez :
+                       * //   setProjectValue(selectedTemplate?.project || "");
+                       */}
+
+                      {/* ── COMMANDS TEMPLATE ── */}
                       <div className="p-5">
                         <div className="mb-1.5 flex items-center justify-between">
-                          <FieldLabel required>Commands Template</FieldLabel>
+                          <FieldLabel required>
+                            Commands Template
+                          </FieldLabel>
                           <Btn
                             size="sm"
                             variant="danger"
@@ -1488,7 +1596,10 @@ export default function TemplateWorkspaceOverlay({
                                   )}
                                 >
                                   {isPortVariable(v) && (
-                                    <Cable size={10} className="mr-1 inline" />
+                                    <Cable
+                                      size={10}
+                                      className="mr-1 inline"
+                                    />
                                   )}
                                   [[${v}]]
                                 </span>
@@ -1498,6 +1609,7 @@ export default function TemplateWorkspaceOverlay({
                         )}
                       </div>
 
+                      {/* ── INPUT VARIABLES ── */}
                       <div className="space-y-4 p-5">
                         <SectionTitle
                           icon={Cable}
@@ -1505,57 +1617,73 @@ export default function TemplateWorkspaceOverlay({
                           description="Select or enter the target port and fill custom placeholders."
                         />
 
-                          <div>
-                            <FieldLabel required={portIsRequired}>Port</FieldLabel>
+                        <div>
+                          <FieldLabel required={portIsRequired}>
+                            Port
+                          </FieldLabel>
 
-                            <div className="space-y-3">
-                              <div>
-                                <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                                  From list
-                                </label>
-                                <Select
-                                  value={selectedPort}
-                                  onChange={(e) => setSelectedPort(e.target.value)}
-                                  disabled={loadingPorts || availablePorts.length === 0}
-                                >
-                                  <option value="">— Select port —</option>
-                                  {availablePorts.map((p) => (
-                                    <option key={p} value={p}>
-                                      {p}
-                                    </option>
-                                  ))}
-                                </Select>
-                              </div>
-
-                              <div>
-                                <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                                  Manual entry
-                                </label>
-                                <Input
-                                  value={manualPort}
-                                  onChange={(e) => setManualPort(e.target.value)}
-                                  placeholder="e.g. 1/1/5/3"
-                                  className="py-1.5 text-xs"
-                                />
-                              </div>
+                          <div className="space-y-3">
+                            <div>
+                              <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                                From list
+                              </label>
+                              <Select
+                                value={selectedPort}
+                                onChange={(e) =>
+                                  setSelectedPort(e.target.value)
+                                }
+                                disabled={
+                                  loadingPorts ||
+                                  availablePorts.length === 0
+                                }
+                              >
+                                <option value="">— Select port —</option>
+                                {availablePorts.map((p) => (
+                                  <option key={p} value={p}>
+                                    {p}
+                                  </option>
+                                ))}
+                              </Select>
                             </div>
 
-                            <div className="mt-1.5 text-[11px] text-slate-500">
-                              If you enter a manual port, it will be used instead of the selected one.
+                            <div>
+                              <label className="mb-1 block text-[11px] font-medium text-slate-600">
+                                Manual entry
+                              </label>
+                              <Input
+                                value={manualPort}
+                                onChange={(e) =>
+                                  setManualPort(e.target.value)
+                                }
+                                placeholder="e.g. 1/1/5/3"
+                                className="py-1.5 text-xs"
+                              />
                             </div>
-
-                            {loadingPorts && (
-                              <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
-                                <Loader2 size={11} className="animate-spin" /> Loading ports...
-                              </div>
-                            )}
-
-                            {portsError && (
-                              <div className="mt-1.5">
-                                <AlertBanner variant="error">{portsError}</AlertBanner>
-                              </div>
-                            )}
                           </div>
+
+                          <div className="mt-1.5 text-[11px] text-slate-500">
+                            If you enter a manual port, it will be used
+                            instead of the selected one.
+                          </div>
+
+                          {loadingPorts && (
+                            <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
+                              <Loader2
+                                size={11}
+                                className="animate-spin"
+                              />{" "}
+                              Loading ports...
+                            </div>
+                          )}
+
+                          {portsError && (
+                            <div className="mt-1.5">
+                              <AlertBanner variant="error">
+                                {portsError}
+                              </AlertBanner>
+                            </div>
+                          )}
+                        </div>
 
                         {customVariables.length > 0 && (
                           <div>
@@ -1582,10 +1710,17 @@ export default function TemplateWorkspaceOverlay({
                           </div>
                         )}
 
+                        {/* ── ACTION BUTTONS ── */}
                         <div className="flex flex-wrap items-center gap-2 pt-2">
-                          <Btn onClick={handlePreview} disabled={previewState.loading}>
+                          <Btn
+                            onClick={handlePreview}
+                            disabled={previewState.loading}
+                          >
                             {previewState.loading ? (
-                              <Loader2 size={14} className="animate-spin" />
+                              <Loader2
+                                size={14}
+                                className="animate-spin"
+                              />
                             ) : (
                               <Eye size={14} />
                             )}
@@ -1598,7 +1733,10 @@ export default function TemplateWorkspaceOverlay({
                             disabled={applyState.loading}
                           >
                             {applyState.loading ? (
-                              <Loader2 size={14} className="animate-spin" />
+                              <Loader2
+                                size={14}
+                                className="animate-spin"
+                              />
                             ) : (
                               <Play size={14} />
                             )}
@@ -1612,7 +1750,10 @@ export default function TemplateWorkspaceOverlay({
                                 disabled={saving || !editMode}
                               >
                                 {saving ? (
-                                  <Loader2 size={14} className="animate-spin" />
+                                  <Loader2
+                                    size={14}
+                                    className="animate-spin"
+                                  />
                                 ) : (
                                   <Save size={14} />
                                 )}
@@ -1626,7 +1767,10 @@ export default function TemplateWorkspaceOverlay({
                                 size="sm"
                               >
                                 {saving ? (
-                                  <Loader2 size={14} className="animate-spin" />
+                                  <Loader2
+                                    size={14}
+                                    className="animate-spin"
+                                  />
                                 ) : (
                                   <Save size={12} />
                                 )}
@@ -1639,7 +1783,10 @@ export default function TemplateWorkspaceOverlay({
                               disabled={saving || !editMode}
                             >
                               {saving ? (
-                                <Loader2 size={14} className="animate-spin" />
+                                <Loader2
+                                  size={14}
+                                  className="animate-spin"
+                                />
                               ) : (
                                 <Save size={14} />
                               )}
@@ -1649,7 +1796,11 @@ export default function TemplateWorkspaceOverlay({
 
                           <div className="flex-1" />
 
-                          <Btn variant="danger" size="sm" onClick={handleClearAll}>
+                          <Btn
+                            variant="danger"
+                            size="sm"
+                            onClick={handleClearAll}
+                          >
                             <RotateCcw size={13} />
                             Reset
                           </Btn>
@@ -1657,6 +1808,7 @@ export default function TemplateWorkspaceOverlay({
                       </div>
                     </div>
 
+                    {/* ── RIGHT PANEL : PREVIEW + EXECUTION ── */}
                     <div className="divide-y divide-slate-200 bg-slate-50/40">
                       <div className="p-5">
                         <SectionTitle
@@ -1676,8 +1828,9 @@ export default function TemplateWorkspaceOverlay({
                           {isPreviewStale && (
                             <div className="mb-3">
                               <AlertBanner variant="warning">
-                                Preview is outdated. Click <strong>Preview</strong>{" "}
-                                again before applying.
+                                Preview is outdated. Click{" "}
+                                <strong>Preview</strong> again before
+                                applying.
                               </AlertBanner>
                             </div>
                           )}
@@ -1694,7 +1847,8 @@ export default function TemplateWorkspaceOverlay({
                                 className="mb-2 text-slate-300"
                               />
                               <p className="text-xs text-slate-500">
-                                Fill variables, then click <strong>Preview</strong>.
+                                Fill variables, then click{" "}
+                                <strong>Preview</strong>.
                               </p>
                             </div>
                           )}
@@ -1777,12 +1931,13 @@ export default function TemplateWorkspaceOverlay({
             <div className="flex items-center gap-4 text-[11px] text-slate-500">
               <span className="flex items-center gap-1.5">
                 <Clock size={11} />
-                {templates.length} template{templates.length !== 1 ? "s" : ""}
+                {templates.length} template
+                {templates.length !== 1 ? "s" : ""}
               </span>
               <span>·</span>
               <span>
-                {availablePorts.length} port{availablePorts.length !== 1 ? "s" : ""}{" "}
-                in list
+                {availablePorts.length} port
+                {availablePorts.length !== 1 ? "s" : ""} in list
               </span>
             </div>
 

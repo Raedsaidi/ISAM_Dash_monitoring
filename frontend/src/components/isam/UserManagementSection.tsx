@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-const AUTH_BASE_URL = "http://127.0.0.1:9000";
+const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type RoleFilter = "ALL" | UserRole;
@@ -56,12 +56,12 @@ interface PortForm {
 }
 
 interface UserFormState {
-  username: string; // readonly en edit, mais utile pour affichage
+  username: string;
   email: string;
   full_name: string;
-  password: string; // obligatoire en create, optionnel en edit
-  role: UserRole; // modifiable uniquement si SUPER_ADMIN
-  is_active: boolean; // modifiable en edit
+  password: string;
+  role: UserRole;
+  is_active: boolean;
   ports: PortForm[];
 }
 
@@ -71,7 +71,7 @@ interface AdminUserCreatePayload {
   full_name: string;
   password: string;
   role: UserRole;
-  ports?: PortForm[]; // MODIF: optionnel
+  ports?: PortForm[];
 }
 
 interface AdminUserUpdatePayload {
@@ -80,7 +80,7 @@ interface AdminUserUpdatePayload {
   password?: string;
   role?: UserRole;
   is_active?: boolean;
-  ports?: PortForm[]; // déjà optionnel
+  ports?: PortForm[];
 }
 
 interface ConfirmDialogState {
@@ -448,41 +448,31 @@ function SegmentedFilter({
   );
 }
 
+/* ── Stat Card — neutre, sans couleur de fond ── */
+
 function StatCard({
   title,
   value,
   subtitle,
   icon,
-  tone = "default",
 }: {
   title: string;
   value: string | number;
   subtitle: string;
   icon: React.ReactNode;
-  tone?: "default" | "info" | "warning" | "success" | "purple";
 }) {
-  const tones = {
-    default: "bg-white",
-    info: "bg-sky-50/60",
-    warning: "bg-amber-50/60",
-    success: "bg-emerald-50/60",
-    purple: "bg-violet-50/60",
-  };
-
   return (
-    <div
-      className={cn("rounded-xl border border-slate-200 shadow-sm", tones[tone])}
-    >
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               {title}
             </div>
             <div className="mt-1 text-2xl font-bold text-slate-900">{value}</div>
             <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500">
             {icon}
           </div>
         </div>
@@ -667,10 +657,9 @@ export default function UserManagementSection() {
       username: target.username,
       email: target.email,
       full_name: target.full_name,
-      password: "", // optionnel
+      password: "",
       role: target.role,
       is_active: target.is_active,
-      // si aucun port => on garde 1 ligne vide (mais elle ne sera pas envoyée)
       ports:
         existingPorts.length > 0
           ? existingPorts.map((p) => ({ label: p.label ?? "", value: p.value }))
@@ -722,7 +711,6 @@ export default function UserManagementSection() {
       }
     }
 
-    // MODIF: Ports obligatoires seulement pour USER.
     const portsAreRequired = form.role === "USER";
     const seenValues = new Set<string>();
     let hasAtLeastOnePortValue = false;
@@ -734,7 +722,7 @@ export default function UserManagementSection() {
         if (portsAreRequired) {
           e[`ports.${index}.value`] = "Port value is required.";
         }
-        return; // si non requis, on ignore la ligne vide
+        return;
       }
 
       hasAtLeastOnePortValue = true;
@@ -777,8 +765,6 @@ export default function UserManagementSection() {
           role: form.role,
         };
 
-        // MODIF: n'envoyer ports que si on en a vraiment
-        // (USER => validation garantit >= 1)
         if (portsPayload.length > 0) payload.ports = portsPayload;
 
         await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users`, {
@@ -797,14 +783,10 @@ export default function UserManagementSection() {
           is_active: form.is_active,
         };
 
-        // role au même endroit (uniquement SUPER_ADMIN)
         if (isSuperAdmin) payload.role = form.role;
 
-        // password optionnel
         if (form.password.trim()) payload.password = form.password;
 
-        // MODIF: n'envoyer ports que si l'admin a saisi au moins un port
-        // (sinon on ne touche pas aux ports côté backend)
         if (portsPayload.length > 0) payload.ports = portsPayload;
 
         await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${editTarget.id}`, {
@@ -889,7 +871,6 @@ export default function UserManagementSection() {
     return { totalUsers, totalAdmins, totalStandardUsers, totalPorts };
   }, [users]);
 
-  // Permissions UI pour edit role
   const editingSelf = userModalMode === "edit" && editTarget && user?.username === editTarget.username;
   const editingSuperAdminTarget = userModalMode === "edit" && editTarget?.role === "SUPER_ADMIN";
   const canEditRoleField = isSuperAdmin && !editingSelf && !editingSuperAdminTarget;
@@ -910,7 +891,7 @@ export default function UserManagementSection() {
                 <h2 className="text-base font-bold text-slate-900">
                   User Management
                 </h2>
-                <Badge variant="info">Admin Console</Badge>
+                <Badge variant="default">Admin Console</Badge>
               </div>
               <p className="mt-1 text-sm text-slate-500">
                 Create and manage users, roles and assigned ports.
@@ -964,35 +945,31 @@ export default function UserManagementSection() {
 
         {globalError && <AlertBanner variant="error">{globalError}</AlertBanner>}
 
-        {/* Stats */}
+        {/* ── Stats — toutes neutres, sans couleur ── */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Total Users"
             value={stats.totalUsers}
             subtitle="All accounts"
             icon={<Users size={18} />}
-            tone="info"
           />
           <StatCard
             title="Admins"
             value={stats.totalAdmins}
             subtitle="ADMIN + SUPER_ADMIN"
             icon={<ShieldCheck size={18} />}
-            tone="warning"
           />
           <StatCard
             title="Standard Users"
             value={stats.totalStandardUsers}
             subtitle="Role USER"
             icon={<UserCog size={18} />}
-            tone="success"
           />
           <StatCard
             title="Assigned Ports"
             value={stats.totalPorts}
             subtitle="Sum of all user ports"
             icon={<Cable size={18} />}
-            tone="purple"
           />
         </div>
 
@@ -1005,7 +982,7 @@ export default function UserManagementSection() {
               description={`${users.length} user(s) displayed`}
               badge={
                 isSuperAdmin ? (
-                  <Badge variant="info">
+                  <Badge variant="default">
                     <ShieldCheck size={12} />
                     Full edit enabled
                   </Badge>
@@ -1056,7 +1033,6 @@ export default function UserManagementSection() {
                   {users.map((u) => {
                     const ports = getUserPorts(u);
                     const isCurrentUser = user?.username === u.username;
-
                     const isDeleting = deletingUserId === u.id;
 
                     const canDelete =
@@ -1065,7 +1041,7 @@ export default function UserManagementSection() {
                       !(isAdmin && u.role === "ADMIN");
 
                     const canEdit =
-                      !(isAdmin && u.role !== "USER"); // admin: only edit USER
+                      !(isAdmin && u.role !== "USER");
 
                     return (
                       <tr key={u.id} className="hover:bg-slate-50/70">
@@ -1077,7 +1053,7 @@ export default function UserManagementSection() {
                                 <span className="font-semibold text-slate-900 font-mono">
                                   {u.username}
                                 </span>
-                                {isCurrentUser && <Badge variant="info">You</Badge>}
+                                {isCurrentUser && <Badge variant="default">You</Badge>}
                               </div>
                               <div className="mt-0.5 text-xs text-slate-500">
                                 {u.full_name}
@@ -1129,7 +1105,7 @@ export default function UserManagementSection() {
                                   </span>
                                 ))}
                                 {ports.length > 4 && (
-                                  <Badge variant="info">+{ports.length - 4} more</Badge>
+                                  <Badge variant="default">+{ports.length - 4} more</Badge>
                                 )}
                               </div>
                             </div>
@@ -1214,7 +1190,7 @@ export default function UserManagementSection() {
                         : "Update user information (username cannot be changed)."
                     }
                     badge={
-                      <Badge variant="info">
+                      <Badge variant="default">
                         {userModalMode === "create" ? "Create" : "Edit"}
                       </Badge>
                     }
