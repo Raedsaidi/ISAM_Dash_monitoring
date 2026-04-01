@@ -22,10 +22,7 @@ import { useAuth } from '../../context/AuthContext';
 import TemplateWorkspaceOverlay from './TemplateWorkspaceOverlay';
 import LTSlotsOverlay from './LTSlotsOverlay';
 
-<<<<<<< HEAD:frontend/src/components/JunctionsSection.tsx
 // Ajuste si ton isam-service n'est pas sur 8001
-=======
->>>>>>> isam_dev:frontend/src/components/isam/JunctionsSection.tsx
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
 type StatusType = 'active' | 'inactive' | 'error';
