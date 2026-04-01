@@ -397,3 +397,9 @@ class TemplateProjectRead(BaseModel):
 
 class TemplateProjectList(BaseModel):
     projects: List[TemplateProjectRead]
+class ConfigHistoryList(BaseModel):
+    items: list[ConfigHistoryRead]
+    total: int = 0
+
+    class Config:
+        from_attributes = True

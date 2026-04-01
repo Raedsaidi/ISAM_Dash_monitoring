@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { cn } from "../../utils/cn";
 import {
@@ -17,14 +17,15 @@ import {
   Clock,
   RefreshCcw,
   Pencil,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
 
-const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
+const AUTH_BASE_URL = "http://127.0.0.1:9000";
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type RoleFilter = "ALL" | UserRole;
-
 type ConfirmActionType = "delete-user";
 type UserModalMode = "create" | "edit";
 
@@ -97,9 +98,9 @@ const EMPTY_CONFIRM_DIALOG: ConfirmDialogState = {
   loading: false,
 };
 
-/* ================================================================
-   FIX: parse FastAPI/Pydantic errors (avoid [object Object])
-   ================================================================ */
+/* ═══════════════════════════════════════════════════════════════════
+   API ERROR HANDLING
+   ═══════════════════════════════════════════════════════════════════ */
 
 class ApiError extends Error {
   fieldErrors?: Record<string, string>;
@@ -118,7 +119,7 @@ function cleanMsg(msg: string) {
 function locToKey(loc: any): string {
   if (!Array.isArray(loc)) return "general";
   const cleaned = loc.filter(
-    (p) => !["body", "query", "path", "header"].includes(String(p)),
+    (p: string) => !["body", "query", "path", "header"].includes(String(p)),
   );
   return cleaned.map(String).join(".") || "general";
 }
@@ -127,38 +128,30 @@ function parseFastApiError(data: any, fallback = "Unknown error") {
   if (Array.isArray(data?.detail)) {
     const fieldErrors: Record<string, string> = {};
     const messages: string[] = [];
-
     for (const err of data.detail) {
       const key = locToKey(err?.loc);
       const raw = typeof err?.msg === "string" ? err.msg : fallback;
       const msg = cleanMsg(raw);
-
       if (!fieldErrors[key]) fieldErrors[key] = msg;
       messages.push(msg);
     }
-
-    return {
-      message: messages.join("\n"),
-      fieldErrors,
-    };
+    return { message: messages.join("\n"), fieldErrors };
   }
-
-  if (typeof data?.detail === "string") return { message: data.detail as string };
+  if (typeof data?.detail === "string")
+    return { message: data.detail as string };
   if (typeof data?.message === "string")
     return { message: data.message as string };
-
   return { message: fallback };
 }
 
-/* ================================================================
-   Helpers
-   ================================================================ */
+/* ═══════════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════════ */
 
 function getUserPorts(u: UserAdminRead): UserPort[] {
   if (u.ports && u.ports.length > 0) return u.ports;
-  if (u.port_value) {
+  if (u.port_value)
     return [{ id: -1, label: u.port_label ?? "Primary", value: u.port_value }];
-  }
   return [];
 }
 
@@ -176,12 +169,14 @@ function isValidEmail(email: string) {
 }
 
 function validatePasswordStrict(pwd: string): string | null {
-  if (pwd.length < 8 || pwd.length > 72) return "Password must be 8–72 characters.";
+  if (pwd.length < 8 || pwd.length > 72)
+    return "Password must be 8–72 characters.";
   if (/\s/.test(pwd)) return "Password must not contain spaces.";
   if (!/[a-z]/.test(pwd)) return "Password must contain a lowercase letter.";
   if (!/[A-Z]/.test(pwd)) return "Password must contain an uppercase letter.";
   if (!/[0-9]/.test(pwd)) return "Password must contain a digit.";
-  if (!/[^A-Za-z0-9]/.test(pwd)) return "Password must contain a special character.";
+  if (!/[^A-Za-z0-9]/.test(pwd))
+    return "Password must contain a special character.";
   return null;
 }
 
@@ -206,13 +201,13 @@ function roleToBadgeVariant(role: UserRole): BadgeProps["variant"] {
   return "success";
 }
 
-/* ================================================================
-   UI Primitives
-   ================================================================ */
+/* ═══════════════════════════════════════════════════════════════════
+   UI PRIMITIVES
+   ═══════════════════════════════════════════════════════════════════ */
 
 function Badge({ children, variant = "default", className }: BadgeProps) {
   const variants = {
-    default: "bg-slate-100 text-slate-700 border-slate-200",
+    default: "bg-slate-100 text-slate-600 border-slate-200",
     info: "bg-sky-50 text-sky-700 border-sky-200",
     success: "bg-emerald-50 text-emerald-700 border-emerald-200",
     warning: "bg-amber-50 text-amber-700 border-amber-200",
@@ -245,11 +240,14 @@ function Btn({
 }) {
   const variants = {
     primary:
-      "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
-    outline: "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
-    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
-    danger: "bg-white text-red-600 hover:bg-red-50 border-red-200",
-    ghost: "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
+      "bg-blue-600 text-white hover:bg-blue-700 border-blue-600 shadow-sm",
+    outline:
+      "bg-white text-slate-600 hover:bg-slate-50 border-slate-200 hover:border-slate-300 shadow-sm",
+    subtle: "bg-slate-100 text-slate-600 hover:bg-slate-200 border-transparent",
+    danger:
+      "bg-white text-red-500 hover:bg-red-50 border-red-200 hover:border-red-300 shadow-sm",
+    ghost:
+      "bg-transparent text-slate-500 hover:bg-slate-100 border-transparent",
   };
 
   const sizes = {
@@ -261,7 +259,7 @@ function Btn({
     <button
       {...props}
       className={cn(
-        "inline-flex items-center justify-center rounded-lg border font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center justify-center rounded-lg border font-medium transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50",
         variants[variant],
         sizes[size],
         className,
@@ -280,7 +278,7 @@ function Input({
     <input
       {...props}
       className={cn(
-        "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 outline-none transition-colors focus:border-slate-400 focus:ring-1 focus:ring-slate-300",
+        "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 outline-none transition-all duration-150 focus:border-blue-400 focus:ring-2 focus:ring-blue-50",
         className,
       )}
     />
@@ -298,7 +296,7 @@ function Select({
     <select
       {...props}
       className={cn(
-        "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none transition-colors focus:border-slate-400 focus:ring-1 focus:ring-slate-300",
+        "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none transition-all duration-150 focus:border-blue-400 focus:ring-2 focus:ring-blue-50",
         className,
       )}
     >
@@ -315,9 +313,9 @@ function FieldLabel({
   required?: boolean;
 }) {
   return (
-    <label className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+    <label className="mb-1.5 flex items-center gap-1 text-xs font-medium text-slate-500">
       {children}
-      {required && <span className="text-red-500">*</span>}
+      {required && <span className="text-red-400">*</span>}
     </label>
   );
 }
@@ -336,17 +334,17 @@ function SectionTitle({
   return (
     <div className="flex items-center gap-3">
       {Icon && (
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500">
           <Icon size={16} />
         </div>
       )}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          <h3 className="text-sm font-semibold text-slate-700">{title}</h3>
           {badge}
         </div>
         {description && (
-          <p className="mt-0.5 text-[11px] text-slate-500">{description}</p>
+          <p className="mt-0.5 text-[11px] text-slate-400">{description}</p>
         )}
       </div>
     </div>
@@ -356,48 +354,62 @@ function SectionTitle({
 function AlertBanner({
   children,
   variant = "info",
+  onClose,
 }: {
   children: React.ReactNode;
   variant?: "info" | "warning" | "error" | "success";
+  onClose?: () => void;
 }) {
-  const variants = {
-    info: "border-sky-200 bg-sky-50 text-sky-700",
-    warning: "border-amber-200 bg-amber-50 text-amber-700",
-    error: "border-red-200 bg-red-50 text-red-700",
-    success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  const config = {
+    info: { cls: "border-sky-200 bg-sky-50 text-sky-700", Icon: AlertCircle },
+    warning: {
+      cls: "border-amber-200 bg-amber-50 text-amber-700",
+      Icon: AlertCircle,
+    },
+    error: { cls: "border-red-200 bg-red-50 text-red-600", Icon: AlertCircle },
+    success: {
+      cls: "border-emerald-200 bg-emerald-50 text-emerald-700",
+      Icon: CheckCircle2,
+    },
   };
+  const { cls, Icon } = config[variant];
 
   return (
     <div
       className={cn(
         "flex items-start gap-2.5 rounded-lg border px-3 py-2.5 text-xs",
-        variants[variant],
+        cls,
       )}
     >
-      {variant === "error" && (
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
+      <Icon size={14} className="mt-0.5 shrink-0 opacity-70" />
+      <div className="flex-1" style={{ whiteSpace: "pre-wrap" }}>
+        {children}
+      </div>
+      {onClose && (
+        <button
+          onClick={onClose}
+          className="shrink-0 opacity-50 hover:opacity-100 transition-opacity"
+        >
+          <X size={14} />
+        </button>
       )}
-      {variant === "success" && (
-        <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
-      )}
-      {variant === "warning" && (
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      )}
-      {variant === "info" && (
-        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-      )}
-      <div style={{ whiteSpace: "pre-wrap" }}>{children}</div>
     </div>
   );
 }
 
-/* ================================================================
-   Small UI parts
-   ================================================================ */
+/* ═══════════════════════════════════════════════════════════════════
+   SMALL UI PARTS
+   ═══════════════════════════════════════════════════════════════════ */
 
 function StatusBadge({ active }: { active: boolean }) {
   return (
     <Badge variant={active ? "success" : "default"}>
+      <span
+        className={cn(
+          "inline-block h-1.5 w-1.5 rounded-full",
+          active ? "bg-emerald-400" : "bg-slate-400",
+        )}
+      />
       {active ? "Active" : "Inactive"}
     </Badge>
   );
@@ -410,7 +422,7 @@ function RoleBadge({ role }: { role: UserRole }) {
 function AvatarCircle({ name, username }: { name: string; username: string }) {
   const initials = getInitials(name || username || "U");
   return (
-    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-xs font-bold text-slate-700">
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-bold text-slate-500 select-none">
       {initials || "U"}
     </div>
   );
@@ -426,7 +438,7 @@ function SegmentedFilter({
   items: RoleFilter[];
 }) {
   return (
-    <div className="inline-flex flex-wrap items-center gap-2">
+    <div className="inline-flex flex-wrap items-center gap-1">
       {items.map((it) => {
         const active = it === value;
         return (
@@ -434,10 +446,10 @@ function SegmentedFilter({
             key={it}
             onClick={() => onChange(it)}
             className={cn(
-              "rounded-full px-3 py-1.5 text-xs font-semibold transition-colors border",
+              "rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-150 border",
               active
-                ? "bg-slate-900 text-white border-slate-900"
-                : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50",
+                ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50 hover:text-slate-700 hover:border-slate-300",
             )}
           >
             {it === "ALL" ? "All roles" : it}
@@ -447,8 +459,6 @@ function SegmentedFilter({
     </div>
   );
 }
-
-/* ── Stat Card — neutre, sans couleur de fond ── */
 
 function StatCard({
   title,
@@ -466,13 +476,15 @@ function StatCard({
       <div className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-[11px] font-medium uppercase tracking-wider text-slate-400">
               {title}
             </div>
-            <div className="mt-1 text-2xl font-bold text-slate-900">{value}</div>
-            <div className="mt-1 text-xs text-slate-500">{subtitle}</div>
+            <div className="mt-1.5 text-2xl font-bold text-slate-700 tabular-nums">
+              {value}
+            </div>
+            <div className="mt-1 text-xs text-slate-400">{subtitle}</div>
           </div>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-50 text-slate-400">
             {icon}
           </div>
         </div>
@@ -481,9 +493,9 @@ function StatCard({
   );
 }
 
-/* ================================================================
+/* ═══════════════════════════════════════════════════════════════════
    MAIN COMPONENT
-   ================================================================ */
+   ═══════════════════════════════════════════════════════════════════ */
 
 export default function UserManagementSection() {
   const { user, authFetch } = useAuth();
@@ -495,7 +507,6 @@ export default function UserManagementSection() {
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("ALL");
 
-  // Modal create/edit
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [userModalMode, setUserModalMode] = useState<UserModalMode>("create");
   const [editTarget, setEditTarget] = useState<UserAdminRead | null>(null);
@@ -512,7 +523,7 @@ export default function UserManagementSection() {
 
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
-
+  const [showPassword, setShowPassword] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null);
 
   const [confirmDialog, setConfirmDialog] =
@@ -520,24 +531,26 @@ export default function UserManagementSection() {
 
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
   const isAdmin = user?.role === "ADMIN";
-
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function authFetchJson<T>(url: string, options: RequestInit = {}): Promise<T> {
+  async function authFetchJson<T>(
+    url: string,
+    options: RequestInit = {},
+  ): Promise<T> {
     const res = await authFetch(url, options);
-
     let data: any = null;
     try {
       data = await res.json();
     } catch {
-      // no json
+      /* no json */
     }
-
     if (!res.ok) {
-      const parsed = parseFastApiError(data, `Request failed (HTTP ${res.status})`);
+      const parsed = parseFastApiError(
+        data,
+        `Request failed (HTTP ${res.status})`,
+      );
       throw new ApiError(parsed.message, parsed.fieldErrors);
     }
-
     return data as T;
   }
 
@@ -559,21 +572,21 @@ export default function UserManagementSection() {
     async (search?: string, role?: RoleFilter) => {
       setLoading(true);
       setGlobalError(null);
-
       try {
         const params = new URLSearchParams();
         const q = (search ?? searchTerm).trim();
         if (q) params.set("search", q);
         const r = role ?? roleFilter;
         if (r !== "ALL") params.set("role", r);
-
         const qs = params.toString();
         const url = `${AUTH_BASE_URL}/api/v1/auth/users${qs ? `?${qs}` : ""}`;
-
         const data = await authFetchJson<UserListResponse>(url);
         setUsers(data.users);
       } catch (err: any) {
-        if (err.message !== "Session expired" && err.message !== "No access token") {
+        if (
+          err.message !== "Session expired" &&
+          err.message !== "No access token"
+        ) {
           setGlobalError(err.message || "Failed to load users.");
         }
       } finally {
@@ -598,7 +611,6 @@ export default function UserManagementSection() {
   function handleSearchChange(value: string) {
     setSearchTerm(value);
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
-
     searchTimerRef.current = setTimeout(() => {
       loadUsers(value, roleFilter);
     }, 400);
@@ -622,7 +634,11 @@ export default function UserManagementSection() {
     });
   }
 
-  function updatePortRow(index: number, field: "label" | "value", value: string) {
+  function updatePortRow(
+    index: number,
+    field: "label" | "value",
+    value: string,
+  ) {
     setForm((f) => {
       const copy = [...f.ports];
       copy[index] = { ...copy[index], [field]: value };
@@ -634,6 +650,7 @@ export default function UserManagementSection() {
     setUserModalMode("create");
     setEditTarget(null);
     setFormErrors({});
+    setShowPassword(false);
     setForm({
       username: "",
       email: "",
@@ -650,9 +667,8 @@ export default function UserManagementSection() {
     setUserModalMode("edit");
     setEditTarget(target);
     setFormErrors({});
-
+    setShowPassword(false);
     const existingPorts = getUserPorts(target);
-
     setForm({
       username: target.username,
       email: target.email,
@@ -665,7 +681,6 @@ export default function UserManagementSection() {
           ? existingPorts.map((p) => ({ label: p.label ?? "", value: p.value }))
           : [{ label: "", value: "" }],
     });
-
     setUserModalOpen(true);
   }
 
@@ -681,16 +696,13 @@ export default function UserManagementSection() {
       if (!form.username.trim()) e.username = "Username is required.";
       else if (form.username.length < 3 || form.username.length > 32)
         e.username = "Username must be between 3 and 32 characters.";
-      else {
-        const compact = form.username.replace(/\s+/g, "");
-        if (compact && /^\d+$/.test(compact)) {
-          e.username = "Username cannot be only digits.";
-        }
-      }
+      else if (/^\d+$/.test(form.username.replace(/\s+/g, "")))
+        e.username = "Username cannot be only digits.";
     }
 
     if (!form.email.trim()) e.email = "Email is required.";
-    else if (!isValidEmail(form.email.trim())) e.email = "Invalid email format.";
+    else if (!isValidEmail(form.email.trim()))
+      e.email = "Invalid email format.";
 
     if (!form.full_name.trim()) e.full_name = "Full name is required.";
     else if (form.full_name.trim().length < 2)
@@ -704,11 +716,9 @@ export default function UserManagementSection() {
         const pwdErr = validatePasswordStrict(form.password);
         if (pwdErr) e.password = pwdErr;
       }
-    } else {
-      if (form.password.trim()) {
-        const pwdErr = validatePasswordStrict(form.password);
-        if (pwdErr) e.password = pwdErr;
-      }
+    } else if (form.password.trim()) {
+      const pwdErr = validatePasswordStrict(form.password);
+      if (pwdErr) e.password = pwdErr;
     }
 
     const portsAreRequired = form.role === "USER";
@@ -717,40 +727,32 @@ export default function UserManagementSection() {
 
     form.ports.forEach((p, index) => {
       const v = (p.value || "").trim();
-
       if (!v) {
-        if (portsAreRequired) {
+        if (portsAreRequired)
           e[`ports.${index}.value`] = "Port value is required.";
-        }
         return;
       }
-
       hasAtLeastOnePortValue = true;
-
-      if (/\s/.test(v)) e[`ports.${index}.value`] = "Port value must not contain spaces.";
+      if (/\s/.test(v))
+        e[`ports.${index}.value`] = "Port value must not contain spaces.";
       else if (!/^\d+(\/\d+)*$/.test(v))
         e[`ports.${index}.value`] = "Invalid format. Example: 1/1/7/3";
-
-      if (seenValues.has(v)) {
+      if (seenValues.has(v))
         e[`ports.${index}.value`] = "Duplicate port value is not allowed.";
-      }
       seenValues.add(v);
     });
 
-    if (portsAreRequired && !hasAtLeastOnePortValue) {
+    if (portsAreRequired && !hasAtLeastOnePortValue)
       e.ports = "At least one port is required for USER role.";
-    }
 
     setFormErrors(e);
     return Object.keys(e).length === 0;
   }
 
-  async function handleSubmitUserForm(e?: any) {
-    e?.preventDefault?.();
+  async function handleSubmitUserForm(ev?: React.FormEvent) {
+    ev?.preventDefault?.();
     setFormErrors({});
-
     if (!validateUserForm(userModalMode)) return;
-
     setSubmitting(true);
 
     try {
@@ -764,7 +766,6 @@ export default function UserManagementSection() {
           password: form.password,
           role: form.role,
         };
-
         if (portsPayload.length > 0) payload.ports = portsPayload;
 
         await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users`, {
@@ -772,29 +773,26 @@ export default function UserManagementSection() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-
         toast.success("User created successfully.");
       } else {
         if (!editTarget) throw new Error("No user selected.");
-
         const payload: AdminUserUpdatePayload = {
           email: form.email,
           full_name: form.full_name,
           is_active: form.is_active,
         };
-
         if (isSuperAdmin) payload.role = form.role;
-
         if (form.password.trim()) payload.password = form.password;
-
         if (portsPayload.length > 0) payload.ports = portsPayload;
 
-        await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${editTarget.id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-
+        await authFetchJson(
+          `${AUTH_BASE_URL}/api/v1/auth/users/${editTarget.id}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+        );
         toast.success("User updated successfully.");
       }
 
@@ -803,11 +801,9 @@ export default function UserManagementSection() {
       await loadUsers(searchTerm, roleFilter);
     } catch (err: any) {
       if (err instanceof ApiError) {
-        if (err.fieldErrors && Object.keys(err.fieldErrors).length > 0) {
+        if (err.fieldErrors && Object.keys(err.fieldErrors).length > 0)
           setFormErrors(err.fieldErrors);
-        } else {
-          setFormErrors({ general: err.message || "Request failed." });
-        }
+        else setFormErrors({ general: err.message || "Request failed." });
       } else {
         setFormErrors({ general: err?.message || "Request failed." });
       }
@@ -821,35 +817,29 @@ export default function UserManagementSection() {
       toast.error("SUPER_ADMIN users cannot be deleted.");
       return;
     }
-
     if (isAdmin && target.role === "ADMIN") {
       toast.error("ADMIN users cannot delete other ADMIN users.");
       return;
     }
-
     if (user?.username === target.username) {
       toast.error("You cannot delete your own account here.");
       return;
     }
-
     openDeleteDialog(target);
   }
 
   async function handleConfirmDialog() {
     const { type, target } = confirmDialog;
     if (!type || !target) return;
-
     setConfirmDialog((prev) => ({ ...prev, loading: true }));
 
     if (type === "delete-user") {
       setDeletingUserId(target.id);
       const toastId = toast.loading("Deleting user...");
-
       try {
         await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${target.id}`, {
           method: "DELETE",
         });
-
         await loadUsers(searchTerm, roleFilter);
         toast.success("User deleted successfully.", { id: toastId });
       } catch (err: any) {
@@ -867,33 +857,45 @@ export default function UserManagementSection() {
       (u) => u.role === "ADMIN" || u.role === "SUPER_ADMIN",
     ).length;
     const totalStandardUsers = users.filter((u) => u.role === "USER").length;
-    const totalPorts = users.reduce((acc, u) => acc + getUserPorts(u).length, 0);
+    const totalPorts = users.reduce(
+      (acc, u) => acc + getUserPorts(u).length,
+      0,
+    );
     return { totalUsers, totalAdmins, totalStandardUsers, totalPorts };
   }, [users]);
 
-  const editingSelf = userModalMode === "edit" && editTarget && user?.username === editTarget.username;
-  const editingSuperAdminTarget = userModalMode === "edit" && editTarget?.role === "SUPER_ADMIN";
-  const canEditRoleField = isSuperAdmin && !editingSelf && !editingSuperAdminTarget;
+  const editingSelf =
+    userModalMode === "edit" &&
+    editTarget &&
+    user?.username === editTarget.username;
+  const editingSuperAdminTarget =
+    userModalMode === "edit" && editTarget?.role === "SUPER_ADMIN";
+  const canEditRoleField =
+    isSuperAdmin && !editingSelf && !editingSuperAdminTarget;
 
   const confirmTitle =
     confirmDialog.type === "delete-user"
       ? `Delete ${confirmDialog.target?.username ?? "user"}?`
       : "";
 
+  /* ═══════════════════════════════════════════════════════════════
+     RENDER
+     ═══════════════════════════════════════════════════════════════ */
+
   return (
     <>
       <div className="space-y-5">
-        {/* Header */}
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        {/* ─── Header ─── */}
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-slate-900">
+                <h2 className="text-base font-bold text-slate-700">
                   User Management
                 </h2>
-                <Badge variant="default">Admin Console</Badge>
+                <Badge variant="info">Admin Console</Badge>
               </div>
-              <p className="mt-1 text-sm text-slate-500">
+              <p className="mt-1 text-sm text-slate-400">
                 Create and manage users, roles and assigned ports.
               </p>
             </div>
@@ -911,7 +913,6 @@ export default function UserManagementSection() {
                 )}
                 Refresh
               </Btn>
-
               <Btn variant="primary" onClick={openCreateModal}>
                 <Plus size={16} />
                 Add User
@@ -919,7 +920,7 @@ export default function UserManagementSection() {
             </div>
           </div>
 
-          <div className="border-t border-slate-200 bg-slate-50/70 p-4">
+          <div className="border-t border-slate-100 bg-slate-50/60 p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div className="relative w-full lg:max-w-sm">
                 <Search
@@ -930,10 +931,20 @@ export default function UserManagementSection() {
                   value={searchTerm}
                   onChange={(e) => handleSearchChange(e.target.value)}
                   placeholder="Search by username, email, full name..."
-                  className="pl-9"
+                  className="pl-9 pr-8"
                 />
+                {searchTerm && (
+                  <button
+                    onClick={() => {
+                      setSearchTerm("");
+                      loadUsers("", roleFilter);
+                    }}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
-
               <SegmentedFilter
                 value={roleFilter}
                 onChange={handleRoleFilterChange}
@@ -943,9 +954,14 @@ export default function UserManagementSection() {
           </div>
         </div>
 
-        {globalError && <AlertBanner variant="error">{globalError}</AlertBanner>}
+        {/* ─── Error ─── */}
+        {globalError && (
+          <AlertBanner variant="error" onClose={() => setGlobalError(null)}>
+            {globalError}
+          </AlertBanner>
+        )}
 
-        {/* ── Stats — toutes neutres, sans couleur ── */}
+        {/* ─── Stats ─── */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Total Users"
@@ -973,89 +989,107 @@ export default function UserManagementSection() {
           />
         </div>
 
-        {/* Table */}
+        {/* ─── Table ─── */}
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/70 px-5 py-3">
+          <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-5 py-3">
             <SectionTitle
               icon={Users}
               title="Users"
               description={`${users.length} user(s) displayed`}
               badge={
                 isSuperAdmin ? (
-                  <Badge variant="default">
-                    <ShieldCheck size={12} />
-                    Full edit enabled
+                  <Badge variant="info">
+                    <ShieldCheck size={12} /> Full edit enabled
                   </Badge>
                 ) : (
                   <Badge variant="default">Read / Limited actions</Badge>
                 )
               }
             />
-
-            <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-500">
+            <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-400">
               <Clock size={12} />
               Live data
             </div>
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center gap-2 p-10 text-sm text-slate-500">
-              <Loader2 size={16} className="animate-spin" />
-              Loading users...
+            <div className="flex flex-col items-center justify-center gap-2 p-14 text-sm text-slate-400">
+              <Loader2 size={20} className="animate-spin" />
+              <span>Loading users...</span>
+            </div>
+          ) : users.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 p-14">
+              <Users size={28} className="text-slate-200" />
+              <span className="text-sm font-medium text-slate-400">
+                No users found
+              </span>
+              <span className="text-xs text-slate-300">
+                Try adjusting your search or filters
+              </span>
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      User
-                    </th>
-                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Contact
-                    </th>
-                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Role
-                    </th>
-                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Status
-                    </th>
-                    <th className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Ports
-                    </th>
-                    <th className="px-5 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Actions
-                    </th>
+                <thead>
+                  <tr className="border-b border-slate-100">
+                    {[
+                      "User",
+                      "Contact",
+                      "Role",
+                      "Status",
+                      "Ports",
+                      "Actions",
+                    ].map((h, i) => (
+                      <th
+                        key={h}
+                        className={cn(
+                          "px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400",
+                          i === 5 ? "text-right" : "text-left",
+                        )}
+                      >
+                        {h}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
 
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-slate-50">
                   {users.map((u) => {
                     const ports = getUserPorts(u);
                     const isCurrentUser = user?.username === u.username;
                     const isDeleting = deletingUserId === u.id;
-
                     const canDelete =
                       !isCurrentUser &&
                       u.role !== "SUPER_ADMIN" &&
                       !(isAdmin && u.role === "ADMIN");
-
-                    const canEdit =
-                      !(isAdmin && u.role !== "USER");
+                    const canEdit = !(isAdmin && u.role !== "USER");
 
                     return (
-                      <tr key={u.id} className="hover:bg-slate-50/70">
+                      <tr
+                        key={u.id}
+                        className={cn(
+                          "transition-colors duration-100",
+                          isCurrentUser
+                            ? "bg-blue-50/30 hover:bg-blue-50/50"
+                            : "hover:bg-slate-50/60",
+                        )}
+                      >
                         <td className="px-5 py-4 align-top">
                           <div className="flex items-start gap-3">
-                            <AvatarCircle name={u.full_name} username={u.username} />
+                            <AvatarCircle
+                              name={u.full_name}
+                              username={u.username}
+                            />
                             <div className="min-w-0">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-semibold text-slate-900 font-mono">
+                                <span className="font-semibold text-slate-700 font-mono text-[13px]">
                                   {u.username}
                                 </span>
-                                {isCurrentUser && <Badge variant="default">You</Badge>}
+                                {isCurrentUser && (
+                                  <Badge variant="info">You</Badge>
+                                )}
                               </div>
-                              <div className="mt-0.5 text-xs text-slate-500">
+                              <div className="mt-0.5 text-xs text-slate-400">
                                 {u.full_name}
                               </div>
                             </div>
@@ -1063,9 +1097,14 @@ export default function UserManagementSection() {
                         </td>
 
                         <td className="px-5 py-4 align-top">
-                          <div className="flex items-start gap-2 text-slate-700">
-                            <Mail size={14} className="mt-0.5 text-slate-400" />
-                            <span className="break-all">{u.email}</span>
+                          <div className="flex items-start gap-2 text-slate-600">
+                            <Mail
+                              size={14}
+                              className="mt-0.5 text-slate-300 shrink-0"
+                            />
+                            <span className="break-all text-[13px]">
+                              {u.email}
+                            </span>
                           </div>
                         </td>
 
@@ -1073,7 +1112,7 @@ export default function UserManagementSection() {
                           <div className="flex flex-wrap items-center gap-2">
                             <RoleBadge role={u.role} />
                             {u.role === "SUPER_ADMIN" && !isCurrentUser && (
-                              <span className="text-[10px] text-slate-400 italic">
+                              <span className="text-[10px] text-slate-300 italic">
                                 protected
                               </span>
                             )}
@@ -1087,17 +1126,17 @@ export default function UserManagementSection() {
                         <td className="px-5 py-4 align-top">
                           {ports.length > 0 ? (
                             <div className="space-y-2">
-                              <div className="text-xs text-slate-500">
+                              <div className="text-xs text-slate-400">
                                 {ports.length} port(s)
                               </div>
                               <div className="flex flex-wrap gap-1.5 max-w-[420px]">
                                 {ports.slice(0, 4).map((p, index) => (
                                   <span
                                     key={`${p.id}-${index}-${p.value}`}
-                                    className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700"
+                                    className="inline-flex items-center gap-1 rounded-md border border-slate-100 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600"
                                   >
                                     {p.label ? (
-                                      <span className="text-slate-500">
+                                      <span className="text-slate-400">
                                         {p.label}:
                                       </span>
                                     ) : null}
@@ -1105,17 +1144,21 @@ export default function UserManagementSection() {
                                   </span>
                                 ))}
                                 {ports.length > 4 && (
-                                  <Badge variant="default">+{ports.length - 4} more</Badge>
+                                  <Badge variant="info">
+                                    +{ports.length - 4} more
+                                  </Badge>
                                 )}
                               </div>
                             </div>
                           ) : (
-                            <span className="text-xs text-slate-400">No ports</span>
+                            <span className="text-xs text-slate-300">
+                              No ports
+                            </span>
                           )}
                         </td>
 
                         <td className="px-5 py-4 align-top text-right">
-                          <div className="inline-flex items-center gap-2">
+                          <div className="inline-flex items-center gap-1.5">
                             <Btn
                               variant="outline"
                               size="sm"
@@ -1130,7 +1173,6 @@ export default function UserManagementSection() {
                               <Pencil size={14} />
                               Edit
                             </Btn>
-
                             <Btn
                               variant="danger"
                               size="sm"
@@ -1158,59 +1200,59 @@ export default function UserManagementSection() {
                       </tr>
                     );
                   })}
-
-                  {users.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="px-5 py-12 text-center text-sm text-slate-500"
-                      >
-                        No users found for the current filters.
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               </table>
             </div>
           )}
         </div>
 
-        {/* Create/Edit User Modal */}
+        {/* ═══════════════════════════════════════════════════════════
+           CREATE / EDIT MODAL
+           ═══════════════════════════════════════════════════════════ */}
         {userModalOpen && (
-          <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
+          <div className="fixed inset-0 z-50 bg-slate-800/40 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
             <div className="mx-auto my-8 w-full max-w-3xl">
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-                <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4">
+                {/* Modal Header */}
+                <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-6 py-4">
                   <SectionTitle
                     icon={userModalMode === "create" ? Plus : Pencil}
-                    title={userModalMode === "create" ? "Add User" : "Edit User"}
+                    title={
+                      userModalMode === "create" ? "Add User" : "Edit User"
+                    }
                     description={
                       userModalMode === "create"
                         ? "Create a new user and assign one or more ports."
-                        : "Update user information (username cannot be changed)."
+                        : `Editing ${editTarget?.username ?? "user"} — username cannot be changed.`
                     }
                     badge={
-                      <Badge variant="default">
+                      <Badge variant="info">
                         {userModalMode === "create" ? "Create" : "Edit"}
                       </Badge>
                     }
                   />
                   <button
                     onClick={closeUserModal}
-                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
                     disabled={submitting}
                   >
                     <X size={16} />
                   </button>
                 </div>
 
+                {/* Modal Body */}
                 <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
                   <div className="p-6">
                     {formErrors.general && (
-                      <AlertBanner variant="error">{formErrors.general}</AlertBanner>
+                      <div className="mb-4">
+                        <AlertBanner variant="error">
+                          {formErrors.general}
+                        </AlertBanner>
+                      </div>
                     )}
 
-                    <form onSubmit={handleSubmitUserForm} className="mt-4 space-y-5">
+                    <form onSubmit={handleSubmitUserForm} className="space-y-5">
+                      {/* Username + Email */}
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                         <div>
                           <FieldLabel required={userModalMode === "create"}>
@@ -1219,22 +1261,27 @@ export default function UserManagementSection() {
                           <Input
                             value={form.username}
                             onChange={(e) =>
-                              setForm((f) => ({ ...f, username: e.target.value }))
+                              setForm((f) => ({
+                                ...f,
+                                username: e.target.value,
+                              }))
                             }
                             disabled={userModalMode === "edit"}
                             className={cn(
-                              userModalMode === "edit" && "bg-slate-100",
+                              userModalMode === "edit" &&
+                                "bg-slate-50 text-slate-400",
                               formErrors.username &&
-                                "border-red-400 focus:ring-red-300 focus:border-red-400",
+                                "border-red-300 focus:ring-red-50 focus:border-red-300",
                             )}
                           />
                           {userModalMode === "edit" && (
-                            <div className="mt-1 text-[11px] text-slate-500">
+                            <div className="mt-1 text-[11px] text-slate-400">
                               Username cannot be changed.
                             </div>
                           )}
                           {formErrors.username && (
-                            <div className="mt-1 text-xs text-red-600">
+                            <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                              <AlertCircle size={12} className="opacity-70" />
                               {formErrors.username}
                             </div>
                           )}
@@ -1249,55 +1296,85 @@ export default function UserManagementSection() {
                             }
                             className={cn(
                               formErrors.email &&
-                                "border-red-400 focus:ring-red-300 focus:border-red-400",
+                                "border-red-300 focus:ring-red-50 focus:border-red-300",
                             )}
                           />
                           {formErrors.email && (
-                            <div className="mt-1 text-xs text-red-600">
+                            <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                              <AlertCircle size={12} className="opacity-70" />
                               {formErrors.email}
                             </div>
                           )}
                         </div>
                       </div>
 
+                      {/* Full name */}
                       <div>
                         <FieldLabel required>Full name</FieldLabel>
                         <Input
                           value={form.full_name}
                           onChange={(e) =>
-                            setForm((f) => ({ ...f, full_name: e.target.value }))
+                            setForm((f) => ({
+                              ...f,
+                              full_name: e.target.value,
+                            }))
                           }
                           className={cn(
                             formErrors.full_name &&
-                              "border-red-400 focus:ring-red-300 focus:border-red-400",
+                              "border-red-300 focus:ring-red-50 focus:border-red-300",
                           )}
                         />
                         {formErrors.full_name && (
-                          <div className="mt-1 text-xs text-red-600">
+                          <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                            <AlertCircle size={12} className="opacity-70" />
                             {formErrors.full_name}
                           </div>
                         )}
                       </div>
 
+                      {/* Password + Role + Status */}
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                         <div className="md:col-span-1">
                           <FieldLabel required={userModalMode === "create"}>
                             Password
                           </FieldLabel>
-                          <Input
-                            type="password"
-                            value={form.password}
-                            onChange={(e) =>
-                              setForm((f) => ({ ...f, password: e.target.value }))
-                            }
-                            placeholder={userModalMode === "edit" ? "Leave blank to keep" : ""}
-                            className={cn(
-                              formErrors.password &&
-                                "border-red-400 focus:ring-red-300 focus:border-red-400",
-                            )}
-                          />
+                          <div className="relative">
+                            <Input
+                              type={showPassword ? "text" : "password"}
+                              value={form.password}
+                              onChange={(e) =>
+                                setForm((f) => ({
+                                  ...f,
+                                  password: e.target.value,
+                                }))
+                              }
+                              placeholder={
+                                userModalMode === "edit"
+                                  ? "Leave blank to keep"
+                                  : ""
+                              }
+                              className={cn(
+                                "pr-10",
+                                formErrors.password &&
+                                  "border-red-300 focus:ring-red-50 focus:border-red-300",
+                              )}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowPassword(!showPassword)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                              tabIndex={-1}
+                            >
+                              {showPassword ? (
+                                <EyeOff size={14} />
+                              ) : (
+                                <Eye size={14} />
+                              )}
+                            </button>
+                          </div>
                           {formErrors.password && (
-                            <div className="mt-1 text-xs text-red-600">
+                            <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                              <AlertCircle size={12} className="opacity-70" />
                               {formErrors.password}
                             </div>
                           )}
@@ -1307,16 +1384,29 @@ export default function UserManagementSection() {
                           <FieldLabel>Role</FieldLabel>
                           <Select
                             value={form.role}
-                            disabled={userModalMode === "edit" ? !canEditRoleField : !isSuperAdmin}
+                            disabled={
+                              userModalMode === "edit"
+                                ? !canEditRoleField
+                                : !isSuperAdmin
+                            }
                             onChange={(e) =>
-                              setForm((f) => ({ ...f, role: e.target.value as UserRole }))
+                              setForm((f) => ({
+                                ...f,
+                                role: e.target.value as UserRole,
+                              }))
                             }
                             className={cn(
-                              userModalMode === "edit" && !canEditRoleField && "bg-slate-100",
-                              userModalMode === "create" && !isSuperAdmin && "bg-slate-100",
+                              userModalMode === "edit" &&
+                                !canEditRoleField &&
+                                "bg-slate-50 text-slate-400",
+                              userModalMode === "create" &&
+                                !isSuperAdmin &&
+                                "bg-slate-50 text-slate-400",
                             )}
                           >
-                            {isSuperAdmin && <option value="SUPER_ADMIN">SUPER_ADMIN</option>}
+                            {isSuperAdmin && (
+                              <option value="SUPER_ADMIN">SUPER_ADMIN</option>
+                            )}
                             {(isSuperAdmin || userModalMode === "edit") && (
                               <option value="ADMIN">ADMIN</option>
                             )}
@@ -1330,9 +1420,15 @@ export default function UserManagementSection() {
                             value={form.is_active ? "ACTIVE" : "INACTIVE"}
                             disabled={userModalMode === "create"}
                             onChange={(e) =>
-                              setForm((f) => ({ ...f, is_active: e.target.value === "ACTIVE" }))
+                              setForm((f) => ({
+                                ...f,
+                                is_active: e.target.value === "ACTIVE",
+                              }))
                             }
-                            className={cn(userModalMode === "create" && "bg-slate-100")}
+                            className={cn(
+                              userModalMode === "create" &&
+                                "bg-slate-50 text-slate-400",
+                            )}
                           >
                             <option value="ACTIVE">Active</option>
                             <option value="INACTIVE">Inactive</option>
@@ -1341,17 +1437,17 @@ export default function UserManagementSection() {
                       </div>
 
                       {/* Ports */}
-                      <div className="rounded-xl border border-slate-200 bg-slate-50/60">
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/40 overflow-hidden">
                         <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
                           <div>
-                            <div className="text-sm font-semibold text-slate-900">
+                            <div className="text-sm font-semibold text-slate-600">
                               Assigned Ports
                             </div>
-                            <div className="mt-0.5 text-xs text-slate-500">
-                              Ports are required only for USER role. (ADMIN/SUPER_ADMIN can be created without ports)
+                            <div className="mt-0.5 text-xs text-slate-400">
+                              Ports are required only for USER role.
+                              (ADMIN/SUPER_ADMIN can be created without ports)
                             </div>
                           </div>
-
                           <Btn
                             type="button"
                             size="sm"
@@ -1365,26 +1461,31 @@ export default function UserManagementSection() {
 
                         <div className="p-4 space-y-3">
                           {formErrors.ports && (
-                            <AlertBanner variant="error">{formErrors.ports}</AlertBanner>
+                            <AlertBanner variant="error">
+                              {formErrors.ports}
+                            </AlertBanner>
                           )}
 
-                          <div className="max-h-[300px] overflow-y-auto space-y-3 pr-2">
+                          <div className="max-h-[300px] overflow-y-auto space-y-2.5 pr-1">
                             {form.ports.map((p, index) => (
                               <div
                                 key={index}
-                                className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-4 md:grid-cols-[1fr_1fr_auto]"
+                                className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-3.5 md:grid-cols-[1fr_1fr_auto]"
                               >
                                 <div>
                                   <FieldLabel>Label</FieldLabel>
                                   <Input
                                     value={p.label}
                                     onChange={(e) =>
-                                      updatePortRow(index, "label", e.target.value)
+                                      updatePortRow(
+                                        index,
+                                        "label",
+                                        e.target.value,
+                                      )
                                     }
                                     placeholder="ex: Client A"
                                   />
                                 </div>
-
                                 <div>
                                   <FieldLabel required={form.role === "USER"}>
                                     Port value
@@ -1392,22 +1493,29 @@ export default function UserManagementSection() {
                                   <Input
                                     value={p.value}
                                     onChange={(e) =>
-                                      updatePortRow(index, "value", e.target.value)
+                                      updatePortRow(
+                                        index,
+                                        "value",
+                                        e.target.value,
+                                      )
                                     }
                                     placeholder="ex: 1/1/7/3/95"
                                     className={cn(
                                       formErrors[`ports.${index}.value`] &&
-                                        "border-red-400 focus:ring-red-300 focus:border-red-400",
+                                        "border-red-300 focus:ring-red-50 focus:border-red-300",
                                       "font-mono",
                                     )}
                                   />
                                   {formErrors[`ports.${index}.value`] && (
-                                    <div className="mt-1 text-xs text-red-600">
+                                    <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                                      <AlertCircle
+                                        size={12}
+                                        className="opacity-70"
+                                      />
                                       {formErrors[`ports.${index}.value`]}
                                     </div>
                                   )}
                                 </div>
-
                                 <div className="md:pt-7">
                                   <Btn
                                     type="button"
@@ -1416,7 +1524,7 @@ export default function UserManagementSection() {
                                     onClick={() => removePortRow(index)}
                                     disabled={form.ports.length === 1}
                                     title="Remove this port"
-                                    className="border border-slate-200"
+                                    className="border border-slate-200 hover:border-red-200 hover:text-red-500 hover:bg-red-50"
                                   >
                                     <X size={14} />
                                   </Btn>
@@ -1427,12 +1535,20 @@ export default function UserManagementSection() {
                         </div>
                       </div>
 
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <Btn type="button" variant="outline" onClick={closeUserModal}>
+                      {/* Form Actions */}
+                      <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-slate-100">
+                        <Btn
+                          type="button"
+                          variant="outline"
+                          onClick={closeUserModal}
+                        >
                           Cancel
                         </Btn>
-
-                        <Btn type="submit" variant="primary" disabled={submitting}>
+                        <Btn
+                          type="submit"
+                          variant="primary"
+                          disabled={submitting}
+                        >
                           {submitting ? (
                             <>
                               <Loader2 size={14} className="animate-spin" />
@@ -1460,6 +1576,9 @@ export default function UserManagementSection() {
         )}
       </div>
 
+      {/* ═══════════════════════════════════════════════════════════
+         CONFIRM DIALOG
+         ═══════════════════════════════════════════════════════════ */}
       <ConfirmDialog
         open={confirmDialog.open}
         title={confirmTitle}
@@ -1471,36 +1590,34 @@ export default function UserManagementSection() {
         onConfirm={handleConfirmDialog}
       >
         {confirmDialog.type === "delete-user" && confirmDialog.target && (
-          <div className="space-y-3 text-sm text-slate-600">
+          <div className="space-y-3 text-sm text-slate-500">
             <div className="grid grid-cols-[110px_1fr] gap-3">
-              <span className="text-slate-500">User</span>
-              <span className="font-semibold text-slate-900">
+              <span className="text-slate-400">User</span>
+              <span className="font-semibold text-slate-700">
                 {confirmDialog.target.username}
               </span>
             </div>
-
             <div className="grid grid-cols-[110px_1fr] gap-3">
-              <span className="text-slate-500">Role</span>
-              <span className="font-semibold text-slate-700">
+              <span className="text-slate-400">Role</span>
+              <span className="font-semibold text-slate-600">
                 {confirmDialog.target.role}
               </span>
             </div>
-
             <div className="grid grid-cols-[110px_1fr] gap-3">
-              <span className="text-slate-500">Email</span>
-              <span className="break-all text-slate-900">
+              <span className="text-slate-400">Email</span>
+              <span className="break-all text-slate-700">
                 {confirmDialog.target.email}
               </span>
             </div>
-
             <div className="grid grid-cols-[110px_1fr] gap-3">
-              <span className="text-slate-500">Assigned ports</span>
-              <span className="font-semibold text-slate-900">
+              <span className="text-slate-400">Assigned ports</span>
+              <span className="font-semibold text-slate-700">
                 {getUserPorts(confirmDialog.target).length}
               </span>
             </div>
-
-            <AlertBanner variant="error">This action is irreversible.</AlertBanner>
+            <AlertBanner variant="error">
+              This action is irreversible.
+            </AlertBanner>
           </div>
         )}
       </ConfirmDialog>
@@ -1508,9 +1625,9 @@ export default function UserManagementSection() {
   );
 }
 
-/* ================================================================
-   Confirm Dialog
-   ================================================================ */
+/* ═══════════════════════════════════════════════════════════════════
+   CONFIRM DIALOG
+   ═══════════════════════════════════════════════════════════════════ */
 
 function ConfirmDialog({
   open,
@@ -1537,7 +1654,7 @@ function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[80] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4"
+      className="fixed inset-0 z-[80] bg-slate-800/40 backdrop-blur-sm flex items-center justify-center p-4"
       onClick={() => {
         if (!loading) onCancel();
       }}
@@ -1548,17 +1665,21 @@ function ConfirmDialog({
         className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="border-b border-slate-200 px-6 py-4">
-          <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+        <div className="border-b border-slate-100 px-6 py-4">
+          <h3 className="text-sm font-bold text-slate-700">{title}</h3>
         </div>
 
         <div className="px-6 py-4">{children}</div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-3 rounded-b-xl">
-          <Btn variant="outline" size="sm" onClick={onCancel} disabled={loading}>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-100 bg-slate-50/60 px-6 py-3 rounded-b-xl">
+          <Btn
+            variant="outline"
+            size="sm"
+            onClick={onCancel}
+            disabled={loading}
+          >
             {cancelText}
           </Btn>
-
           <Btn
             variant="primary"
             size="sm"
@@ -1566,7 +1687,7 @@ function ConfirmDialog({
             disabled={loading}
             className={cn(
               variant === "danger" &&
-                "bg-red-600 hover:bg-red-700 border-red-600",
+                "bg-red-500 hover:bg-red-600 border-red-500",
             )}
           >
             {loading && <Loader2 size={14} className="animate-spin" />}

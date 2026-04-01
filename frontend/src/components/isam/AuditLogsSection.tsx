@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { cn } from "../../utils/cn";
 import {
   CheckCircle,
@@ -11,13 +11,19 @@ import {
   Globe,
   Loader2,
   Server,
+  ChevronLeft,
+  ChevronRight,
+  X,
+  FileText,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { JSX } from "react/jsx-runtime";
 
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
-/* ---------- types ---------- */
+/* ═══════════════════════════════════════════════════════════════════
+   TYPES
+   ═══════════════════════════════════════════════════════════════════ */
 
 type AuditResult = "success" | "failure" | "warning";
 type ScopeFilter = "all" | "admin" | "user";
@@ -39,6 +45,7 @@ interface ConfigHistoryItem {
 
 interface ConfigHistoryListResponse {
   items: ConfigHistoryItem[];
+  total?: number;
 }
 
 interface ISAMInstanceOption {
@@ -63,9 +70,11 @@ interface AuditLog {
   ipAddress: string;
 }
 
-/* ---------- constants ---------- */
+/* ═══════════════════════════════════════════════════════════════════
+   CONSTANTS
+   ═══════════════════════════════════════════════════════════════════ */
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 25;
 
 const resultConfig: Record<
   AuditResult,
@@ -103,6 +112,8 @@ const actionColors: Record<string, string> = {
   APPLY_TEMPLATE: "bg-teal-100 text-teal-700",
   APPLY_TEMPLATE_MY_PORT: "bg-teal-100 text-teal-700",
   APPLY_TEMPLATE_LIVE: "bg-teal-100 text-teal-700",
+  LOCK_PORT: "bg-orange-100 text-orange-700",
+  UNLOCK_PORT: "bg-lime-100 text-lime-700",
 };
 
 const ADMIN_ACTIONS = new Set<string>([
@@ -115,6 +126,8 @@ const ADMIN_ACTIONS = new Set<string>([
   "DELETE_TEMPLATE",
   "APPLY_TEMPLATE",
   "TEST_TEMPLATE",
+  "LOCK_PORT",
+  "UNLOCK_PORT",
 ]);
 
 const USER_ACTIONS = new Set<string>([
@@ -124,7 +137,9 @@ const USER_ACTIONS = new Set<string>([
   "APPLY_TEMPLATE_LIVE",
 ]);
 
-/* ---------- helpers ---------- */
+/* ═══════════════════════════════════════════════════════════════════
+   HELPERS
+   ═══════════════════════════════════════════════════════════════════ */
 
 function parseJwt(token: string | null): any | null {
   if (!token) return null;
@@ -209,6 +224,12 @@ function buildDetails(item: ConfigHistoryItem): string {
     case "RUN_COMMAND":
       parts.push("Command executed.");
       break;
+    case "LOCK_PORT":
+      parts.push("Port locked.");
+      break;
+    case "UNLOCK_PORT":
+      parts.push("Port unlocked.");
+      break;
     default:
       parts.push("Action executed.");
       break;
@@ -220,7 +241,28 @@ function buildDetails(item: ConfigHistoryItem): string {
   return parts.join(" ");
 }
 
-/* ========== COMPONENT ========== */
+function buildPageNumbers(current: number, total: number): (number | "dots")[] {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+
+  const pages: (number | "dots")[] = [];
+  const siblings = 1;
+  const left = Math.max(2, current - siblings);
+  const right = Math.min(total - 1, current + siblings);
+
+  pages.push(1);
+  if (left > 2) pages.push("dots");
+  for (let i = left; i <= right; i++) pages.push(i);
+  if (right < total - 1) pages.push("dots");
+  if (total > 1) pages.push(total);
+
+  return pages;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   COMPONENT
+   ═══════════════════════════════════════════════════════════════════ */
 
 export default function AuditLogsSection() {
   const { accessToken } = useAuth();
@@ -229,32 +271,38 @@ export default function AuditLogsSection() {
     jwt?.role || jwt?.user_role || jwt?.realm_access?.roles?.[0] || null;
   const isPrivileged = role === "ADMIN" || role === "SUPER_ADMIN";
 
-  /* --- raw data from API --- */
-  const [rawItems, setRawItems] = useState<ConfigHistoryItem[]>([]);
+  /* ── State ── */
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
-  /* --- ISAM instances for the select --- */
   const [instances, setInstances] = useState<ISAMInstanceOption[]>([]);
   const [loadingInstances, setLoadingInstances] = useState(false);
 
-  /* --- filters --- */
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [resultFilter, setResultFilter] = useState<string>("all");
   const [scopeFilter, setScopeFilter] = useState<ScopeFilter>("all");
   const [selectedInstanceId, setSelectedInstanceId] = useState<string>("all");
 
-  /* --- pagination --- */
   const [page, setPage] = useState(1);
 
-  /* --- debounce the search input (400 ms) --- */
+  /* ── Debounce search (400ms) ── */
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchTerm), 400);
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+      setPage(1);
+    }, 400);
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
-  /* --- fetch ISAM instances on mount --- */
+  /* ── Reset page when filters change ── */
+  useEffect(() => {
+    setPage(1);
+  }, [resultFilter, selectedInstanceId, scopeFilter]);
+
+  /* ── Load ISAM instances on mount ── */
   useEffect(() => {
     if (!accessToken) return;
     (async () => {
@@ -273,20 +321,20 @@ export default function AuditLogsSection() {
     })();
   }, [accessToken]);
 
-  /* --- build the instance‑name lookup map --- */
+  /* ── Instance name lookup ── */
   const instanceMap = useMemo(() => {
     const map = new Map<number, string>();
     instances.forEach((i) => map.set(i.id, i.name));
     return map;
   }, [instances]);
 
-  /* --- fetch logs (runs whenever server-side filters change) --- */
+  /* ── Load logs (server-side pagination) ── */
   const loadLogs = useCallback(async () => {
     if (!accessToken) return;
 
-    /* "warning" never exists in the DB – skip fetch, show empty */
     if (resultFilter === "warning") {
-      setRawItems([]);
+      setLogs([]);
+      setTotalCount(0);
       return;
     }
 
@@ -295,7 +343,8 @@ export default function AuditLogsSection() {
 
     try {
       const params = new URLSearchParams();
-      params.set("limit", "200");
+      params.set("limit", String(PAGE_SIZE));
+      params.set("offset", String((page - 1) * PAGE_SIZE));
 
       if (selectedInstanceId !== "all") {
         params.set("instance_id", selectedInstanceId);
@@ -318,7 +367,37 @@ export default function AuditLogsSection() {
         url,
         accessToken,
       );
-      setRawItems(res.items);
+
+      const mapped: AuditLog[] = (res.items || []).map((item) => {
+        const result: AuditResult = item.success ? "success" : "failure";
+        const instName =
+          item.isam_instance_id != null
+            ? instanceMap.get(item.isam_instance_id)
+            : null;
+        const resource = instName
+          ? `${instName} (#${item.isam_instance_id}) / ${item.port_id || "-"}`
+          : `ISAM #${item.isam_instance_id ?? "-"} / ${item.port_id || "-"}`;
+
+        return {
+          id: String(item.id),
+          timestamp: new Date(item.created_at).toLocaleString(),
+          action: item.action,
+          user: item.username,
+          resource,
+          result,
+          details: buildDetails(item),
+          ipAddress: item.ip_address || "N/A",
+        };
+      });
+
+      setLogs(mapped);
+
+      // Safe total: use res.total if available, otherwise fallback
+      const serverTotal =
+        typeof res.total === "number" && !isNaN(res.total)
+          ? res.total
+          : mapped.length;
+      setTotalCount(serverTotal);
     } catch (err: any) {
       setGlobalError(err.message || "Failed to load audit logs.");
     } finally {
@@ -327,70 +406,48 @@ export default function AuditLogsSection() {
   }, [
     accessToken,
     isPrivileged,
+    page,
     debouncedSearch,
     selectedInstanceId,
     resultFilter,
+    instanceMap,
   ]);
 
+  /* ── Auto-reload when deps change ── */
   useEffect(() => {
     loadLogs();
   }, [loadLogs]);
 
-  /* --- map raw items → AuditLog (uses instanceMap for nice names) --- */
-  const auditLogs: AuditLog[] = useMemo(() => {
-    return rawItems.map((item) => {
-      const result: AuditResult = item.success ? "success" : "failure";
-      const instName =
-        item.isam_instance_id != null
-          ? instanceMap.get(item.isam_instance_id)
-          : null;
-      const resource = instName
-        ? `${instName} (#${item.isam_instance_id}) / ${item.port_id || "-"}`
-        : `ISAM #${item.isam_instance_id ?? "-"} / ${item.port_id || "-"}`;
-
-      return {
-        id: String(item.id),
-        timestamp: new Date(item.created_at).toLocaleString(),
-        action: item.action,
-        user: item.username,
-        resource,
-        result,
-        details: buildDetails(item),
-        ipAddress: item.ip_address || "N/A",
-      };
-    });
-  }, [rawItems, instanceMap]);
-
-  /* --- scope filter stays client-side (admin / user action categories) --- */
-  const filtered = useMemo(() => {
-    if (!isPrivileged || scopeFilter === "all") return auditLogs;
-    return auditLogs.filter((log) => {
+  /* ── Client-side scope filter (admin/user action split) ── */
+  const displayed = useMemo(() => {
+    if (!isPrivileged || scopeFilter === "all") return logs;
+    return logs.filter((log) => {
       if (scopeFilter === "admin") return ADMIN_ACTIONS.has(log.action);
       if (scopeFilter === "user")
         return USER_ACTIONS.has(log.action) || !ADMIN_ACTIONS.has(log.action);
       return true;
     });
-  }, [auditLogs, isPrivileged, scopeFilter]);
+  }, [logs, isPrivileged, scopeFilter]);
 
-  /* --- pagination (10 logs / page) --- */
-  // Quand la liste filtrée change (nouvelle recherche, filtres, etc.), on revient à la page 1
-  useEffect(() => {
-    setPage(1);
-  }, [filtered.length]);
+  /* ── Pagination info (safe calculations) ── */
+  const totalPages = totalCount > 0 ? Math.ceil(totalCount / PAGE_SIZE) : 1;
+  const startEntry = totalCount === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const endEntry = Math.min(page * PAGE_SIZE, totalCount);
+  const hasFilters =
+    debouncedSearch !== "" ||
+    selectedInstanceId !== "all" ||
+    resultFilter !== "all";
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const startIndex = (page - 1) * PAGE_SIZE;
-  const endIndex = startIndex + PAGE_SIZE;
-  const paginated = filtered.slice(startIndex, endIndex);
-
-  /* ========== RENDER ========== */
+  /* ═══════════════════════════════════════════════════════════════
+     RENDER
+     ═══════════════════════════════════════════════════════════════ */
 
   return (
     <div className="space-y-6">
-      {/* ---- Toolbar ---- */}
+      {/* ─── Toolbar ─── */}
       <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Search (server-side, debounced) */}
+          {/* Search */}
           <div className="relative">
             <Search
               size={16}
@@ -401,27 +458,40 @@ export default function AuditLogsSection() {
               placeholder="Search logs…"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm
-                         focus:outline-none focus:ring-2 focus:ring-blue-500 w-72"
+              className="pl-9 pr-9 py-2 border border-slate-200 rounded-lg text-sm
+                         focus:outline-none focus:ring-2 focus:ring-blue-100
+                         focus:border-blue-400 w-72 text-slate-700
+                         placeholder:text-slate-400 transition-all duration-150"
             />
+            {searchTerm && (
+              <button
+                onClick={() => setSearchTerm("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2
+                           text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X size={14} />
+              </button>
+            )}
             {loading && debouncedSearch && (
               <Loader2
                 size={14}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin"
+                className="absolute right-8 top-1/2 -translate-y-1/2
+                           text-slate-400 animate-spin"
               />
             )}
           </div>
 
-          {/* ISAM Instance selector (server-side) */}
+          {/* ISAM Instance selector */}
           <div className="relative flex items-center gap-1.5">
             <Server size={16} className="text-slate-400 shrink-0" />
             <select
               value={selectedInstanceId}
               onChange={(e) => setSelectedInstanceId(e.target.value)}
               disabled={loadingInstances}
-              className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white
-                         focus:outline-none focus:ring-2 focus:ring-blue-500
-                         disabled:opacity-50 min-w-[180px]"
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white
+                         focus:outline-none focus:ring-2 focus:ring-blue-100
+                         focus:border-blue-400 disabled:opacity-50 min-w-[180px]
+                         text-slate-700 transition-all duration-150"
             >
               <option value="all">All ISAM Instances</option>
               {instances.map((inst) => (
@@ -432,16 +502,16 @@ export default function AuditLogsSection() {
             </select>
           </div>
 
-          {/* Result filter (server-side) */}
+          {/* Result filter */}
           <div className="flex bg-slate-100 rounded-lg p-0.5">
             {(["all", "success", "failure", "warning"] as const).map((f) => (
               <button
                 key={f}
                 onClick={() => setResultFilter(f)}
                 className={cn(
-                  "px-3 py-1.5 text-xs font-medium rounded-md transition-colors capitalize",
+                  "px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-150 capitalize",
                   resultFilter === f
-                    ? "bg-white shadow-sm text-slate-900"
+                    ? "bg-white shadow-sm text-slate-700"
                     : "text-slate-500 hover:text-slate-700",
                 )}
               >
@@ -450,7 +520,7 @@ export default function AuditLogsSection() {
             ))}
           </div>
 
-          {/* Scope filter — admin only (client-side) */}
+          {/* Scope filter (admin only) */}
           {isPrivileged && (
             <div className="flex bg-slate-100 rounded-lg p-0.5">
               {(["all", "admin", "user"] as const).map((f) => (
@@ -458,9 +528,9 @@ export default function AuditLogsSection() {
                   key={f}
                   onClick={() => setScopeFilter(f)}
                   className={cn(
-                    "px-3 py-1.5 text-xs font-medium rounded-md transition-colors capitalize",
+                    "px-3 py-1.5 text-xs font-medium rounded-md transition-all duration-150 capitalize",
                     scopeFilter === f
-                      ? "bg-white shadow-sm text-slate-900"
+                      ? "bg-white shadow-sm text-slate-700"
                       : "text-slate-500 hover:text-slate-700",
                   )}
                 >
@@ -471,10 +541,15 @@ export default function AuditLogsSection() {
           )}
         </div>
 
+        {/* Reload */}
         <button
-          className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200
-                     text-slate-700 rounded-lg text-sm font-medium transition-colors"
-          onClick={loadLogs}
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700
+                     text-white rounded-lg text-sm font-medium transition-all
+                     duration-150 shadow-sm disabled:opacity-50"
+          onClick={() => {
+            setPage(1);
+            loadLogs();
+          }}
           disabled={loading}
         >
           {loading ? (
@@ -482,31 +557,101 @@ export default function AuditLogsSection() {
           ) : (
             <RefreshCw size={16} />
           )}
-          Reload Logs
+          Reload
         </button>
       </div>
 
-      {/* ---- Global error ---- */}
-      {globalError && (
-        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-          {globalError}
+      {/* ─── Active filters indicator ─── */}
+      {hasFilters && (
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-slate-400">Filters:</span>
+          {debouncedSearch && (
+            <span className="bg-blue-50 text-blue-600 border border-blue-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+              "{debouncedSearch}"
+              <button onClick={() => setSearchTerm("")}>
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          {selectedInstanceId !== "all" && (
+            <span className="bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+              ISAM:{" "}
+              {instances.find((i) => String(i.id) === selectedInstanceId)
+                ?.name || selectedInstanceId}
+              <button onClick={() => setSelectedInstanceId("all")}>
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          {resultFilter !== "all" && (
+            <span
+              className={cn(
+                "px-2 py-0.5 rounded-full flex items-center gap-1 border",
+                resultFilter === "success"
+                  ? "bg-green-50 text-green-600 border-green-200"
+                  : resultFilter === "failure"
+                    ? "bg-red-50 text-red-600 border-red-200"
+                    : "bg-amber-50 text-amber-600 border-amber-200",
+              )}
+            >
+              {resultFilter}
+              <button onClick={() => setResultFilter("all")}>
+                <X size={12} />
+              </button>
+            </span>
+          )}
+          <button
+            onClick={() => {
+              setSearchTerm("");
+              setSelectedInstanceId("all");
+              setResultFilter("all");
+              setScopeFilter("all");
+            }}
+            className="text-slate-400 hover:text-slate-600 underline ml-1"
+          >
+            Clear all
+          </button>
         </div>
       )}
 
-      {/* ---- Log Timeline ---- */}
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      {/* ─── Global error ─── */}
+      {globalError && (
+        <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3 flex items-center justify-between">
+          <span>{globalError}</span>
+          <button
+            onClick={() => setGlobalError(null)}
+            className="text-red-400 hover:text-red-600"
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
+      {/* ─── Log Timeline ─── */}
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
         {loading ? (
-          <div className="p-8 text-sm text-slate-500 flex items-center justify-center gap-2">
-            <Loader2 size={16} className="animate-spin" /> Loading logs…
+          <div className="p-12 text-sm text-slate-400 flex flex-col items-center justify-center gap-3">
+            <Loader2 size={22} className="animate-spin text-blue-500" />
+            <span>Loading audit logs…</span>
+          </div>
+        ) : displayed.length === 0 ? (
+          <div className="p-12 flex flex-col items-center justify-center gap-2">
+            <FileText size={28} className="text-slate-200" />
+            <span className="text-sm font-medium text-slate-400">
+              No audit logs found
+            </span>
+            <span className="text-xs text-slate-300">
+              Try adjusting your search or filters
+            </span>
           </div>
         ) : (
-          <div className="divide-y divide-slate-100">
-            {paginated.map((log) => {
+          <div className="divide-y divide-slate-50">
+            {displayed.map((log) => {
               const config = resultConfig[log.result];
               return (
                 <div
                   key={log.id}
-                  className="p-5 hover:bg-slate-50 transition-colors flex gap-4"
+                  className="p-5 hover:bg-slate-50/60 transition-colors duration-100 flex gap-4"
                 >
                   <div className={cn("mt-1 shrink-0", config.color)}>
                     {config.icon}
@@ -530,17 +675,15 @@ export default function AuditLogsSection() {
                           log.result === "success"
                             ? "bg-green-100 text-green-700"
                             : log.result === "failure"
-                            ? "bg-red-100 text-red-700"
-                            : "bg-amber-100 text-amber-700",
+                              ? "bg-red-100 text-red-700"
+                              : "bg-amber-100 text-amber-700",
                         )}
                       >
                         {log.result}
                       </span>
                     </div>
 
-                    <p className="text-sm text-slate-700 mt-2">
-                      {log.details}
-                    </p>
+                    <p className="text-sm text-slate-600 mt-2">{log.details}</p>
 
                     <div className="flex items-center gap-4 mt-2 text-xs text-slate-400 flex-wrap">
                       <span className="flex items-center gap-1">
@@ -552,7 +695,7 @@ export default function AuditLogsSection() {
                       <span className="flex items-center gap-1">
                         <Globe size={12} /> {log.ipAddress}
                       </span>
-                      <span className="text-slate-500 font-mono">
+                      <span className="text-slate-500 font-mono text-[11px]">
                         {log.resource}
                       </span>
                     </div>
@@ -560,78 +703,84 @@ export default function AuditLogsSection() {
                 </div>
               );
             })}
-
-            {filtered.length === 0 && (
-              <div className="p-8 text-sm text-slate-500 text-center">
-                No audit logs found.
-              </div>
-            )}
           </div>
         )}
       </div>
 
-      {/* ---- Footer ---- */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-500">
-          {filtered.length === 0
-            ? "No entries"
-            : `Showing ${startIndex + 1}-${Math.min(
-                endIndex,
-                filtered.length,
-              )} of ${filtered.length} entries`}
-        </p>
+      {/* ─── Pagination ─── */}
+      {totalCount > 0 && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-400">
+            Showing{" "}
+            <span className="font-medium text-slate-600">
+              {startEntry}–{endEntry}
+            </span>{" "}
+            of <span className="font-medium text-slate-600">{totalCount}</span>{" "}
+            entries
+          </p>
 
-        {filtered.length > 0 && (
-          <div className="flex items-center gap-1">
-            {/* Page précédente */}
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page === 1}
-              className={cn(
-                "w-8 h-8 rounded-lg text-sm font-medium",
-                page === 1
-                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200",
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1">
+              {/* Previous */}
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className={cn(
+                  "w-8 h-8 flex items-center justify-center rounded-lg text-sm transition-all duration-150",
+                  page <= 1
+                    ? "text-slate-300 cursor-not-allowed"
+                    : "text-slate-600 hover:bg-slate-100",
+                )}
+              >
+                <ChevronLeft size={16} />
+              </button>
+
+              {/* Page numbers */}
+              {buildPageNumbers(page, totalPages).map((item, idx) =>
+                item === "dots" ? (
+                  <span
+                    key={`dots-${idx}`}
+                    className="w-8 h-8 flex items-center justify-center text-slate-400 text-xs"
+                  >
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={item}
+                    onClick={() => setPage(item)}
+                    className={cn(
+                      "w-8 h-8 rounded-lg text-sm font-medium transition-all duration-150",
+                      page === item
+                        ? "bg-blue-600 text-white shadow-sm"
+                        : "text-slate-600 hover:bg-slate-100",
+                    )}
+                  >
+                    {item}
+                  </button>
+                ),
               )}
-            >
-              ‹
-            </button>
 
-            {/* Numéros de pages 1 / 2 / 3 / ... */}
-            {Array.from({ length: totalPages }, (_, i) => {
-              const p = i + 1;
-              return (
-                <button
-                  key={p}
-                  onClick={() => setPage(p)}
-                  className={cn(
-                    "w-8 h-8 rounded-lg text-sm font-medium",
-                    p === page
-                      ? "bg-blue-600 text-white"
-                      : "bg-slate-100 text-slate-700 hover:bg-slate-200",
-                  )}
-                >
-                  {p}
-                </button>
-              );
-            })}
+              {/* Next */}
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className={cn(
+                  "w-8 h-8 flex items-center justify-center rounded-lg text-sm transition-all duration-150",
+                  page >= totalPages
+                    ? "text-slate-300 cursor-not-allowed"
+                    : "text-slate-600 hover:bg-slate-100",
+                )}
+              >
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-            {/* Page suivante */}
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-              className={cn(
-                "w-8 h-8 rounded-lg text-sm font-medium",
-                page === totalPages
-                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200",
-              )}
-            >
-              ›
-            </button>
-          </div>
-        )}
-      </div>
+      {totalCount === 0 && !loading && (
+        <p className="text-sm text-slate-400">No entries</p>
+      )}
     </div>
   );
 }

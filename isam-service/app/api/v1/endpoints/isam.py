@@ -1548,44 +1548,6 @@ def apply_template_to_my_port(
 
 # -------- CONFIG HISTORY --------
 
-@router.get("/my-config-history", response_model=ConfigHistoryList)
-def list_my_config_history(
-    instance_id: int | None = Query(None, ge=1),
-    action: str | None = Query(None),
-    success: bool | None = Query(None),
-    search: str | None = Query(None, min_length=1, max_length=200),
-    limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    q = db.query(ConfigHistory).order_by(ConfigHistory.created_at.desc())
-    q = q.filter(ConfigHistory.username == current_user.username)
-
-    if instance_id is not None:
-        q = q.filter(ConfigHistory.isam_instance_id == instance_id)
-    if action:
-        q = q.filter(ConfigHistory.action == action)
-    if success is not None:
-        q = q.filter(ConfigHistory.success == success)
-
-    if search:
-        pattern = f"%{search}%"
-        q = q.filter(
-            or_(
-                ConfigHistory.username.ilike(pattern),
-                ConfigHistory.action.ilike(pattern),
-                ConfigHistory.port_id.ilike(pattern),
-                ConfigHistory.message.ilike(pattern),
-                ConfigHistory.ip_address.ilike(pattern),
-                ConfigHistory.commands_executed.ilike(pattern),
-                ConfigHistory.raw_output.ilike(pattern),
-            )
-        )
-
-    items = q.limit(limit).all()
-    return ConfigHistoryList(items=items)
-
-
 @router.get("/config-history", response_model=ConfigHistoryList)
 def list_config_history(
     instance_id: int | None = Query(None, ge=1),
@@ -1594,7 +1556,8 @@ def list_config_history(
     action: str | None = Query(None),
     success: bool | None = Query(None),
     search: str | None = Query(None, min_length=1, max_length=200),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(25, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
@@ -1625,9 +1588,51 @@ def list_config_history(
             )
         )
 
-    items = q.limit(limit).all()
-    return ConfigHistoryList(items=items)
+    total = q.count()
+    items = q.offset(offset).limit(limit).all()
 
+    return ConfigHistoryList(items=items, total=total)
+
+
+@router.get("/my-config-history", response_model=ConfigHistoryList)
+def list_my_config_history(
+    instance_id: int | None = Query(None, ge=1),
+    action: str | None = Query(None),
+    success: bool | None = Query(None),
+    search: str | None = Query(None, min_length=1, max_length=200),
+    limit: int = Query(25, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(ConfigHistory).order_by(ConfigHistory.created_at.desc())
+    q = q.filter(ConfigHistory.username == current_user.username)
+
+    if instance_id is not None:
+        q = q.filter(ConfigHistory.isam_instance_id == instance_id)
+    if action:
+        q = q.filter(ConfigHistory.action == action)
+    if success is not None:
+        q = q.filter(ConfigHistory.success == success)
+
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                ConfigHistory.username.ilike(pattern),
+                ConfigHistory.action.ilike(pattern),
+                ConfigHistory.port_id.ilike(pattern),
+                ConfigHistory.message.ilike(pattern),
+                ConfigHistory.ip_address.ilike(pattern),
+                ConfigHistory.commands_executed.ilike(pattern),
+                ConfigHistory.raw_output.ilike(pattern),
+            )
+        )
+
+    total = q.count()
+    items = q.offset(offset).limit(limit).all()
+
+    return ConfigHistoryList(items=items, total=total)
 
 # -------- CACHED DATA --------
 
