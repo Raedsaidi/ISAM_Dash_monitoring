@@ -32,7 +32,6 @@ export default function LTSlotsPanel({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
-
   useEffect(() => {
     loadSlots();
   }, [instanceId]);
