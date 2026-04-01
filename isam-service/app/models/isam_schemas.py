@@ -155,6 +155,11 @@ class WanTemplateRead(WanTemplateBase):
 
 class WanTemplateList(BaseModel):
     templates: List[WanTemplateRead]
+    # pagination meta (new)
+    total: int = 0
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 1
 
 
 class ApplyWanTemplateResponse(BaseModel):
@@ -403,3 +408,19 @@ class ConfigHistoryList(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+
+# ===== PORT TEMPLATE STATUS =====
+
+class PortTemplateStatusResponse(BaseModel):
+    configured: bool
+    port_id: str
+    instance_id: int
+    last_template_id: Optional[int] = None
+    last_template_name: Optional[str] = None
+    last_project: Optional[str] = None
+    last_applied_by: Optional[str] = None
+    last_applied_at: Optional[datetime] = None
+    apply_count: int = 0
+    message: str

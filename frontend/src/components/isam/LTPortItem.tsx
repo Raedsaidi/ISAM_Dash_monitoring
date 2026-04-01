@@ -1,7 +1,18 @@
-import React from 'react';
-import { Lock, Zap, Cable, Radio, Wifi } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Lock, Zap, Cable, Radio, Wifi, CheckCircle2, Circle } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import PortLockButton from './PortLockButton';
+
+const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
+
+interface TemplateStatus {
+  configured: boolean;
+  last_template_name?: string | null;
+  last_applied_by?: string | null;
+  last_project?: string | null;
+  last_applied_at?: string | null;
+  apply_count?: number;
+}
 
 interface LTPortItemProps {
   port: any;
@@ -10,6 +21,8 @@ interface LTPortItemProps {
   accessToken: string | null;
   isAdmin: boolean;
   onLockToggle: () => void;
+  /** Optionnel : si le parent pré-charge les statuts en batch */
+  templateStatus?: TemplateStatus | null;
 }
 
 // Helper: check if a value is "empty" (0, "-", "", null, undefined)
@@ -27,6 +40,21 @@ function formatMtu(cfg: any, oper: any): string | null {
   return `${c}/${o}`;
 }
 
+function formatRelativeTime(dateStr: string): string {
+  const now = new Date();
+  const date = new Date(dateStr);
+  const diffMs = now.getTime() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffH = Math.floor(diffMin / 60);
+  const diffD = Math.floor(diffH / 24);
+
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffH < 24) return `${diffH}h ago`;
+  if (diffD < 30) return `${diffD}d ago`;
+  return date.toLocaleDateString();
+}
+
 export default function LTPortItem({
   port,
   isLocked,
@@ -34,7 +62,44 @@ export default function LTPortItem({
   accessToken,
   isAdmin,
   onLockToggle,
+  templateStatus: externalStatus,
 }: LTPortItemProps) {
+  const [status, setStatus] = useState<TemplateStatus | null>(externalStatus ?? null);
+  const [statusLoading, setStatusLoading] = useState(false);
+
+  // Si le parent fournit le statut, on l'utilise directement
+  useEffect(() => {
+    if (externalStatus !== undefined) {
+      setStatus(externalStatus);
+      return;
+    }
+
+    // Sinon, fetch individuel
+    if (!instanceId || !port.port_id || !accessToken) return;
+
+    let cancelled = false;
+    setStatusLoading(true);
+
+    fetch(
+      `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/ports/${port.port_id}/template-status`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setStatus(data);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setStatusLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [instanceId, port.port_id, accessToken, externalStatus]);
+
   function getPortTypeIcon() {
     const pt = (port.port_type || '').toLowerCase();
     if (pt.includes('xdsl')) return <Zap size={13} />;
@@ -83,13 +148,15 @@ export default function LTPortItem({
   const hasEncap = !isEmpty(port.encap);
   const hasDetails = mtuDisplay || hasMode || hasEncap;
 
+  const isConfigured = status?.configured === true;
+
   return (
     <div
       className={cn(
         'group relative rounded-lg border transition-all duration-100',
         isLocked
           ? 'border-orange-300 bg-orange-50/40 border-dashed'
-          : 'border-zinc-200/80 bg-white hover:border-zinc-300 hover:shadow-[0_1px_4px_rgba(0,0,0,0.03)]'
+          : 'border-zinc-200/80 bg-white hover:border-zinc-300 hover:shadow-[0_1px_4px_rgba(0,0,0,0.03)]',
       )}
     >
       {isLocked && (
@@ -105,7 +172,7 @@ export default function LTPortItem({
                 'flex items-center justify-center w-7 h-7 rounded-md border shrink-0',
                 style.bg,
                 style.border,
-                style.text
+                style.text,
               )}
             >
               {getPortTypeIcon()}
@@ -119,7 +186,7 @@ export default function LTPortItem({
                 <span
                   className={cn(
                     'inline-flex px-1.5 py-px rounded text-[8px] font-bold uppercase tracking-widest border leading-none',
-                    style.badge
+                    style.badge,
                   )}
                 >
                   {port.port_type}
@@ -131,20 +198,13 @@ export default function LTPortItem({
                 <div className="w-px h-2.5 bg-zinc-200" />
                 <StateDot label="Port" up={portUp} value={port.port_state} />
 
-                {/* Inline details on same row for compact view */}
                 {hasDetails && (
                   <>
                     <div className="w-px h-2.5 bg-zinc-200 hidden sm:block" />
                     <div className="hidden sm:flex items-center gap-1">
-                      {mtuDisplay && (
-                        <MicroChip label="MTU" value={mtuDisplay} />
-                      )}
-                      {hasMode && (
-                        <MicroChip label="Mode" value={port.mode} />
-                      )}
-                      {hasEncap && (
-                        <MicroChip label="Encap" value={port.encap} />
-                      )}
+                      {mtuDisplay && <MicroChip label="MTU" value={mtuDisplay} />}
+                      {hasMode && <MicroChip label="Mode" value={port.mode} />}
+                      {hasEncap && <MicroChip label="Encap" value={port.encap} />}
                     </div>
                   </>
                 )}
@@ -171,6 +231,65 @@ export default function LTPortItem({
             )}
           </div>
         </div>
+
+        {/* ── Template status row ── */}
+        {!statusLoading && status && (
+          <div className="mt-2 pt-1.5 border-t border-zinc-100">
+            {isConfigured ? (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 border border-emerald-200 rounded text-[9px] font-semibold text-emerald-700">
+                  <CheckCircle2 size={9} className="shrink-0" />
+                  Configured
+                </div>
+
+                {status.last_template_name && (
+                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-100 border border-zinc-200 text-[9px] font-mono font-semibold text-zinc-700">
+                    {status.last_template_name}
+                  </span>
+                )}
+
+                {status.last_project && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-violet-50 border border-violet-200 text-[9px] font-semibold text-violet-600">
+                    {status.last_project}
+                  </span>
+                )}
+
+                {status.last_applied_by && (
+                  <span className="text-[9px] text-zinc-400">
+                    by{' '}
+                    <span className="font-semibold text-zinc-500">
+                      {status.last_applied_by}
+                    </span>
+                  </span>
+                )}
+
+                {status.last_applied_at && (
+                  <span className="text-[9px] text-zinc-300">
+                    · {formatRelativeTime(status.last_applied_at)}
+                  </span>
+                )}
+
+                {(status.apply_count ?? 0) > 1 && (
+                  <span className="text-[9px] text-zinc-300">
+                    · {status.apply_count}× applied
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-1">
+                <Circle size={8} className="text-zinc-300 shrink-0" />
+                <span className="text-[9px] text-zinc-400">Not configured</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Loading skeleton */}
+        {statusLoading && (
+          <div className="mt-2 pt-1.5 border-t border-zinc-100">
+            <div className="h-3 w-32 bg-zinc-100 rounded animate-pulse" />
+          </div>
+        )}
 
         {/* Mobile details row */}
         {hasDetails && (
@@ -199,14 +318,14 @@ function StateDot({
       <div
         className={cn(
           'w-[5px] h-[5px] rounded-full shrink-0',
-          up ? 'bg-emerald-500' : 'bg-zinc-300'
+          up ? 'bg-emerald-500' : 'bg-zinc-300',
         )}
       />
       <span className="text-[10px] text-zinc-400">{label}</span>
       <span
         className={cn(
           'text-[10px] font-semibold',
-          up ? 'text-emerald-700' : 'text-zinc-400'
+          up ? 'text-emerald-700' : 'text-zinc-400',
         )}
       >
         {value}

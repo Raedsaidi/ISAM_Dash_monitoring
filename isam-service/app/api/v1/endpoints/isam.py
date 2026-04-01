@@ -1,11 +1,12 @@
 from datetime import datetime
 import logging
+import math
 from typing import List, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
+from sqlalchemy import func, and_, or_
 from urllib.parse import unquote
 
 from app.core.db import get_db
@@ -61,6 +62,7 @@ from app.models.isam_schemas import (
     TemplateProjectUpdate,
     TemplateProjectRead,
     TemplateProjectList,
+    PortTemplateStatusResponse,
 )
 from app.services.isam_connection import (
     ISAMConnectionService,
@@ -962,19 +964,38 @@ def list_wan_templates(
     search: str | None = Query(None, min_length=1, max_length=200),
     project: str | None = Query(None, min_length=1, max_length=100, description="Filter by project"),
     mine: bool = Query(False, description="If true => only templates created by current user"),
+
+    # NEW: pagination
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
+    PROJECT_NONE = "__NONE__"  # convention front -> backend
+
     q = db.query(WanTemplate)
 
+    # ----- Scope filter -----
     if scope:
         scope_upper = scope.upper().strip()
-        if scope_upper in (WanTemplateScope.GLOBAL.value, WanTemplateScope.USER_INSTANCE.value):
+        if scope_upper in (
+            WanTemplateScope.GLOBAL.value,
+            WanTemplateScope.USER_INSTANCE.value,
+        ):
             q = q.filter(WanTemplate.scope == scope_upper)
 
+    # ----- Project filter (backend) -----
+    # - "__NONE__" => project IS NULL (ou vide si tu veux)
+    # - sinon => match EXACT (case-insensitive), plus adapté à un dropdown
     if project:
-        q = q.filter(WanTemplate.project.ilike(f"%{project.strip()}%"))
+        p = project.strip()
+        if p == PROJECT_NONE:
+            q = q.filter(or_(WanTemplate.project.is_(None), func.trim(WanTemplate.project) == ""))
+        else:
+            q = q.filter(func.lower(func.trim(WanTemplate.project)) == p.lower())
 
+    # ----- Visibility rules -----
     if mine:
         q = q.filter(
             WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
@@ -1000,6 +1021,7 @@ def list_wan_templates(
 
             if creator:
                 q = q.filter(WanTemplate.created_by == creator)
+
         else:
             if instance_id is not None:
                 q = q.filter(
@@ -1023,6 +1045,7 @@ def list_wan_templates(
                     )
                 )
 
+    # ----- Search filter -----
     if search:
         pattern = f"%{search}%"
         q = q.filter(
@@ -1035,8 +1058,30 @@ def list_wan_templates(
             )
         )
 
-    templates = q.order_by(WanTemplate.updated_at.desc(), WanTemplate.id.desc()).all()
-    return WanTemplateList(templates=templates)
+    # ===== Pagination backend =====
+    total = q.order_by(None).count()
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+
+    # clamp page to avoid empty pages after filters
+    if page > total_pages:
+        page = total_pages
+
+    offset = (page - 1) * page_size
+
+    templates = (
+        q.order_by(WanTemplate.updated_at.desc(), WanTemplate.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    return WanTemplateList(
+        templates=templates,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 
 @router.get("/wan-templates/{template_id}", response_model=WanTemplateRead)
@@ -1837,7 +1882,86 @@ def get_lt_slot_ports(
         last_refresh_error=cached["last_refresh_error"],
     )
 
+# ========== PORT TEMPLATE STATUS ==========
 
+@router.get(
+    "/instances/{instance_id}/ports/{port_id:path}/template-status",
+    response_model=PortTemplateStatusResponse,
+)
+def get_port_template_status(
+    instance_id: int,
+    port_id: str,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """Vérifie si un port a déjà été configuré par un template."""
+    _ = get_instance_or_404(db, instance_id)
+
+    apply_actions = [
+        "APPLY_TEMPLATE",
+        "APPLY_TEMPLATE_LIVE",
+        "APPLY_TEMPLATE_MY_PORT",
+    ]
+
+    last_apply = (
+        db.query(ConfigHistory)
+        .filter(
+            ConfigHistory.isam_instance_id == instance_id,
+            ConfigHistory.port_id == port_id,
+            ConfigHistory.success == True,
+            ConfigHistory.action.in_(apply_actions),
+        )
+        .order_by(ConfigHistory.created_at.desc())
+        .first()
+    )
+
+    if not last_apply:
+        return PortTemplateStatusResponse(
+            configured=False,
+            port_id=port_id,
+            instance_id=instance_id,
+            last_template_id=None,
+            last_template_name=None,
+            last_project=None,
+            last_applied_by=None,
+            last_applied_at=None,
+            apply_count=0,
+            message="This port has never been configured by a template.",
+        )
+
+    template_name = None
+    project = None
+    if last_apply.template_id:
+        tpl = db.query(WanTemplate).filter(
+            WanTemplate.id == last_apply.template_id
+        ).first()
+        if tpl:
+            template_name = tpl.name
+            project = tpl.project
+
+    apply_count = (
+        db.query(ConfigHistory)
+        .filter(
+            ConfigHistory.isam_instance_id == instance_id,
+            ConfigHistory.port_id == port_id,
+            ConfigHistory.success == True,
+            ConfigHistory.action.in_(apply_actions),
+        )
+        .count()
+    )
+
+    return PortTemplateStatusResponse(
+        configured=True,
+        port_id=port_id,
+        instance_id=instance_id,
+        last_template_id=last_apply.template_id,
+        last_template_name=template_name,
+        last_project=project,
+        last_applied_by=last_apply.username,
+        last_applied_at=last_apply.created_at,
+        apply_count=apply_count,
+        message=f"Last configured by '{last_apply.username}' on {last_apply.created_at}.",
+    )
 # ========== PORT LOCK ==========
 
 @router.get(
