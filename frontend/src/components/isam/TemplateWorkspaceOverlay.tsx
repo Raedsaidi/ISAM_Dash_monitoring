@@ -5,7 +5,7 @@ import React, {
   useCallback,
   useRef,
 } from "react";
-import { cn } from "../../utils/cn";
+import { cn } from "../../utils/cn";      
 import { useAuth } from "../../context/AuthContext";
 import {
   X,
@@ -1360,49 +1360,59 @@ export default function TemplateWorkspaceOverlay({
                   <div className="grid min-h-full grid-cols-1 gap-0 xl:grid-cols-2 xl:divide-x xl:divide-slate-200">
                     <div className="space-y-0 divide-y divide-slate-200">
                       <div className="p-5">
-                        <SectionTitle
-                          icon={FileText}
-                          title={
-                            editMode && !isUser
-                              ? name || selectedTemplate.name
-                              : selectedTemplate.name
-                          }
-                          description={`Scope: ${selectedTemplate.scope} · By ${
-                            selectedTemplate.created_by || "system"
-                          } · Updated ${new Date(
-                            selectedTemplate.updated_at,
-                          ).toLocaleString()}`}
-                          badge={
-                            <Badge
-                              variant={
-                                selectedTemplate.scope === "GLOBAL"
-                                  ? "purple"
-                                  : "info"
-                              }
-                            >
-                              {selectedTemplate.scope === "GLOBAL" ? (
-                                <>
-                                  <Globe size={10} /> Global
-                                </>
-                              ) : (
-                                <>
-                                  <User size={10} /> Personal
-                                </>
-                              )}
-                            </Badge>
-                          }
-                        />
+                        {/* Conteneur Flex pour aligner le bouton et le titre sur la même ligne */}
+                        <div className="flex items-start gap-3">
+                          
+                          {/* Bouton placé à gauche */}
+                          {!editMode && (
+                            <div className="mt-1 shrink-0"> 
+                              <Btn
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setEditMode(true)}
+                                className="h-8 w-8 p-0 rounded-lg border-slate-200 hover:bg-white" 
+                                title=""
+                              >
+                                <Edit3 size={14} />
+                              </Btn>
+                            </div>
+                          )}
 
-                        <div className="mt-3">
-                          <Btn
-                            size="sm"
-                            variant={editMode ? "subtle" : "outline"}
-                            onClick={() => setEditMode(true)}
-                            disabled={editMode}
-                          >
-                            <Edit3 size={13} />
-                            {editMode ? "Editing enabled" : "Enable editing"}
-                          </Btn>
+                          {/* SectionTitle qui contient l'icône FileText et le texte */}
+                          <div className="flex-1">
+                            <SectionTitle
+                              icon={FileText}
+                              title={
+                                editMode && !isUser
+                                  ? name || selectedTemplate.name
+                                  : selectedTemplate.name
+                              }
+                              description={`Scope: ${selectedTemplate.scope} · By ${
+                                selectedTemplate.created_by || "system"
+                              } · Updated ${new Date(
+                                selectedTemplate.updated_at,
+                              ).toLocaleString()}`}
+                              badge={
+                                <Badge
+                                  variant={
+                                    selectedTemplate.scope === "GLOBAL"
+                                      ? "purple"
+                                      : "info"
+                                  }
+                                >
+                                  {selectedTemplate.scope === "GLOBAL" ? (
+                                    <>
+                                      <Globe size={10} /> Global
+                                    </>
+                                  ) : (
+                                    <>
+                                      <User size={10} /> Personal
+                                    </>
+                                  )}
+                                </Badge>
+                              }
+                            />
+                          </div>
                         </div>
                       </div>
 

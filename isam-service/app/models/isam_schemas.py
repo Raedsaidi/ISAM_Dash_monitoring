@@ -329,10 +329,13 @@ class LTPortsResponse(BaseModel):
     success: bool
     protocol_used: Optional[str] = None
     port_count: int
+    total_count: Optional[int] = None
     ports: List[LTPortItem]
     slot_id: str
     raw_output: str
     message: str
+    search_query: Optional[str] = None
+    filters_applied: Optional[Dict[str, str]] = None
     cached_at: Optional[datetime] = None
     last_refresh_at: Optional[datetime] = None
     last_refresh_success: bool = False

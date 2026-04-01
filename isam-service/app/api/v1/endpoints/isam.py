@@ -1,6 +1,6 @@
 from datetime import datetime
 import logging
-from typing import List
+from typing import List, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
@@ -223,19 +223,12 @@ def log_config_history(
     db.commit()
 
 
-# ✅ NOUVEAU COMPORTEMENT :
-#    - USER : interdit d'utiliser un port locké
-#    - ADMIN / SUPER_ADMIN : autorisés même si le port est locké
 def ensure_port_not_locked_for_user(
     db: Session,
     instance_id: int,
     port_id: str,
     current_user: TokenUser,
 ):
-    """
-    Bloque l'utilisation d'un port locké uniquement pour les USERS.
-    Les ADMIN / SUPER_ADMIN passent même si le port est locké.
-    """
     if current_user.role != "USER":
         return
 
@@ -249,6 +242,50 @@ def ensure_port_not_locked_for_user(
             status_code=403,
             detail=f"Port {port_id} is locked and cannot be used by USERs. Please contact your administrator.",
         )
+
+
+def get_all_wan_model_names(db: Session) -> list[str]:
+    """Récupère tous les noms de modèles WAN de la base."""
+    models = db.query(WanModel.name).all()
+    return [m.name for m in models]
+
+
+def validate_template_wan_model(
+    db: Session,
+    template_name: str,
+) -> str:
+    """
+    Vérifie que le nom du template contient un modèle WAN valide.
+    Retourne le nom du modèle trouvé.
+    Lève HTTPException 400 si aucun modèle n'est trouvé.
+    """
+    known_models = get_all_wan_model_names(db)
+
+    if not known_models:
+        logger.warning(
+            "[WAN_MODEL] No WAN models defined in database. "
+            "Skipping WAN model validation for template '%s'.",
+            template_name,
+        )
+        return ""
+
+    found_model = ISAMDataService.extract_wan_model_from_template_name(
+        template_name,
+        known_models,
+    )
+
+    if not found_model:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No valid WAN model found in template name '{template_name}'. "
+                f"The template name must contain one of the known WAN models. "
+                f"Known models: {', '.join(sorted(known_models))}. "
+                f"Example: 'GPON-DHCP_Orange' or 'ETHERNET_Djezzy'."
+            ),
+        )
+
+    return found_model
 
 
 # -------- INSTANCES --------
@@ -467,7 +504,7 @@ def run_command_on_isam(
     )
 
 
-# -------- MEMORY USAGE (show -> system -> memory-usage) --------
+# -------- MEMORY USAGE --------
 
 @router.get(
     "/instances/{instance_id}/memory-usage",
@@ -491,7 +528,7 @@ def get_memory_usage(
     )
 
 
-# -------- PORTS (show -> port) --------
+# -------- PORTS --------
 
 def parse_show_port(raw_output: str) -> List[PortItem]:
     ports: List[PortItem] = []
@@ -617,7 +654,7 @@ def get_wan_model_or_404(db: Session, model_id: int) -> WanModel:
 
 
 # ================================================================
-# ========  WAN MODELS (table indépendante, admin only)  =========
+# ========  WAN MODELS  ==========================================
 # ================================================================
 
 @router.post("/wan-models", response_model=WanModelRead)
@@ -626,7 +663,6 @@ def create_wan_model(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """Créer un modèle WAN (GPON, SAFRAN, ETHERNET...). Admin only."""
     existing = db.query(WanModel).filter(WanModel.name == body.name.strip()).first()
     if existing:
         raise HTTPException(
@@ -653,7 +689,6 @@ def list_wan_models(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """Lister tous les modèles WAN. Accessible à tous les utilisateurs authentifiés."""
     q = db.query(WanModel)
 
     if search:
@@ -724,7 +759,7 @@ def delete_wan_model(
 
 
 # ================================================================
-# ========  WAN TEMPLATES (mis à jour avec project + scope filter)
+# ========  WAN TEMPLATES  =======================================
 # ================================================================
 
 @router.post("/wan-templates", response_model=WanTemplateRead)
@@ -808,17 +843,14 @@ def list_wan_templates(
 ):
     q = db.query(WanTemplate)
 
-    # ── Filtre scope (backend filtering pour le switch) ──
     if scope:
         scope_upper = scope.upper().strip()
         if scope_upper in (WanTemplateScope.GLOBAL.value, WanTemplateScope.USER_INSTANCE.value):
             q = q.filter(WanTemplate.scope == scope_upper)
 
-    # ── Filtre project ──
     if project:
         q = q.filter(WanTemplate.project.ilike(f"%{project.strip()}%"))
 
-    # ── mine=true => uniquement mes templates ──
     if mine:
         q = q.filter(
             WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
@@ -867,7 +899,6 @@ def list_wan_templates(
                     )
                 )
 
-    # ── server-side search ──
     if search:
         pattern = f"%{search}%"
         q = q.filter(
@@ -1014,6 +1045,10 @@ def test_wan_template(
     )
 
 
+# ================================================================
+# ========  APPLY LIVE (avec validation WAN model + cycle)  ======
+# ================================================================
+
 @router.post("/wan-templates/apply-live", response_model=ApplyWanTemplateResponse)
 def apply_live_template(
     body: TemplateApplyLiveRequest,
@@ -1025,6 +1060,8 @@ def apply_live_template(
     inst = get_instance_or_404(db, body.instance_id)
 
     template_id = body.template_id
+    tpl = None
+
     if current_user.role == "USER" and template_id is None:
         raise HTTPException(
             status_code=400,
@@ -1042,37 +1079,101 @@ def apply_live_template(
             detail="selected_port is required.",
         )
 
+    selected_port = body.selected_port.strip()
+
     ensure_selected_port_allowed_for_user(
         current_user=current_user,
-        selected_port=body.selected_port.strip(),
+        selected_port=selected_port,
         credentials=credentials,
     )
 
     ensure_port_not_locked_for_user(
         db=db,
         instance_id=inst.id,
-        port_id=body.selected_port.strip(),
+        port_id=selected_port,
         current_user=current_user,
     )
 
+    # ── ÉTAPE 1 : Déterminer le nom du template pour la validation WAN model ──
+    # On utilise le nom du template en base si disponible,
+    # sinon on essaie de déduire depuis les commandes (fallback)
+    template_name_for_validation = ""
+    if tpl:
+        template_name_for_validation = tpl.name
+    else:
+        # Pour les admins qui appliquent sans template_id,
+        # on ne peut pas valider le WAN model → skip
+        template_name_for_validation = ""
+
+    # ── ÉTAPE 2 : Valider le WAN model dans le nom du template ──
+    wan_model_found = ""
+    if template_name_for_validation:
+        wan_model_found = validate_template_wan_model(db, template_name_for_validation)
+        logger.info(
+            "[APPLY_LIVE] WAN model validated: '%s' (from template '%s')",
+            wan_model_found,
+            template_name_for_validation,
+        )
+
+    # ── ÉTAPE 3 : Exécuter les commandes du template ──
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
         commands_template=body.commands_template,
-        selected_port=body.selected_port.strip(),
+        selected_port=selected_port,
         variables=body.variables,
         timeout=60,
     )
 
+    # ── ÉTAPE 4 : Si succès ET WAN model trouvé, exécuter le cycle admin-state ──
+    cycle_message = ""
+    if success and wan_model_found:
+        logger.info(
+            "[APPLY_LIVE] Template applied successfully. "
+            "Executing admin-state cycle (down → up) on port %s...",
+            selected_port,
+        )
+
+        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
+            port=selected_port,
+            delay_seconds=2.0,
+            timeout=30,
+        )
+
+        # Ajouter les commandes du cycle au résultat
+        commands_executed.extend(cycle_commands)
+        raw_output = (raw_output or "") + "\n" + cycle_output
+
+        if cycle_ok:
+            cycle_message = f" | Admin-state cycle OK (down → up) for WAN model '{wan_model_found}'."
+            logger.info(
+                "[APPLY_LIVE] Admin-state cycle completed successfully on port %s",
+                selected_port,
+            )
+        else:
+            cycle_message = (
+                f" | WARNING: Admin-state cycle FAILED for WAN model '{wan_model_found}': {cycle_msg}. "
+                f"Template commands were applied successfully but the port restart failed."
+            )
+            logger.warning(
+                "[APPLY_LIVE] Admin-state cycle FAILED on port %s: %s",
+                selected_port,
+                cycle_msg,
+            )
+
+    # ── ÉTAPE 5 : Construire le message final ──
+    final_message = msg + cycle_message
+
+    # ── ÉTAPE 6 : Logger dans l'historique ──
     client_ip = request.client.host if request.client else None
     log_config_history(
         db,
         username=current_user.username,
         action="APPLY_TEMPLATE_LIVE",
         isam_instance_id=inst.id,
-        port_id=body.selected_port.strip(),
+        port_id=selected_port,
         template_id=template_id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -1083,7 +1184,7 @@ def apply_live_template(
         protocol_used=proto,
         commands_executed=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
 
 
@@ -1111,12 +1212,34 @@ def apply_template_to_port(
         current_user=current_user,
     )
 
+    # ── Valider le WAN model ──
+    wan_model_found = validate_template_wan_model(db, tpl.name)
+
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
         commands_template=tpl.commands_template,
         selected_port=port_id,
         variables={},
     )
+
+    # ── Si succès et WAN model trouvé, cycle admin-state ──
+    cycle_message = ""
+    if success and wan_model_found:
+        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
+            port=port_id,
+            delay_seconds=2.0,
+            timeout=30,
+        )
+
+        commands_executed.extend(cycle_commands)
+        raw_output = (raw_output or "") + "\n" + cycle_output
+
+        if cycle_ok:
+            cycle_message = f" | Admin-state cycle OK for WAN model '{wan_model_found}'."
+        else:
+            cycle_message = f" | WARNING: Admin-state cycle FAILED: {cycle_msg}."
+
+    final_message = msg + cycle_message
 
     client_ip = request.client.host if request.client else None
     log_config_history(
@@ -1127,7 +1250,7 @@ def apply_template_to_port(
         port_id=port_id,
         template_id=tpl.id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -1138,11 +1261,11 @@ def apply_template_to_port(
         protocol_used=proto,
         commands_executed=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
 
 
-# -------- MY ACCOUNT (PORT UTILISATEUR) --------
+# -------- MY ACCOUNT --------
 
 @router.get("/my-port", response_model=MyPortResponse)
 def get_my_port(
@@ -1245,7 +1368,6 @@ def apply_template_to_my_port(
             detail="No port assigned to this user (port_value is empty).",
         )
 
-    # Vérifier que le port n'est pas locké (bloque uniquement pour USER)
     ensure_port_not_locked_for_user(
         db=db,
         instance_id=inst.id,
@@ -1253,11 +1375,33 @@ def apply_template_to_my_port(
         current_user=current_user,
     )
 
+    # ── Valider le WAN model ──
+    wan_model_found = validate_template_wan_model(db, tpl.name)
+
     data_service = ISAMDataService(inst)
     success, proto, raw_output, msg, commands_executed = data_service.apply_wan_template(
         port_id=port_value,
         template=tpl,
     )
+
+    # ── Si succès et WAN model trouvé, cycle admin-state ──
+    cycle_message = ""
+    if success and wan_model_found:
+        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
+            port=port_value,
+            delay_seconds=2.0,
+            timeout=30,
+        )
+
+        commands_executed.extend(cycle_commands)
+        raw_output = (raw_output or "") + "\n" + cycle_output
+
+        if cycle_ok:
+            cycle_message = f" | Admin-state cycle OK for WAN model '{wan_model_found}'."
+        else:
+            cycle_message = f" | WARNING: Admin-state cycle FAILED: {cycle_msg}."
+
+    final_message = msg + cycle_message
 
     client_ip = request.client.host if request.client else None
     log_config_history(
@@ -1268,7 +1412,7 @@ def apply_template_to_my_port(
         port_id=port_value,
         template_id=tpl.id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -1279,7 +1423,7 @@ def apply_template_to_my_port(
         protocol_used=proto,
         commands_executed=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
 
 
@@ -1454,7 +1598,7 @@ def get_cached_ports(
     )
 
 
-# ========== LT SLOTS & PORTS (NEW) ==========
+# ========== LT SLOTS & PORTS ==========
 
 @router.get(
     "/instances/{instance_id}/lt-slots",
@@ -1487,50 +1631,94 @@ def get_lt_slots(
     "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
     response_model=LTPortsResponse,
 )
+# ✅ UNE SEULE DÉFINITION
+@router.get(
+    "/instances/{instance_id}/lt-slots/{slot_id:path}/ports",
+    response_model=LTPortsResponse,
+)
 def get_lt_slot_ports(
     instance_id: int,
     slot_id: str,
+    search: Optional[str] = Query(None, description="Recherche libre"),
+    port_type: Optional[str] = Query(None, description="Filtrer par type"),
+    state: Optional[str] = Query(None, description="Filtrer par état"),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
     slot_id = unquote(slot_id)
-
     inst = get_instance_or_404(db, instance_id)
-
     cached = load_cached_lt_ports(db, instance_id, slot_id)
 
-    locks_dict = {}
-    locks = db.query(PortLock).filter(
-        PortLock.isam_instance_id == instance_id,
-        PortLock.port_id.in_([p.get("port_id") for p in cached["ports"]])
-    ).all()
+    all_ports = cached["ports"]
+    total_all = len(all_ports)
+    filtered_ports = list(all_ports)
 
-    for lock in locks:
-        locks_dict[lock.port_id] = lock
+    if search:
+        s = search.strip().lower()
+        filtered_ports = [
+            p for p in filtered_ports
+            if s in p.get("port_id", "").lower()
+            or s in p.get("port_type", "").lower()
+            or s in p.get("board", "").lower()
+            or s in p.get("admin_state", "").lower()
+            or s in p.get("port_state", "").lower()
+            or s in p.get("mode", "").lower()
+            or s in p.get("encap", "").lower()
+        ]
+
+    if port_type:
+        pt = port_type.strip().lower()
+        filtered_ports = [
+            p for p in filtered_ports
+            if pt in p.get("port_type", "").lower()
+        ]
+
+    if state:
+        st = state.strip().lower()
+        filtered_ports = [
+            p for p in filtered_ports
+            if p.get("port_state", "").lower() == st
+            or p.get("admin_state", "").lower() == st
+        ]
+
+    port_ids = [p.get("port_id") for p in filtered_ports]
+    locks_dict = {}
+    if port_ids:
+        locks = db.query(PortLock).filter(
+            PortLock.isam_instance_id == instance_id,
+            PortLock.port_id.in_(port_ids)
+        ).all()
+        for lock in locks:
+            locks_dict[lock.port_id] = lock
 
     ports_with_lock = []
-    for port in cached["ports"]:
+    for port in filtered_ports:
         port_id = port.get("port_id")
-        is_locked = port_id in locks_dict
-        port["locked"] = is_locked
+        port["locked"] = port_id in locks_dict
         ports_with_lock.append(LTPortItem(**port))
 
     return LTPortsResponse(
         success=cached["last_refresh_success"],
         protocol_used=cached["protocol_used"],
-        port_count=cached["port_count"],
+        port_count=len(ports_with_lock),
+        total_count=total_all,
         ports=ports_with_lock,
         slot_id=cached["slot_id"],
         raw_output=cached["raw_output"],
-        message="OK" if cached["last_refresh_success"] else 
-                "No snapshot available yet" if not cached["last_success_at"] else 
+        message="OK" if cached["last_refresh_success"] else
+                "No snapshot available yet" if not cached["last_success_at"] else
                 "Showing last successful snapshot (latest refresh failed)",
+        search_query=search,
+        filters_applied={
+            k: v for k, v in {"port_type": port_type, "state": state}.items() if v
+        } or None,
         cached_at=cached["last_success_at"],
         last_refresh_at=cached["last_refresh_at"],
         last_refresh_success=cached["last_refresh_success"],
         last_refresh_error=cached["last_refresh_error"],
     )
 
+# ========== PORT LOCK ==========
 
 @router.get(
     "/instances/{instance_id}/ports/{port_id:path}/lock-status",
@@ -1542,10 +1730,6 @@ def get_port_lock_status(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Récupère le status de lock d'un port.
-    Accessible par tous les rôles.
-    """
     inst = get_instance_or_404(db, instance_id)
 
     lock = db.query(PortLock).filter(
@@ -1580,10 +1764,6 @@ def lock_port(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Lock un port (empêche les USERs d'appliquer des templates dessus).
-    Admin/SuperAdmin only.
-    """
     inst = get_instance_or_404(db, instance_id)
 
     existing = db.query(PortLock).filter(
@@ -1644,10 +1824,6 @@ def unlock_port(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Unlock un port (permet aux USERs d'appliquer des templates).
-    Admin/SuperAdmin only.
-    """
     inst = get_instance_or_404(db, instance_id)
 
     lock = db.query(PortLock).filter(
