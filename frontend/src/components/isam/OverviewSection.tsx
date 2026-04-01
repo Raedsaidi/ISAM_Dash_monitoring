@@ -29,11 +29,7 @@ import { useAuth } from '../../context/AuthContext';
  * Si tu as un API gateway unique, mets les 2 à la même valeur.
  */
 const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
-<<<<<<< HEAD:frontend/src/components/OverviewSection.tsx
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
-=======
-const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;;
->>>>>>> isam_dev:frontend/src/components/isam/OverviewSection.tsx
 
 type StatusType = 'active' | 'inactive' | 'error';
 type ProtocolPreference = 'telnet' | 'ssh' | 'auto';
