@@ -14,11 +14,21 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "pfe_user", "-ppfe_pass"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "pfe_user",
+          "-ppfe_pass",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 30s   # gives MySQL time to fully initialize
+      start_period: 30s # gives MySQL time to fully initialize
 
   # ---------- Auth-service ----------
   auth-service:
@@ -32,7 +42,7 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-        condition: service_healthy   # ← waits for MySQL to be truly ready
+        condition: service_healthy # ← waits for MySQL to be truly ready
     restart: on-failure
 
   # ---------- ISAM-service ----------
@@ -48,28 +58,38 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-        condition: service_healthy   # ← waits for MySQL
+        condition: service_healthy # ← waits for MySQL
       auth-service:
-        condition: service_started   # ← waits for auth to start
+        condition: service_started # ← waits for auth to start
     restart: on-failure
 
   # ---------- Frontend ----------
   frontend:
-      build:
-        context: ./frontend
-        dockerfile: Dockerfile
-        args:
-          #- VITE_AUTH_BASE_URL=http://10.255.25.77:9000
-          #- VITE_ISAM_BASE_URL=http://10.255.25.77:8001
-          - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
-          - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
-      container_name: isam-frontend-container
-      ports:
-        - "5173:80"
-      depends_on:
-        - auth-service
-        - isam-service
-      restart: on-failure
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        #- VITE_AUTH_BASE_URL=http://10.255.25.77:9000
+        #- VITE_ISAM_BASE_URL=http://10.255.25.77:8001
+        - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
+        - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
+    container_name: isam-frontend-container
+    ports:
+      - "5173:80"
+    depends_on:
+      - auth-service
+      - isam-service
+    restart: on-failure
+  cisco-services:
+    build:
+      context: ./cisco-services
+      dockerfile: Dockerfile
+    container_name: cisco-services
+    ports:
+      - "8002:8002"
+    env_file:
+      - ./cisco-services/.env
+    restart: unless-stopped
 
 volumes:
   db_data:
