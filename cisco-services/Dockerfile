@@ -1,5 +1,7 @@
 FROM python:3.11-slim AS base
 
+RUN apt-get update && apt-get install -y openssh-client && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 

@@ -1,5 +1,5 @@
 services:
-  # ---------- Base de données MySQL ----------
+  # ── MySQL ──
   db:
     image: mysql:8.0
     container_name: isam-dash-mysql
@@ -28,9 +28,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 30s # gives MySQL time to fully initialize
+      start_period: 30s
 
-  # ---------- Auth-service ----------
+  # ── Auth-service ──
   auth-service:
     build: ./auth-service
     container_name: auth-service-container
@@ -42,10 +42,10 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-        condition: service_healthy # ← waits for MySQL to be truly ready
+        condition: service_healthy
     restart: on-failure
 
-  # ---------- ISAM-service ----------
+  # ── ISAM-service ──
   isam-service:
     build: ./isam-service
     container_name: isam-service-container
@@ -58,28 +58,12 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-        condition: service_healthy # ← waits for MySQL
+        condition: service_healthy
       auth-service:
-        condition: service_started # ← waits for auth to start
+        condition: service_started
     restart: on-failure
 
-  # ---------- Frontend ----------
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-      args:
-        #- VITE_AUTH_BASE_URL=http://10.255.25.77:9000
-        #- VITE_ISAM_BASE_URL=http://10.255.25.77:8001
-        - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
-        - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
-    container_name: isam-frontend-container
-    ports:
-      - "5173:80"
-    depends_on:
-      - auth-service
-      - isam-service
-    restart: on-failure
+  # ── Cisco-service (NEW — same pattern as isam-service) ──
   cisco-services:
     build:
       context: ./cisco-services
@@ -87,9 +71,35 @@ services:
     container_name: cisco-services
     ports:
       - "8002:8002"
-    env_file:
-      - ./cisco-services/.env
+    environment:
+      - DB_URL=mysql+pymysql://pfe_user:pfe_pass@db:3306/isam_dash
+      - AUTH_SERVICE_URL=http://auth-service:9000
+      - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
+      - JWT_ALGORITHM=HS256
+      - CISCO_CONNECTION_TIMEOUT=15
+      - CISCO_COMMAND_TIMEOUT=30
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+  # ── Frontend ──
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
+        - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
+        - VITE_CISCO_BASE_URL=http://127.0.0.1:8002
+    container_name: isam-frontend-container
+    ports:
+      - "5173:80"
+    depends_on:
+      - auth-service
+      - isam-service
+      - cisco-services
+    restart: on-failure
 
 volumes:
   db_data:
