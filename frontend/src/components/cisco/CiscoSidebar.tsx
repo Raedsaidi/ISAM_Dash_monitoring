@@ -80,20 +80,6 @@ export default function CiscoSidebar({
         ))}
       </nav>
 
-      <div className={cn("p-4 border-t border-slate-700", collapsed && "px-2")}>
-        {!collapsed ? (
-          <div className="bg-slate-800 rounded-lg p-3">
-            <p className="text-xs text-slate-400">Environment</p>
-            <p className="text-sm font-medium text-red-400">DEV</p>
-            <p className="text-xs text-slate-500 mt-1">Cisco UI v1.0.0</p>
-          </div>
-        ) : (
-          <div
-            className="w-3 h-3 rounded-full bg-red-500 mx-auto"
-            title="Cisco DEV"
-          />
-        )}
-      </div>
     </aside>
   );
 }

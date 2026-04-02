@@ -8,9 +8,14 @@ from app.models.isam_instance import ISAMInstance
 from app.models.isam_lt_slot import ISAMLTSlot
 from app.models.isam_lt_port import ISAMLTPort
 from app.services.isam_lt_slots_service import ISAMLTSlotsService
+from app.utils.natural_sort import sort_slots, sort_ports, sort_slots_with_ports  # ← NOUVEAU
 
 logger = logging.getLogger(__name__)
 
+
+# ──────────────────────────────────────────────────────────────────────
+#  FONCTIONS INTERNES (inchangées)
+# ──────────────────────────────────────────────────────────────────────
 
 def _replace_lt_slots_for_instance(
     db: Session,
@@ -18,10 +23,6 @@ def _replace_lt_slots_for_instance(
     instance_id: int,
     slots_data: list[dict],
 ) -> None:
-    """
-    Remplace complètement les slots LT d'une instance
-    par le dernier snapshot réussi.
-    """
     now = datetime.utcnow()
 
     logger.info(
@@ -68,10 +69,6 @@ def _replace_lt_ports_for_slot(
     slot_id: str,
     ports_data: list[dict],
 ) -> None:
-    """
-    Remplace complètement les ports d'un slot donné
-    par le dernier snapshot réussi.
-    """
     now = datetime.utcnow()
 
     logger.info(
@@ -116,22 +113,18 @@ def _replace_lt_ports_for_slot(
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  REFRESH — tri AVANT insertion + tri des résultats intermédiaires
+# ──────────────────────────────────────────────────────────────────────
+
 def refresh_lt_slots_snapshot(
     db: Session,
     instance: ISAMInstance,
     timeout: int = 30,
 ) -> None:
     """
-    Refresh complet via UNE SEULE session Telnet persistante :
-
-      1. ouvre 1 session Telnet
-      2. envoie la commande slots → parse
-      3. pour chaque slot, envoie la commande ports → parse
-      4. ferme la session
-      5. remplace slots + ports en base
-
-    Si le refresh échoue → l'ancien snapshot est conservé.
-    Si les ports d'un slot échouent → l'ancien snapshot de ce slot est conservé.
+    Refresh complet via UNE SEULE session Telnet persistante.
+    Les données sont triées naturellement AVANT insertion en BD.
     """
     logger.info(
         "[CACHE-LT] Refreshing LT slots for instance #%s (%s)",
@@ -142,13 +135,12 @@ def refresh_lt_slots_snapshot(
     service = ISAMLTSlotsService(instance)
 
     try:
-        # ── Récupération via session unique ─────────────────────────
         success, raw_slots, slots_with_ports, msg = (
             service.refresh_all_single_session(
                 timeout=timeout,
-                idle_timeout=3.0,            # 3s au lieu de 1s → attend les vraies données
-                post_send_delay=1.0,         # 1s de pause après envoi avant de lire
-                inter_command_delay=1.0,     # 1s entre chaque commande
+                idle_timeout=3.0,
+                post_send_delay=1.0,
+                inter_command_delay=1.0,
             )
         )
 
@@ -161,7 +153,22 @@ def refresh_lt_slots_snapshot(
             db.rollback()
             return
 
-        # ── 1. Stocker les slots (sans la clé "ports") ──────────────
+        # ┌──────────────────────────────────────────────────────────┐
+        # │  ★ TRI NATUREL des slots et de leurs ports imbriqués    │
+        # └──────────────────────────────────────────────────────────┘
+        slots_with_ports = sort_slots_with_ports(
+            slots_with_ports,
+            slot_key="slot_id",
+            ports_key="ports",
+            port_sort_fields=("port_type", "port_id"),
+        )
+
+        logger.info(
+            "[CACHE-LT] Slots et ports triés naturellement pour instance #%s",
+            instance.id,
+        )
+
+        # ── 1. Stocker les slots ────────────────────────────────────
         slots_data = [
             {k: v for k, v in s.items() if k != "ports"}
             for s in slots_with_ports
@@ -179,19 +186,11 @@ def refresh_lt_slots_snapshot(
         ]
 
         if current_slot_ids:
-            logger.info(
-                "[CACHE-LT] Suppression des ports pour les slots obsolètes (instance #%s)",
-                instance.id,
-            )
             db.query(ISAMLTPort).filter(
                 ISAMLTPort.isam_instance_id == instance.id,
                 ~ISAMLTPort.slot_id.in_(current_slot_ids),
             ).delete(synchronize_session=False)
         else:
-            logger.info(
-                "[CACHE-LT] Aucun slot LT, suppression de tous les ports LT (instance #%s)",
-                instance.id,
-            )
             db.query(ISAMLTPort).filter(
                 ISAMLTPort.isam_instance_id == instance.id
             ).delete(synchronize_session=False)
@@ -205,30 +204,17 @@ def refresh_lt_slots_snapshot(
             if not slot_id:
                 continue
 
-            if ports:
-                # On a des ports → remplacer
-                _replace_lt_ports_for_slot(
-                    db,
-                    instance_id=instance.id,
-                    slot_id=slot_id,
-                    ports_data=ports,
-                )
-                total_ports += len(ports)
-            else:
-                # Pas de ports récupérés pour ce slot.
-                # On supprime les anciens ports de ce slot
-                # (le slot existe mais n'a pas de ports, ou la commande
-                # n'a rien retourné — ex: slot "empty").
-                _replace_lt_ports_for_slot(
-                    db,
-                    instance_id=instance.id,
-                    slot_id=slot_id,
-                    ports_data=[],
-                )
+            _replace_lt_ports_for_slot(
+                db,
+                instance_id=instance.id,
+                slot_id=slot_id,
+                ports_data=ports,
+            )
+            total_ports += len(ports)
 
         db.commit()
         logger.info(
-            "[CACHE-LT] LT snapshot updated for instance #%s : %d slots, %d ports",
+            "[CACHE-LT] LT snapshot updated for instance #%s : %d slots, %d ports (triés)",
             instance.id,
             len(slots_with_ports),
             total_ports,
@@ -243,15 +229,18 @@ def refresh_lt_slots_snapshot(
         raise
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  CHARGEMENT DEPUIS BD — avec tri naturel Python après la requête
+# ──────────────────────────────────────────────────────────────────────
+
 def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
     """
-    Charge les slots LT depuis la table dédiée ISAMLTSlot.
+    Charge les slots LT depuis la BD et les retourne triés naturellement.
     """
     rows = (
         db.query(ISAMLTSlot)
         .filter(ISAMLTSlot.isam_instance_id == instance_id)
-        .order_by(ISAMLTSlot.slot_id.asc())
-        .all()
+        .all()                              # ← plus de .order_by SQL
     )
 
     if not rows:
@@ -293,8 +282,11 @@ def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
         for row in rows
     ]
 
+    # ★ TRI NATUREL
+    slots = sort_slots(slots, key_field="slot_id")
+
     logger.info(
-        "[CACHE-LT] Chargement snapshot LT : %d slots pour instance #%s",
+        "[CACHE-LT] Chargement snapshot LT : %d slots triés pour instance #%s",
         len(slots),
         instance_id,
     )
@@ -314,8 +306,7 @@ def load_cached_lt_slots(db: Session, instance_id: int) -> Dict[str, Any]:
 
 def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[str, Any]:
     """
-    Charge les ports LT d'un slot précis depuis la table dédiée ISAMLTPort.
-    slot_id doit être au format complet, ex: "lt:1/1/5".
+    Charge les ports LT d'un slot depuis la BD et les retourne triés naturellement.
     """
     rows = (
         db.query(ISAMLTPort)
@@ -323,8 +314,7 @@ def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[st
             ISAMLTPort.isam_instance_id == instance_id,
             ISAMLTPort.slot_id == slot_id,
         )
-        .order_by(ISAMLTPort.port_id.asc())
-        .all()
+        .all()                              # ← plus de .order_by SQL
     )
 
     if not rows:
@@ -369,8 +359,11 @@ def load_cached_lt_ports(db: Session, instance_id: int, slot_id: str) -> Dict[st
         for row in rows
     ]
 
+    # ★ TRI NATUREL : par type puis par port_id
+    ports = sort_ports(ports, key_fields=("port_type", "port_id"))
+
     logger.info(
-        "[CACHE-LT] Chargement snapshot LT : %d ports pour slot %s (instance #%s)",
+        "[CACHE-LT] Chargement snapshot LT : %d ports triés pour slot %s (instance #%s)",
         len(ports),
         slot_id,
         instance_id,

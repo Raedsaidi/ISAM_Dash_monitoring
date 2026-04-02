@@ -19,6 +19,7 @@ export default function PortLockButton({
   onLockToggle,
 }: PortLockButtonProps) {
   const [loading, setLoading] = useState(false);
+  const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
   async function handleToggleLock() {
     setLoading(true);
