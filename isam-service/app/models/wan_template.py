@@ -1,11 +1,9 @@
-# app/models/wan_template.py
-
 from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum as PyEnum
 
-from sqlalchemy import Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Integer, String, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -29,7 +27,6 @@ class WanTemplate(Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    # ── NOUVEAU : champ project ──
     project: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     commands_template: Mapped[str] = mapped_column(Text, nullable=False)
@@ -45,6 +42,12 @@ class WanTemplate(Base):
     source_template_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("wan_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # NEW
+    saved_parameters: Mapped[dict | None] = mapped_column(
+        JSON,
         nullable=True,
     )
 

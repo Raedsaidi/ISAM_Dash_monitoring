@@ -93,19 +93,19 @@ def is_valid_port_label(value: str) -> bool:
 
 def validate_password_rules(v: str) -> str:
     if any(ch.isspace() for ch in v):
-        raise ValueError("Le mot de passe ne doit pas contenir d'espaces.")
+        raise ValueError("Password cannot contain spaces.")
 
     if not any(ch.islower() for ch in v):
-        raise ValueError("Le mot de passe doit contenir au moins une lettre minuscule.")
+        raise ValueError("Password must contain at least one lowercase letter.")
 
     if not any(ch.isupper() for ch in v):
-        raise ValueError("Le mot de passe doit contenir au moins une lettre majuscule.")
+        raise ValueError("Password must contain at least one uppercase letter.")
 
     if not any(ch.isdigit() for ch in v):
-        raise ValueError("Le mot de passe doit contenir au moins un chiffre.")
+        raise ValueError("Password must contain at least one digit.")
 
     if not any(not ch.isalnum() for ch in v):
-        raise ValueError("Le mot de passe doit contenir au moins un caractère spécial.")
+        raise ValueError("Password must contain at least one special character.")
 
     return v
 
@@ -138,7 +138,7 @@ class RefreshTokenRequest(StrictInputModel):
     @classmethod
     def validate_refresh_token(cls, v: str) -> str:
         if any(ch.isspace() for ch in v):
-            raise ValueError("Le refresh token ne doit pas contenir d'espaces.")
+            raise ValueError("The refresh token cannot contain spaces.")
         return v
 
 
@@ -164,10 +164,10 @@ class UserInputBase(StrictInputModel):
     @classmethod
     def validate_username(cls, v: str) -> str:
         if is_only_digits_ignoring_spaces(v):
-            raise ValueError("Le nom d'utilisateur ne doit pas être uniquement composé de chiffres.")
+            raise ValueError("The username cannot be composed only of digits.")
 
         if any(ch in v for ch in ("\n", "\r", "\t")):
-            raise ValueError("Le nom d'utilisateur ne doit pas contenir de retours ligne ou tabulations.")
+            raise ValueError("The username cannot contain newline or tab characters.")
 
         return v
 
@@ -182,20 +182,20 @@ class UserInputBase(StrictInputModel):
     @classmethod
     def validate_email(cls, v: EmailStr) -> EmailStr:
         if len(str(v)) > 254:
-            raise ValueError("L'adresse email est trop longue.")
+            raise ValueError("The email address is too long.")
         return v
 
     @field_validator("full_name")
     @classmethod
     def validate_full_name(cls, v: str) -> str:
         if not contains_letter(v):
-            raise ValueError("Le nom complet doit contenir au moins une lettre et ne doit pas être uniquement numérique.")
+            raise ValueError("The full name must contain at least one letter and cannot be numeric.")
 
         if not is_valid_full_name(v):
-            raise ValueError("Le nom complet ne peut contenir que des lettres et des espaces.")
+            raise ValueError("The full name can only contain letters and spaces.")
 
         if "  " in v:
-            raise ValueError("Le nom complet ne doit pas contenir d'espaces doubles.")
+            raise ValueError("The full name cannot contain double spaces.")
 
         return v
 
@@ -238,10 +238,10 @@ class UserPortCreate(StrictInputModel):
             return None
 
         if "  " in v:
-            raise ValueError("Le label du port ne doit pas contenir d'espaces doubles.")
+            raise ValueError("The port label cannot contain double spaces.")
 
         if not is_valid_port_label(v):
-            raise ValueError("Le label du port contient des caractères non autorisés.")
+            raise ValueError("The port label contains invalid characters.")
 
         return v
 
@@ -249,11 +249,11 @@ class UserPortCreate(StrictInputModel):
     @classmethod
     def validate_value(cls, v: str) -> str:
         if any(ch.isspace() for ch in v):
-            raise ValueError("La valeur du port ne doit pas contenir d'espaces.")
+            raise ValueError("The port value cannot contain spaces.")
 
         if not PORT_VALUE_REGEX.fullmatch(v):
             raise ValueError(
-                "La valeur du port est invalide. Format attendu: nombres séparés par '/' (ex: 1/1/7/3)."
+                "The port value is invalid. Expected format: numbers separated by '/' (e.g., 1/1/7/3)."
             )
 
         return v
@@ -283,7 +283,7 @@ class AdminUserCreate(UserInputBase):
         # USER => ports obligatoires
         if role == UserRole.USER:
             if not v or len(v) == 0:
-                raise ValueError("Au moins un port est requis pour un utilisateur USER.")
+                raise ValueError("At least one port is required for a USER account.")
 
         # ADMIN/SUPER_ADMIN => ports facultatifs
         if not v:
@@ -294,7 +294,7 @@ class AdminUserCreate(UserInputBase):
         for port in v:
             normalized = port.value
             if normalized in seen:
-                raise ValueError("Les ports dupliqués ne sont pas autorisés.")
+                raise ValueError("The ports cannot be duplicated.")
             seen.add(normalized)
 
         return v
@@ -333,7 +333,7 @@ class AdminUserUpdate(StrictInputModel):
         if v is None:
             return None
         if len(str(v)) > 254:
-            raise ValueError("L'adresse email est trop longue.")
+            raise ValueError("The email address is too long.")
         return v
 
     @field_validator("full_name")
@@ -343,13 +343,13 @@ class AdminUserUpdate(StrictInputModel):
             return None
 
         if not contains_letter(v):
-            raise ValueError("Le nom complet doit contenir au moins une lettre et ne doit pas être uniquement numérique.")
+            raise ValueError("The full name must contain at least one letter and cannot be numeric.")
 
         if not is_valid_full_name(v):
-            raise ValueError("Le nom complet ne peut contenir que des lettres et des espaces.")
+            raise ValueError("The full name can only contain letters and spaces.")
 
         if "  " in v:
-            raise ValueError("Le nom complet ne doit pas contenir d'espaces doubles.")
+            raise ValueError("The full name cannot contain double spaces.")
 
         return v
 
@@ -369,7 +369,7 @@ class AdminUserUpdate(StrictInputModel):
         for port in v:
             normalized = port.value
             if normalized in seen:
-                raise ValueError("Les ports dupliqués ne sont pas autorisés.")
+                raise ValueError("The ports cannot be duplicated.")
             seen.add(normalized)
         return v
 

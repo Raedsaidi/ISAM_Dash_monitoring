@@ -77,7 +77,6 @@ interface WanModel {
   updated_at: string;
 }
 
-// ── NOUVEAU : Type pour les projets de templates ──
 interface TemplateProject {
   id: number;
   name: string;
@@ -129,13 +128,16 @@ async function authFetch<T>(
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
+
   let data: any = null;
   try {
     data = await res.json();
   } catch {}
+
   if (!res.ok) {
     throw new Error(data?.detail || data?.message || `HTTP ${res.status}`);
   }
+
   return data as T;
 }
 
@@ -144,6 +146,7 @@ function extractVars(tpl: string): string[] {
   const result: string[] = [];
   const rx = /\[\[\$(.+?)\]\]/g;
   let m: RegExpExecArray | null;
+
   while ((m = rx.exec(tpl)) !== null) {
     const v = m[1]?.trim();
     if (v && !seen.has(v)) {
@@ -151,6 +154,7 @@ function extractVars(tpl: string): string[] {
       result.push(v);
     }
   }
+
   return result;
 }
 
@@ -178,14 +182,34 @@ function splitSavedName(
 ): { baseName: string; project: string } {
   if (knownProject && savedName.endsWith(`_${knownProject}`)) {
     return {
-      baseName: savedName.slice(
-        0,
-        savedName.length - knownProject.length - 1
-      ),
+      baseName: savedName.slice(0, savedName.length - knownProject.length - 1),
       project: knownProject,
     };
   }
   return { baseName: savedName, project: knownProject || "" };
+}
+
+function normalizeText(v: string) {
+  return v.trim().toLowerCase();
+}
+
+function isValidTemplateName(name: string, models: WanModel[]) {
+  const normalized = normalizeText(name);
+  return models.some((m) => normalizeText(m.name) === normalized);
+}
+
+function getSimpleErrorMessage(err: any, fallback = "Something went wrong.") {
+  const msg = String(err?.message || fallback);
+  const lowered = msg.toLowerCase();
+
+  if (lowered.includes("404")) return "Resource not found.";
+  if (lowered.includes("401")) return "Unauthorized.";
+  if (lowered.includes("403")) return "Access denied.";
+  if (lowered.includes("409")) return "Already exists.";
+  if (lowered.includes("failed to fetch")) return "Server unreachable.";
+  if (lowered.includes("network")) return "Network error.";
+
+  return fallback;
 }
 
 // ── UI Primitives ──
@@ -215,6 +239,7 @@ function Badge({
     purple: "bg-violet-50 text-violet-700 border-violet-200",
     orange: "bg-orange-50 text-orange-700 border-orange-200",
   };
+
   return (
     <span
       className={cn(
@@ -272,18 +297,17 @@ function Btn({
   const vars: Record<string, string> = {
     primary:
       "bg-slate-900 text-white hover:bg-slate-800 border-slate-900 shadow-sm",
-    outline:
-      "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
-    subtle:
-      "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
+    outline: "bg-white text-slate-700 hover:bg-slate-50 border-slate-300",
+    subtle: "bg-slate-100 text-slate-700 hover:bg-slate-200 border-transparent",
     danger: "bg-white text-red-600 hover:bg-red-50 border-red-200",
-    ghost:
-      "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
+    ghost: "bg-transparent text-slate-600 hover:bg-slate-100 border-transparent",
   };
+
   const sizes: Record<string, string> = {
     sm: "px-2.5 py-1.5 text-xs gap-1.5",
     md: "px-3.5 py-2 text-sm gap-2",
   };
+
   return (
     <button
       {...props}
@@ -389,13 +413,16 @@ function AlertBanner({
     error: "border-red-200 bg-red-50 text-red-700",
     success: "border-emerald-200 bg-emerald-50 text-emerald-700",
   };
+
   const icons: Record<string, React.ElementType> = {
     error: AlertCircle,
     success: CheckCircle2,
     warning: AlertCircle,
     info: Info,
   };
+
   const Ic = icons[variant];
+
   return (
     <div
       className={cn(
@@ -451,6 +478,7 @@ function ScopeSwitch({
     { key: "GLOBAL", label: "Global", icon: <Globe size={12} /> },
     { key: "USER_INSTANCE", label: "User", icon: <User size={12} /> },
   ];
+
   return (
     <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
       {opts.map((o) => (
@@ -481,15 +509,8 @@ function TemplateNameHint() {
       <div className="flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0 text-sky-600" />
         <div className="text-[11px] text-sky-700 leading-relaxed">
-          <span className="font-semibold">Naming Convention :</span> Please
-          use a descriptive name like{" "}
-          <span className="font-mono font-semibold bg-sky-100 px-1 rounded">
-            GPON-DHCP
-          </span>{" "}
-          or{" "}
-          <span className="font-mono font-semibold bg-sky-100 px-1 rounded">
-            ETHERNET
-          </span>
+          <span className="font-semibold">Rule:</span> Template name must match
+          an existing WAN model.
         </div>
       </div>
     </div>
@@ -529,7 +550,7 @@ function FinalNamePreview({
 }
 
 // ================================================================
-// ========  PROJECT SELECTOR (NOUVEAU)  ==========================
+// ======== PROJECT SELECTOR =====================================
 // ================================================================
 
 function ProjectSelector({
@@ -572,19 +593,13 @@ function ProjectSelector({
       );
 
       toast.success(`Project "${trimmedName}" created.`);
-
-      // Rafraîchir la liste des projets
       await onProjectCreated();
-
-      // Sélectionner automatiquement le nouveau projet
       onChange(trimmedName);
-
-      // Reset le formulaire
       setNewName("");
       setNewDesc("");
       setShowCreateForm(false);
     } catch (err: any) {
-      toast.error(err.message || "Failed to create project.");
+      toast.error(getSimpleErrorMessage(err, "Unable to create project."));
     } finally {
       setCreating(false);
     }
@@ -614,16 +629,14 @@ function ProjectSelector({
             ))}
           </Select>
         </div>
+
         <Btn
           type="button"
           size="sm"
           variant={showCreateForm ? "danger" : "outline"}
           onClick={() => {
-            if (showCreateForm) {
-              handleCancel();
-            } else {
-              setShowCreateForm(true);
-            }
+            if (showCreateForm) handleCancel();
+            else setShowCreateForm(true);
           }}
           disabled={creating}
           className="shrink-0"
@@ -633,12 +646,12 @@ function ProjectSelector({
         </Btn>
       </div>
 
-      {/* ── Inline Create Form ── */}
       {showCreateForm && (
         <div className="rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 space-y-3">
           <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">
             Create New Project
           </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div>
               <label className="mb-1 block text-[11px] font-medium text-slate-600">
@@ -651,6 +664,7 @@ function ProjectSelector({
                 className="text-xs py-1.5"
               />
             </div>
+
             <div>
               <label className="mb-1 block text-[11px] font-medium text-slate-600">
                 Description
@@ -663,6 +677,7 @@ function ProjectSelector({
               />
             </div>
           </div>
+
           <div className="flex items-center gap-2">
             <Btn
               type="button"
@@ -679,6 +694,7 @@ function ProjectSelector({
               )}
               Create Project
             </Btn>
+
             <Btn
               type="button"
               size="sm"
@@ -692,7 +708,6 @@ function ProjectSelector({
         </div>
       )}
 
-      {/* Info text */}
       {!showCreateForm && (
         <div className="text-[11px] text-slate-500">
           Select an existing project or create a new one. Leave empty for no
@@ -704,17 +719,19 @@ function ProjectSelector({
 }
 
 // ================================================================
-// ========  WAN MODELS MODAL  ====================================
+// ======== WAN MODELS MODAL =====================================
 // ================================================================
 
 function WanModelsModal({
   open,
   onClose,
   accessToken,
+  onModelsChanged,
 }: {
   open: boolean;
   onClose: () => void;
   accessToken: string | null;
+  onModelsChanged?: () => Promise<void> | void;
 }) {
   const [models, setModels] = useState<WanModel[]>([]);
   const [loading, setLoading] = useState(false);
@@ -740,15 +757,20 @@ function WanModelsModal({
       );
       setModels(res.models || []);
     } catch (err: any) {
-      toast.error(err.message || "Failed to load WAN models.");
+      toast.error(getSimpleErrorMessage(err, "Unable to load WAN models."));
     } finally {
       setLoading(false);
     }
   }
 
+  async function notifyParent() {
+    if (onModelsChanged) await onModelsChanged();
+  }
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
+
     setCreating(true);
     try {
       await authFetch<WanModel>(
@@ -763,12 +785,14 @@ function WanModelsModal({
           }),
         }
       );
+
       setNewName("");
       setNewDesc("");
       await loadModels();
+      await notifyParent();
       toast.success("WAN model created.");
     } catch (err: any) {
-      toast.error(err.message || "Failed to create model.");
+      toast.error(getSimpleErrorMessage(err, "Unable to create model."));
     } finally {
       setCreating(false);
     }
@@ -776,6 +800,7 @@ function WanModelsModal({
 
   async function handleSaveEdit(id: number) {
     if (!editName.trim()) return;
+
     setSaving(true);
     try {
       await authFetch<WanModel>(
@@ -790,11 +815,13 @@ function WanModelsModal({
           }),
         }
       );
+
       setEditingId(null);
       await loadModels();
+      await notifyParent();
       toast.success("WAN model updated.");
     } catch (err: any) {
-      toast.error(err.message || "Failed to update model.");
+      toast.error(getSimpleErrorMessage(err, "Unable to update model."));
     } finally {
       setSaving(false);
     }
@@ -808,10 +835,12 @@ function WanModelsModal({
         accessToken,
         { method: "DELETE" }
       );
+
       await loadModels();
+      await notifyParent();
       toast.success("WAN model deleted.");
     } catch (err: any) {
-      toast.error(err.message || "Failed to delete model.");
+      toast.error(getSimpleErrorMessage(err, "Unable to delete model."));
     } finally {
       setDeletingId(null);
     }
@@ -850,6 +879,7 @@ function WanModelsModal({
             <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
               Add New Model
             </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <FieldLabel required>Name</FieldLabel>
@@ -859,6 +889,7 @@ function WanModelsModal({
                   placeholder="e.g. GPON"
                 />
               </div>
+
               <div>
                 <FieldLabel>Description</FieldLabel>
                 <Input
@@ -868,6 +899,7 @@ function WanModelsModal({
                 />
               </div>
             </div>
+
             <Btn
               type="submit"
               variant="primary"
@@ -937,10 +969,7 @@ function WanModelsModal({
                           disabled={saving || !editName.trim()}
                         >
                           {saving ? (
-                            <Loader2
-                              size={12}
-                              className="animate-spin"
-                            />
+                            <Loader2 size={12} className="animate-spin" />
                           ) : (
                             "Save"
                           )}
@@ -970,10 +999,7 @@ function WanModelsModal({
                           disabled={deletingId === m.id}
                         >
                           {deletingId === m.id ? (
-                            <Loader2
-                              size={12}
-                              className="animate-spin"
-                            />
+                            <Loader2 size={12} className="animate-spin" />
                           ) : (
                             <Trash2 size={12} />
                           )}
@@ -992,7 +1018,7 @@ function WanModelsModal({
 }
 
 // ================================================================
-// ========  MAIN COMPONENT  ======================================
+// ======== MAIN COMPONENT =======================================
 // ================================================================
 
 export default function WanTemplatesSection() {
@@ -1001,9 +1027,13 @@ export default function WanTemplatesSection() {
   const [instances, setInstances] = useState<IsamInstance[]>([]);
   const [templates, setTemplates] = useState<WanTemplate[]>([]);
   const [projects, setProjects] = useState<TemplateProject[]>([]);
+  const [wanModels, setWanModels] = useState<WanModel[]>([]);
+
   const [loadingProjects, setLoadingProjects] = useState(false);
+  const [loadingWanModels, setLoadingWanModels] = useState(false);
   const [loading, setLoading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
+
   const [search, setSearch] = useState("");
   const [scopeFilter, setScopeFilter] = useState<
     "ALL" | "GLOBAL" | "USER_INSTANCE"
@@ -1018,9 +1048,9 @@ export default function WanTemplatesSection() {
   const [name, setName] = useState("");
   const [project, setProject] = useState("");
   const [commandsTemplate, setCommandsTemplate] = useState("");
-  const [variableValues, setVariableValues] = useState<
-    Record<string, string>
-  >({});
+  const [variableValues, setVariableValues] = useState<Record<string, string>>(
+    {}
+  );
   const [testInstanceId, setTestInstanceId] = useState<number | "">("");
   const [testPort, setTestPort] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -1046,26 +1076,24 @@ export default function WanTemplatesSection() {
   const [confirmDialog, setConfirmDialog] =
     useState<ConfirmDialogState>(EMPTY_CONFIRM);
 
-  const finalName = useMemo(
-    () => buildFinalName(name, project),
-    [name, project]
-  );
+  const finalName = useMemo(() => buildFinalName(name, project), [name, project]);
 
   useEffect(() => {
     if (!accessToken) return;
     loadData();
   }, [accessToken, scopeFilter]);
 
-  // ── Charger les projets au mount ──
   useEffect(() => {
     if (!accessToken) return;
     loadProjects();
+    loadWanModels();
   }, [accessToken]);
 
   const detectedVariables = useMemo(
     () => extractVars(commandsTemplate),
     [commandsTemplate]
   );
+
   const customVariables = useMemo(
     () => detectedVariables.filter((v) => !isPortVar(v)),
     [detectedVariables]
@@ -1074,6 +1102,7 @@ export default function WanTemplatesSection() {
   const filteredTemplates = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return templates;
+
     return templates.filter((t) => {
       const appliesTo =
         t.scope === "GLOBAL"
@@ -1082,6 +1111,7 @@ export default function WanTemplatesSection() {
               instances,
               t.isam_instance_id
             )}`;
+
       return (
         t.name.toLowerCase().includes(q) ||
         (t.created_by || "").toLowerCase().includes(q) ||
@@ -1091,7 +1121,15 @@ export default function WanTemplatesSection() {
     });
   }, [templates, search, instances]);
 
-  const canSave = Boolean(name.trim() && commandsTemplate.trim());
+  const canSave = Boolean(
+    name.trim() &&
+      commandsTemplate.trim() &&
+      isValidTemplateName(name, wanModels)
+  );
+
+  const trimmedName = name.trim();
+  const templateNameExistsInModels = isValidTemplateName(trimmedName, wanModels);
+  const showNameValidation = trimmedName.length > 0;
 
   useEffect(() => {
     setVariableValues((prev) => {
@@ -1103,7 +1141,6 @@ export default function WanTemplatesSection() {
     });
   }, [customVariables]);
 
-  // ── Load projects ──
   async function loadProjects() {
     setLoadingProjects(true);
     try {
@@ -1112,10 +1149,25 @@ export default function WanTemplatesSection() {
         accessToken
       );
       setProjects(res.projects || []);
-    } catch (err: any) {
-      console.error("Failed to load projects:", err.message);
+    } catch {
+      setProjects([]);
     } finally {
       setLoadingProjects(false);
+    }
+  }
+
+  async function loadWanModels() {
+    setLoadingWanModels(true);
+    try {
+      const res = await authFetch<{ models: WanModel[] }>(
+        `${ISAM_BASE_URL}/api/v1/isam/wan-models`,
+        accessToken
+      );
+      setWanModels(res.models || []);
+    } catch {
+      setWanModels([]);
+    } finally {
+      setLoadingWanModels(false);
     }
   }
 
@@ -1123,8 +1175,8 @@ export default function WanTemplatesSection() {
     setLoading(true);
     setGlobalError(null);
     try {
-      const scopeParam =
-        scopeFilter !== "ALL" ? `&scope=${scopeFilter}` : "";
+      const scopeParam = scopeFilter !== "ALL" ? `&scope=${scopeFilter}` : "";
+
       const [instRes, tplRes] = await Promise.all([
         authFetch<{ instances: IsamInstance[] }>(
           `${ISAM_BASE_URL}/api/v1/isam/instances`,
@@ -1135,13 +1187,29 @@ export default function WanTemplatesSection() {
           accessToken
         ),
       ]);
+
       setInstances(instRes.instances || []);
       setTemplates(tplRes.templates || []);
     } catch (err: any) {
-      setGlobalError(err.message || "Failed to load WAN templates.");
+      setGlobalError(getSimpleErrorMessage(err, "Unable to load templates."));
     } finally {
       setLoading(false);
     }
+  }
+
+  function validateTemplateForm(): string | null {
+    const trimmedNameLocal = name.trim();
+    const trimmedCommands = commandsTemplate.trim();
+
+    if (!trimmedNameLocal) return "Template name is required.";
+    if (!isValidTemplateName(trimmedNameLocal, wanModels)) {
+      return "Choose a valid WAN model name.";
+    }
+    if (!trimmedCommands) return "Template content is required.";
+    if (trimmedNameLocal.length > 100) return "Template name is too long.";
+    if (project.trim().length > 100) return "Project name is too long.";
+
+    return null;
   }
 
   function resetStatesOnly() {
@@ -1151,6 +1219,7 @@ export default function WanTemplatesSection() {
       rendered_script: "",
       rendered_commands: [],
     });
+
     setTestState({
       loading: false,
       success: false,
@@ -1191,27 +1260,30 @@ export default function WanTemplatesSection() {
     const { baseName, project: proj } = splitSavedName(t.name, t.project);
     setName(baseName);
     setProject(proj);
-
     setCommandsTemplate(t.commands_template);
-    if (t.scope === "USER_INSTANCE" && t.isam_instance_id)
+
+    if (t.scope === "USER_INSTANCE" && t.isam_instance_id) {
       setTestInstanceId(t.isam_instance_id);
+    }
+
     setShowModal(true);
   }
 
-  // ── Preview ──
   async function handlePreview() {
     setFormError(null);
+
     if (!commandsTemplate.trim()) {
-      setFormError("Commands template is required.");
+      setFormError("Template content is required.");
       return;
     }
+
     if (detectedVariables.some(isPortVar) && !testPort.trim()) {
-      setFormError(
-        "Test port is required for preview because the template uses [[$port]]."
-      );
+      setFormError("Test port is required.");
       return;
     }
+
     setPreviewState((s) => ({ ...s, loading: true, error: null }));
+
     try {
       const res = await authFetch<TemplateRenderResponse>(
         `${ISAM_BASE_URL}/api/v1/isam/wan-templates/render`,
@@ -1226,6 +1298,7 @@ export default function WanTemplatesSection() {
           }),
         }
       );
+
       setPreviewState({
         loading: false,
         error: null,
@@ -1235,28 +1308,31 @@ export default function WanTemplatesSection() {
     } catch (err: any) {
       setPreviewState({
         loading: false,
-        error: err.message,
+        error: getSimpleErrorMessage(err, "Unable to preview template."),
         rendered_script: "",
         rendered_commands: [],
       });
     }
   }
 
-  // ── Test ──
   async function handleTestTemplate() {
     setFormError(null);
+
     if (!commandsTemplate.trim()) {
-      setFormError("Commands template is required.");
+      setFormError("Template content is required.");
       return;
     }
+
     if (!testInstanceId) {
-      setFormError("Please choose an ISAM for testing.");
+      setFormError("Choose an ISAM.");
       return;
     }
+
     if (detectedVariables.some(isPortVar) && !testPort.trim()) {
-      setFormError("Please enter a test port.");
+      setFormError("Test port is required.");
       return;
     }
+
     setTestState((s) => ({
       ...s,
       loading: true,
@@ -1264,7 +1340,9 @@ export default function WanTemplatesSection() {
       success: false,
       message: null,
     }));
-    const tid = toast.loading("Testing template on ISAM...");
+
+    const tid = toast.loading("Testing template...");
+
     try {
       const res = await authFetch<TemplateTestResponse>(
         `${ISAM_BASE_URL}/api/v1/isam/wan-templates/test`,
@@ -1280,45 +1358,48 @@ export default function WanTemplatesSection() {
           }),
         }
       );
+
       setTestState({
         loading: false,
         success: res.success,
-        error: res.success ? null : res.message,
+        error: res.success ? null : res.message || "Test failed.",
         protocol_used: res.protocol_used,
         raw_output: res.raw_output,
         rendered_commands: res.rendered_commands,
         message: res.message,
       });
-      if (res.success)
-        toast.success(res.message || "Template test OK.", { id: tid });
-      else toast.error(res.message || "Template test failed.", { id: tid });
+
+      if (res.success) toast.success(res.message || "Test successful.", { id: tid });
+      else toast.error(res.message || "Test failed.", { id: tid });
     } catch (err: any) {
+      const simpleMsg = getSimpleErrorMessage(err, "Unable to test template.");
       setTestState({
         loading: false,
         success: false,
-        error: err.message,
+        error: simpleMsg,
         protocol_used: null,
         raw_output: "",
         rendered_commands: [],
         message: null,
       });
-      toast.error(err.message, { id: tid });
+      toast.error(simpleMsg, { id: tid });
     }
   }
 
-  // ── Save ──
   async function handleSaveTemplate(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
-    if (!canSave) {
-      setFormError("Template name and content are required.");
+
+    const validationError = validateTemplateForm();
+    if (validationError) {
+      setFormError(validationError);
       return;
     }
 
     const saveName = finalName;
     const saveProject = project.trim() || null;
-
     const isEditing = Boolean(editingTemplate);
+
     setSubmitting(true);
     try {
       if (editingTemplate) {
@@ -1352,22 +1433,18 @@ export default function WanTemplatesSection() {
           }
         );
       }
+
       await loadData();
       setShowModal(false);
       resetModalState();
-      toast.success(
-        isEditing
-          ? "Template updated successfully."
-          : "Template created successfully."
-      );
+      toast.success(isEditing ? "Template updated." : "Template created.");
     } catch (err: any) {
-      setFormError(err.message || "Failed to save template.");
+      setFormError(getSimpleErrorMessage(err, "Unable to save template."));
     } finally {
       setSubmitting(false);
     }
   }
 
-  // ── Confirm dialog ──
   async function handleConfirmDialog() {
     const { action, template } = confirmDialog;
     if (!action) return;
@@ -1379,29 +1456,37 @@ export default function WanTemplatesSection() {
       toast.success("Template content cleared.");
       return;
     }
+
     if (action === "clear-all-form") {
       resetModalState();
       setConfirmDialog(EMPTY_CONFIRM);
       toast.success("Form cleared.");
       return;
     }
+
     if (action === "delete-template" && template) {
       setConfirmDialog((p) => ({ ...p, loading: true }));
       const tid = toast.loading("Deleting template...");
+
       try {
         await authFetch<void>(
           `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${template.id}`,
           accessToken,
           { method: "DELETE" }
         );
+
         await loadData();
+
         if (editingTemplate?.id === template.id) {
           setShowModal(false);
           resetModalState();
         }
+
         toast.success("Template deleted.", { id: tid });
       } catch (err: any) {
-        toast.error(err.message, { id: tid });
+        toast.error(getSimpleErrorMessage(err, "Unable to delete template."), {
+          id: tid,
+        });
       } finally {
         setConfirmDialog(EMPTY_CONFIRM);
       }
@@ -1412,26 +1497,23 @@ export default function WanTemplatesSection() {
     confirmDialog.action === "delete-template"
       ? `Delete "${confirmDialog.template?.name ?? ""}"?`
       : confirmDialog.action === "clear-template-content"
-        ? "Clear template content?"
-        : confirmDialog.action === "clear-all-form"
-          ? "Reset the whole form?"
-          : "";
+      ? "Clear template content?"
+      : confirmDialog.action === "clear-all-form"
+      ? "Reset the whole form?"
+      : "";
 
   const confirmBtnText =
     confirmDialog.action === "delete-template"
       ? "Delete"
       : confirmDialog.action === "clear-template-content"
-        ? "Clear"
-        : confirmDialog.action === "clear-all-form"
-          ? "Reset"
-          : "Confirm";
-
-  // ── RENDER ──
+      ? "Clear"
+      : confirmDialog.action === "clear-all-form"
+      ? "Reset"
+      : "Confirm";
 
   return (
     <>
       <div className="space-y-5">
-        {/* ── Header ── */}
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
@@ -1442,10 +1524,10 @@ export default function WanTemplatesSection() {
                 <Badge variant="info">Admin</Badge>
               </div>
               <p className="mt-1 text-sm text-slate-500">
-                Manage templates. Preview and test are optional but
-                recommended.
+                Manage templates. Preview and test are optional but recommended.
               </p>
             </div>
+
             <div className="flex items-center gap-2 flex-wrap">
               <Btn variant="outline" onClick={loadData} disabled={loading}>
                 {loading ? (
@@ -1455,6 +1537,7 @@ export default function WanTemplatesSection() {
                 )}
                 Refresh
               </Btn>
+
               <Btn
                 variant="outline"
                 onClick={() => setShowWanModelsModal(true)}
@@ -1462,6 +1545,7 @@ export default function WanTemplatesSection() {
                 <Layers size={16} />
                 WAN Models
               </Btn>
+
               <Btn variant="primary" onClick={openCreateModal}>
                 <Plus size={16} />
                 Add Global Template
@@ -1483,15 +1567,13 @@ export default function WanTemplatesSection() {
                 className="pl-9"
               />
             </div>
+
             <ScopeSwitch value={scopeFilter} onChange={setScopeFilter} />
           </div>
         </div>
 
-        {globalError && (
-          <AlertBanner variant="error">{globalError}</AlertBanner>
-        )}
+        {globalError && <AlertBanner variant="error">{globalError}</AlertBanner>}
 
-        {/* ── Table ── */}
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/70 px-5 py-3">
             <SectionTitle
@@ -1503,8 +1585,7 @@ export default function WanTemplatesSection() {
 
           {loading ? (
             <div className="flex items-center justify-center gap-2 p-10 text-sm text-slate-500">
-              <Loader2 size={16} className="animate-spin" /> Loading
-              templates...
+              <Loader2 size={16} className="animate-spin" /> Loading templates...
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -1531,11 +1612,13 @@ export default function WanTemplatesSection() {
                     </th>
                   </tr>
                 </thead>
+
                 <tbody className="divide-y divide-slate-100">
                   {filteredTemplates.map((t) => {
                     const lines = t.commands_template
                       .split("\n")
                       .filter(Boolean).length;
+
                     return (
                       <tr key={t.id} className="hover:bg-slate-50/70">
                         <td className="px-5 py-4 align-top">
@@ -1548,6 +1631,7 @@ export default function WanTemplatesSection() {
                             </div>
                           </div>
                         </td>
+
                         <td className="px-5 py-4 align-top">
                           {t.project ? (
                             <Badge variant="orange">
@@ -1555,25 +1639,28 @@ export default function WanTemplatesSection() {
                               {t.project}
                             </Badge>
                           ) : (
-                            <span className="text-xs text-slate-400">
-                              —
-                            </span>
+                            <span className="text-xs text-slate-400">—</span>
                           )}
                         </td>
+
                         <td className="px-5 py-4 align-top">
                           <ScopeBadge scope={t.scope} />
                         </td>
+
                         <td className="px-5 py-4 align-top text-slate-700">
                           {t.scope === "GLOBAL"
                             ? "All ISAM"
                             : instName(instances, t.isam_instance_id)}
                         </td>
+
                         <td className="px-5 py-4 align-top text-slate-700">
                           {t.created_by || "—"}
                         </td>
+
                         <td className="px-5 py-4 align-top text-xs text-slate-500">
                           {new Date(t.updated_at).toLocaleString()}
                         </td>
+
                         <td className="px-5 py-4 align-top text-right">
                           <div className="inline-flex items-center gap-2">
                             <Btn
@@ -1583,6 +1670,7 @@ export default function WanTemplatesSection() {
                             >
                               <Edit size={14} /> Edit
                             </Btn>
+
                             <Btn
                               size="sm"
                               variant="danger"
@@ -1602,6 +1690,7 @@ export default function WanTemplatesSection() {
                       </tr>
                     );
                   })}
+
                   {filteredTemplates.length === 0 && (
                     <tr>
                       <td
@@ -1618,7 +1707,6 @@ export default function WanTemplatesSection() {
           )}
         </div>
 
-        {/* ── Create / Edit Modal ── */}
         {showModal && (
           <div className="fixed inset-0 z-50 bg-slate-900/55 backdrop-blur-sm p-4">
             <div className="mx-auto max-w-6xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl max-h-[92vh] overflow-y-auto">
@@ -1626,17 +1714,14 @@ export default function WanTemplatesSection() {
                 <SectionTitle
                   icon={editingTemplate ? Edit : Plus}
                   title={
-                    editingTemplate
-                      ? "Edit Template"
-                      : "Create Global Template"
+                    editingTemplate ? "Edit Template" : "Create Global Template"
                   }
-                  description="Preview & Test are optional (recommended before saving)."
+                  description="Preview & Test are optional."
                   badge={
-                    <ScopeBadge
-                      scope={editingTemplate?.scope ?? "GLOBAL"}
-                    />
+                    <ScopeBadge scope={editingTemplate?.scope ?? "GLOBAL"} />
                   }
                 />
+
                 <button
                   onClick={() => {
                     setShowModal(false);
@@ -1648,16 +1733,10 @@ export default function WanTemplatesSection() {
                 </button>
               </div>
 
-              <form
-                onSubmit={handleSaveTemplate}
-                className="p-6 space-y-6"
-              >
-                {formError && (
-                  <AlertBanner variant="error">{formError}</AlertBanner>
-                )}
+              <form onSubmit={handleSaveTemplate} className="p-6 space-y-6">
+                {formError && <AlertBanner variant="error">{formError}</AlertBanner>}
 
                 <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
-                  {/* ── Left: Definition ── */}
                   <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                     <div className="border-b border-slate-200 bg-slate-50/70 p-4">
                       <SectionTitle
@@ -1666,19 +1745,55 @@ export default function WanTemplatesSection() {
                         description="Name, project & commands template."
                       />
                     </div>
+
                     <div className="p-5 space-y-4">
-                      {/* Name */}
                       <div>
                         <FieldLabel required>Template Name</FieldLabel>
                         <Input
                           value={name}
                           onChange={(e) => setName(e.target.value)}
-                          placeholder="Example: GPON-DHCP"
+                          placeholder="Example: GPON"
+                          list="wan-models-list"
+                          className={cn(
+                            showNameValidation &&
+                              !templateNameExistsInModels &&
+                              "border-red-300 focus:border-red-400 focus:ring-red-200",
+                            showNameValidation &&
+                              templateNameExistsInModels &&
+                              "border-emerald-300 focus:border-emerald-400 focus:ring-emerald-200"
+                          )}
                         />
+                        <datalist id="wan-models-list">
+                          {wanModels.map((m) => (
+                            <option key={m.id} value={m.name} />
+                          ))}
+                        </datalist>
+
                         <TemplateNameHint />
+
+                        <div className="mt-2">
+                          {loadingWanModels ? (
+                            <div className="text-[11px] text-slate-500">
+                              Loading WAN models...
+                            </div>
+                          ) : showNameValidation ? (
+                            templateNameExistsInModels ? (
+                              <div className="text-[11px] text-emerald-600">
+                                Valid WAN model name.
+                              </div>
+                            ) : (
+                              <div className="text-[11px] text-red-600">
+                                Name must match an existing WAN model.
+                              </div>
+                            )
+                          ) : (
+                            <div className="text-[11px] text-slate-500">
+                              Use a name from WAN Models.
+                            </div>
+                          )}
+                        </div>
                       </div>
 
-                      {/* ── Project : LISTE DÉROULANTE ── */}
                       <div>
                         <FieldLabel>Project</FieldLabel>
                         <ProjectSelector
@@ -1691,69 +1806,61 @@ export default function WanTemplatesSection() {
                         />
                       </div>
 
-                      {/* ── Final Name Preview ── */}
-                      <FinalNamePreview
-                        baseName={name}
-                        project={project}
-                      />
+                      <FinalNamePreview baseName={name} project={project} />
 
                       {editingTemplate?.scope === "USER_INSTANCE" && (
                         <Badge variant="default">
                           <Server size={12} />
-                          {instName(
-                            instances,
-                            editingTemplate.isam_instance_id
-                          )}
+                          {instName(instances, editingTemplate.isam_instance_id)}
                         </Badge>
                       )}
 
-                      {/* Commands */}
                       <div>
                         <div className="mb-1.5 flex items-center justify-between gap-2">
-                          <FieldLabel required>
-                            Commands Template
-                          </FieldLabel>
+                          <FieldLabel required>Commands Template</FieldLabel>
                           <Btn
                             type="button"
                             size="sm"
                             variant="danger"
                             onClick={() => {
-                              if (commandsTemplate.trim())
+                              if (commandsTemplate.trim()) {
                                 setConfirmDialog({
                                   open: true,
                                   action: "clear-template-content",
                                   template: null,
                                   loading: false,
                                 });
+                              }
                             }}
                             disabled={!commandsTemplate.trim()}
                           >
                             <Trash2 size={13} /> Clear
                           </Btn>
                         </div>
+
                         <Textarea
                           value={commandsTemplate}
-                          onChange={(e) =>
-                            setCommandsTemplate(e.target.value)
-                          }
+                          onChange={(e) => setCommandsTemplate(e.target.value)}
                           rows={14}
-                          placeholder={`configure equipment ont interface [[$port]] admin-state down\nconfigure equipment ont no interface [[$port]]\nconfigure equipment ont interface [[$port]] desc1 [[$desc]] sernum [[$serial_number]]\nconfigure equipment ont interface [[$port]] admin-state up`}
+                          placeholder={`configure equipment ont interface [[$port]] admin-state down
+configure equipment ont no interface [[$port]]
+configure equipment ont interface [[$port]] desc1 [[$desc]] sernum [[$serial_number]]
+configure equipment ont interface [[$port]] admin-state up`}
                         />
+
                         <div className="mt-2 text-[11px] text-slate-500">
                           Variable format:{" "}
                           <span className="font-mono">[[$port]]</span>,{" "}
                           <span className="font-mono">[[$desc]]</span>,{" "}
-                          <span className="font-mono">
-                            [[$serial_number]]
-                          </span>
+                          <span className="font-mono">[[$serial_number]]</span>
                         </div>
                       </div>
 
-                      {/* Detected variables */}
                       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                         <div className="mb-2 text-[10px] font-bold uppercase tracking-wider text-slate-500">
                           Detected variables
                         </div>
+
                         {detectedVariables.length === 0 ? (
                           <div className="text-xs text-slate-500">
                             No variables detected.
@@ -1779,15 +1886,15 @@ export default function WanTemplatesSection() {
                     </div>
                   </div>
 
-                  {/* ── Right: Preview & Test ── */}
                   <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
                     <div className="border-b border-slate-200 bg-slate-50/70 p-4">
                       <SectionTitle
                         icon={Sparkles}
                         title="Preview & Test"
-                        description="Render commands and (optionally) run on ISAM."
+                        description="Render commands and optionally run on ISAM."
                       />
                     </div>
+
                     <div className="p-5 space-y-4">
                       <div className="grid grid-cols-1 gap-3">
                         <div>
@@ -1796,9 +1903,7 @@ export default function WanTemplatesSection() {
                             value={testInstanceId}
                             onChange={(e) =>
                               setTestInstanceId(
-                                e.target.value
-                                  ? Number(e.target.value)
-                                  : ""
+                                e.target.value ? Number(e.target.value) : ""
                               )
                             }
                           >
@@ -1810,10 +1915,9 @@ export default function WanTemplatesSection() {
                             ))}
                           </Select>
                         </div>
+
                         <div>
-                          <FieldLabel
-                            required={detectedVariables.some(isPortVar)}
-                          >
+                          <FieldLabel required={detectedVariables.some(isPortVar)}>
                             Test Port
                           </FieldLabel>
                           <Input
@@ -1830,6 +1934,7 @@ export default function WanTemplatesSection() {
                           <div className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                             Custom variables
                           </div>
+
                           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                             {customVariables.map((v) => (
                               <div key={v}>
@@ -1856,33 +1961,22 @@ export default function WanTemplatesSection() {
                           disabled={previewState.loading}
                         >
                           {previewState.loading ? (
-                            <Loader2
-                              size={14}
-                              className="animate-spin"
-                            />
+                            <Loader2 size={14} className="animate-spin" />
                           ) : (
                             <Eye size={14} />
                           )}
                           Preview
                         </Btn>
+
                         <Btn
                           type="button"
                           variant="primary"
                           onClick={handleTestTemplate}
-                          disabled={
-                            testState.loading || !testInstanceId
-                          }
-                          title={
-                            !testInstanceId
-                              ? "Select an ISAM to enable test"
-                              : undefined
-                          }
+                          disabled={testState.loading || !testInstanceId}
+                          title={!testInstanceId ? "Select an ISAM first" : undefined}
                         >
                           {testState.loading ? (
-                            <Loader2
-                              size={14}
-                              className="animate-spin"
-                            />
+                            <Loader2 size={14} className="animate-spin" />
                           ) : (
                             <Play size={14} />
                           )}
@@ -1895,6 +1989,7 @@ export default function WanTemplatesSection() {
                           {previewState.error}
                         </AlertBanner>
                       )}
+
                       {previewState.rendered_commands.length > 0 && (
                         <div className="space-y-2">
                           <Badge variant="info">
@@ -1908,22 +2003,17 @@ export default function WanTemplatesSection() {
 
                       {(testState.error || testState.message) && (
                         <AlertBanner
-                          variant={
-                            testState.success ? "success" : "error"
-                          }
+                          variant={testState.success ? "success" : "error"}
                         >
                           {testState.error || testState.message}
                         </AlertBanner>
                       )}
+
                       {testState.rendered_commands.length > 0 && (
                         <div className="space-y-2">
                           <div className="flex items-center gap-2">
                             <Badge
-                              variant={
-                                testState.success
-                                  ? "success"
-                                  : "warning"
-                              }
+                              variant={testState.success ? "success" : "warning"}
                             >
                               <Play size={12} /> Tested Commands
                             </Badge>
@@ -1933,11 +2023,13 @@ export default function WanTemplatesSection() {
                               </Badge>
                             )}
                           </div>
+
                           <CodeViewer maxHeight="160px">
                             {testState.rendered_commands.join("\n")}
                           </CodeViewer>
                         </div>
                       )}
+
                       {testState.raw_output && (
                         <div className="space-y-2">
                           <Badge variant="default">
@@ -1954,15 +2046,13 @@ export default function WanTemplatesSection() {
                         !testState.error &&
                         !testState.message && (
                           <AlertBanner variant="warning">
-                            Template not tested yet. You can save it, but
-                            testing is recommended.
+                            Template not tested yet.
                           </AlertBanner>
                         )}
                     </div>
                   </div>
                 </div>
 
-                {/* Modal footer */}
                 <div className="flex flex-wrap justify-between gap-2 border-t border-slate-200 pt-4">
                   <Btn
                     type="button"
@@ -1978,6 +2068,7 @@ export default function WanTemplatesSection() {
                   >
                     <RotateCcw size={16} /> Clear All
                   </Btn>
+
                   <div className="flex items-center gap-2">
                     <Btn
                       type="button"
@@ -1989,6 +2080,7 @@ export default function WanTemplatesSection() {
                     >
                       Cancel
                     </Btn>
+
                     <Btn
                       type="submit"
                       variant="primary"
@@ -1996,13 +2088,8 @@ export default function WanTemplatesSection() {
                     >
                       {submitting ? (
                         <>
-                          <Loader2
-                            size={14}
-                            className="animate-spin"
-                          />
-                          {editingTemplate
-                            ? "Saving..."
-                            : "Creating..."}
+                          <Loader2 size={14} className="animate-spin" />
+                          {editingTemplate ? "Saving..." : "Creating..."}
                         </>
                       ) : editingTemplate ? (
                         "Save Changes"
@@ -2018,14 +2105,13 @@ export default function WanTemplatesSection() {
         )}
       </div>
 
-      {/* WAN Models Modal */}
       <WanModelsModal
         open={showWanModelsModal}
         onClose={() => setShowWanModelsModal(false)}
         accessToken={accessToken}
+        onModelsChanged={loadWanModels}
       />
 
-      {/* Confirm Dialog */}
       <ConfirmDialog
         open={confirmDialog.open}
         title={confirmTitle}
@@ -2045,6 +2131,7 @@ export default function WanTemplatesSection() {
                   {confirmDialog.template.name}
                 </span>
               </div>
+
               {confirmDialog.template.project && (
                 <div className="grid grid-cols-[110px_1fr] gap-3">
                   <span className="text-slate-500">Project</span>
@@ -2053,32 +2140,37 @@ export default function WanTemplatesSection() {
                   </span>
                 </div>
               )}
+
               <div className="grid grid-cols-[110px_1fr] gap-3">
                 <span className="text-slate-500">Scope</span>
                 <span className="font-semibold text-slate-700">
                   {confirmDialog.template.scope}
                 </span>
               </div>
+
               <div className="grid grid-cols-[110px_1fr] gap-3">
                 <span className="text-slate-500">Created by</span>
                 <span className="text-slate-900">
                   {confirmDialog.template.created_by || "—"}
                 </span>
               </div>
+
               <AlertBanner variant="error">
                 This action cannot be undone.
               </AlertBanner>
             </div>
           )}
+
         {confirmDialog.action === "clear-template-content" && (
           <p className="text-sm text-slate-600">
             This will remove the current commands from the editor.
           </p>
         )}
+
         {confirmDialog.action === "clear-all-form" && (
           <p className="text-sm text-slate-600">
-            This will clear the name, project, template content, variables
-            and test results.
+            This will clear the name, project, template content, variables and
+            test results.
           </p>
         )}
       </ConfirmDialog>
@@ -2110,6 +2202,7 @@ function ConfirmDialog({
   onCancel: () => void;
 }) {
   if (!open) return null;
+
   return (
     <div
       className="fixed inset-0 z-[80] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4"
@@ -2126,29 +2219,24 @@ function ConfirmDialog({
         <div className="border-b border-slate-200 px-6 py-4">
           <h3 className="text-sm font-bold text-slate-900">{title}</h3>
         </div>
+
         <div className="px-6 py-4">{children}</div>
+
         <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-6 py-3 rounded-b-xl">
-          <Btn
-            variant="outline"
-            size="sm"
-            onClick={onCancel}
-            disabled={loading}
-          >
+          <Btn variant="outline" size="sm" onClick={onCancel} disabled={loading}>
             {cancelText}
           </Btn>
+
           <Btn
             variant="primary"
             size="sm"
             onClick={onConfirm}
             disabled={loading}
             className={cn(
-              variant === "danger" &&
-                "bg-red-600 hover:bg-red-700 border-red-600"
+              variant === "danger" && "bg-red-600 hover:bg-red-700 border-red-600"
             )}
           >
-            {loading && (
-              <Loader2 size={14} className="animate-spin" />
-            )}
+            {loading && <Loader2 size={14} className="animate-spin" />}
             {confirmText}
           </Btn>
         </div>
