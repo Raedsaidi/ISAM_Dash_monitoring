@@ -6,10 +6,11 @@ WORKDIR /app
 # Declare build args
 ARG VITE_AUTH_BASE_URL
 ARG VITE_ISAM_BASE_URL
-
+ARG VITE_CISCO_BASE_URL
 # Make them available to Vite during build
 ENV VITE_AUTH_BASE_URL=$VITE_AUTH_BASE_URL
 ENV VITE_ISAM_BASE_URL=$VITE_ISAM_BASE_URL
+ENV VITE_CISCO_BASE_URL=$VITE_CISCO_BASE_URL
 
 COPY package*.json ./
 RUN npm install && chmod +x node_modules/.bin/vite
