@@ -1,49 +1,50 @@
 # app/services/cisco_client.py
 
 """
-Cisco device client — SSH (paramiko) + Telnet (telnetlib).
+Cisco switch client — SSH + SSH-Legacy + Telnet.
+Architecture identique à ISAMConnectionService.
 """
 
 import logging
 import re
 import socket
+import subprocess
 import time
 import telnetlib
 from typing import List, Literal, Optional, Tuple
 
 import paramiko
 
-from app.core.config import settings
 from app.models.cisco_switch import CiscoSwitch
 
 logger = logging.getLogger(__name__)
 
-Protocol = Literal["ssh", "telnet"]
+Protocol = Literal["ssh", "ssh-legacy", "telnet"]
 
 
 class CiscoConnectionService:
     """
-    Handles SSH and Telnet connections to a Cisco switch/router.
+    Service pour tester une connexion et exécuter une commande
+    sur un switch Cisco donné (infos venant de CiscoSwitch).
+    Architecture identique à ISAMConnectionService.
     """
 
     def __init__(self, switch: CiscoSwitch):
         self.switch = switch
-        self.connect_timeout = settings.CISCO_CONNECTION_TIMEOUT
-        self.command_timeout = settings.CISCO_COMMAND_TIMEOUT
 
-    # ──────────────────────────────────────────────────
-    #  SSH — Test Connection
-    # ──────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════
+    #  TESTS DE CONNEXION
+    # ═══════════════════════════════════════════════════════
 
     def test_ssh_connection(self, timeout: int = 10) -> Tuple[bool, str]:
+        """Test SSH standard (avec algorithmes modernes)"""
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         try:
             logger.info(
-                "[SSH] Testing connection to %s:%s...",
-                self.switch.host,
-                self.switch.ssh_port,
+                f"[SSH] Test connexion à "
+                f"{self.switch.host}:{self.switch.ssh_port}..."
             )
             client.connect(
                 hostname=self.switch.host,
@@ -55,89 +56,99 @@ class CiscoConnectionService:
                 timeout=timeout,
             )
             msg = (
-                f"[SSH] Connection successful to "
+                f"[SSH] Connexion réussie à "
                 f"{self.switch.host}:{self.switch.ssh_port}."
             )
             logger.info(msg)
             return True, msg
 
+        except (
+            socket.timeout,
+            paramiko.ssh_exception.NoValidConnectionsError,
+        ) as e:
+            msg = f"[SSH] Impossible de se connecter : {e}"
+            logger.error(msg)
+            return False, msg
         except paramiko.AuthenticationException:
             msg = (
-                f"[SSH] Authentication failed for {self.switch.username}@"
-                f"{self.switch.host}:{self.switch.ssh_port} "
-                f"— wrong username or password."
+                f"[SSH] Erreur d'authentification pour "
+                f"{self.switch.username}@{self.switch.host}."
             )
             logger.error(msg)
             return False, msg
-
-        except paramiko.SSHException as e:
-            msg = (
-                f"[SSH] Protocol error connecting to "
-                f"{self.switch.host}:{self.switch.ssh_port} — {str(e)}"
-            )
-            logger.error(msg)
-            return False, msg
-
-        except socket.timeout:
-            msg = (
-                f"[SSH] Connection timed out to "
-                f"{self.switch.host}:{self.switch.ssh_port} "
-                f"(timeout={timeout}s)."
-            )
-            logger.error(msg)
-            return False, msg
-
-        except socket.gaierror as e:
-            msg = (
-                f"[SSH] DNS resolution failed for host "
-                f"'{self.switch.host}' — {str(e)}"
-            )
-            logger.error(msg)
-            return False, msg
-
-        except ConnectionRefusedError:
-            msg = (
-                f"[SSH] Connection refused by "
-                f"{self.switch.host}:{self.switch.ssh_port} "
-                f"— is SSH enabled on the device?"
-            )
-            logger.error(msg)
-            return False, msg
-
-        except OSError as e:
-            msg = (
-                f"[SSH] Network error connecting to "
-                f"{self.switch.host}:{self.switch.ssh_port} — {str(e)}"
-            )
-            logger.error(msg)
-            return False, msg
-
         except Exception as e:
-            msg = (
-                f"[SSH] Unexpected error connecting to "
-                f"{self.switch.host}:{self.switch.ssh_port} — "
-                f"{type(e).__name__}: {str(e)}"
-            )
+            msg = f"[SSH] Erreur inattendue : {e}"
             logger.exception(msg)
             return False, msg
-
         finally:
             client.close()
 
-    # ──────────────────────────────────────────────────
-    #  Telnet — Test Connection
-    # ──────────────────────────────────────────────────
-
-    def test_telnet_connection(self, timeout: int = 10) -> Tuple[bool, str]:
+    def test_ssh_connection_legacy(
+        self, timeout: int = 10
+    ) -> Tuple[bool, str]:
+        """Test SSH avec algorithmes legacy (ssh-rsa) — comme ISAM"""
         try:
             logger.info(
-                "[TELNET] Testing connection to %s:%s...",
-                self.switch.host,
-                self.switch.telnet_port,
+                f"[SSH-LEGACY] Test connexion à "
+                f"{self.switch.host}:{self.switch.ssh_port} "
+                f"avec algorithmes legacy..."
+            )
+
+            cmd = [
+                "ssh",
+                "-o", "HostKeyAlgorithms=+ssh-rsa",
+                "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", f"ConnectTimeout={timeout}",
+                f"{self.switch.username}@{self.switch.host}",
+                "-p", str(self.switch.ssh_port),
+                "echo 'SSH Legacy connection successful'",
+            ]
+
+            result = subprocess.run(
+                cmd,
+                input=f"{self.switch.password}\n".encode(),
+                capture_output=True,
+                timeout=timeout + 5,
+            )
+
+            if result.returncode == 0:
+                msg = (
+                    "[SSH-LEGACY] Connexion réussie avec "
+                    "algorithmes legacy."
+                )
+                logger.info(msg)
+                return True, msg
+            else:
+                stderr = result.stderr.decode("utf-8", errors="ignore")
+                msg = f"[SSH-LEGACY] Connexion échouée: {stderr}"
+                logger.warning(msg)
+                return False, msg
+
+        except subprocess.TimeoutExpired:
+            msg = "[SSH-LEGACY] Timeout lors de la connexion."
+            logger.error(msg)
+            return False, msg
+        except Exception as e:
+            msg = f"[SSH-LEGACY] Erreur inattendue : {e}"
+            logger.exception(msg)
+            return False, msg
+
+    def test_telnet_connection(
+        self, timeout: int = 10
+    ) -> Tuple[bool, str]:
+        """Test Telnet — détection du prompt Cisco (> ou #)"""
+        try:
+            logger.info(
+                f"[TELNET] Test connexion à "
+                f"{self.switch.host}:{self.switch.telnet_port}..."
             )
             with telnetlib.Telnet(
-                self.switch.host, self.switch.telnet_port, timeout=timeout
+                self.switch.host,
+                self.switch.telnet_port,
+                timeout=timeout,
             ) as tn:
+                # Cisco envoie "Username:" ou "login:"
                 idx, _, text = tn.expect(
                     [b"sername:", b"ogin:", b">", b"#"],
                     timeout=timeout,
@@ -151,86 +162,84 @@ class CiscoConnectionService:
                     tn.write(
                         self.switch.password.encode("ascii") + b"\n"
                     )
+
                     time.sleep(2)
-                    result = tn.read_very_eager().decode(
-                        "utf-8", errors="replace"
+                    output = tn.read_very_eager().decode(
+                        "ascii", errors="ignore"
                     )
 
                     if (
-                        "%" in result
-                        or "failed" in result.lower()
-                        or "invalid" in result.lower()
+                        "#" in output
+                        or ">" in output
                     ):
                         msg = (
-                            f"[TELNET] Authentication failed for "
+                            "[TELNET] Connexion réussie, "
+                            "prompt détecté."
+                        )
+                        logger.info(msg)
+                        return True, msg
+
+                    if (
+                        "%" in output
+                        or "failed" in output.lower()
+                        or "invalid" in output.lower()
+                    ):
+                        msg = (
+                            f"[TELNET] Erreur d'authentification pour "
                             f"{self.switch.username}@"
                             f"{self.switch.host}:{self.switch.telnet_port}."
                         )
                         logger.error(msg)
                         return False, msg
 
-                msg = (
-                    f"[TELNET] Connection successful to "
-                    f"{self.switch.host}:{self.switch.telnet_port}."
-                )
+                    msg = (
+                        "[TELNET] Connexion établie mais "
+                        "prompt non reconnu."
+                    )
+                    logger.warning(msg + f" Output: {repr(output)}")
+                    return False, msg
+
+                # Got > or # directly (no auth required)
+                msg = "[TELNET] Connexion réussie, prompt détecté."
                 logger.info(msg)
                 return True, msg
 
-        except socket.timeout:
+        except (socket.timeout, ConnectionRefusedError) as e:
             msg = (
-                f"[TELNET] Connection timed out to "
-                f"{self.switch.host}:{self.switch.telnet_port} "
-                f"(timeout={timeout}s)."
+                f"[TELNET] Impossible de se connecter "
+                f"(timeout/refus) : {e}"
             )
             logger.error(msg)
             return False, msg
-
-        except ConnectionRefusedError:
-            msg = (
-                f"[TELNET] Connection refused by "
-                f"{self.switch.host}:{self.switch.telnet_port} "
-                f"— is Telnet enabled on the device?"
-            )
-            logger.error(msg)
-            return False, msg
-
         except socket.gaierror as e:
             msg = (
-                f"[TELNET] DNS resolution failed for host "
-                f"'{self.switch.host}' — {str(e)}"
+                f"[TELNET] Résolution DNS échouée pour "
+                f"'{self.switch.host}' — {e}"
             )
             logger.error(msg)
             return False, msg
-
-        except OSError as e:
-            msg = (
-                f"[TELNET] Network error connecting to "
-                f"{self.switch.host}:{self.switch.telnet_port} — {str(e)}"
-            )
-            logger.error(msg)
-            return False, msg
-
         except Exception as e:
-            msg = (
-                f"[TELNET] Unexpected error connecting to "
-                f"{self.switch.host}:{self.switch.telnet_port} — "
-                f"{type(e).__name__}: {str(e)}"
-            )
+            msg = f"[TELNET] Erreur inattendue : {e}"
             logger.exception(msg)
             return False, msg
 
-    # ──────────────────────────────────────────────────
-    #  SSH — Execute Command (interactive shell)
-    # ──────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════
+    #  EXÉCUTION DE COMMANDES
+    # ═══════════════════════════════════════════════════════
 
     def execute_ssh_command(
         self, command: str, enable: bool = False, timeout: int = 20
     ) -> Tuple[bool, str, str]:
+        """
+        Exécute une commande via SSH interactive shell.
+        Cisco nécessite un shell interactif pour les commandes IOS
+        (exec_command ne fonctionne pas sur la plupart des Cisco).
+        """
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         try:
-            logger.info("[SSH] Executing command: %r", command)
+            logger.info(f"[SSH] Exécution commande: {command!r}")
             client.connect(
                 hostname=self.switch.host,
                 port=self.switch.ssh_port,
@@ -244,10 +253,12 @@ class CiscoConnectionService:
             shell = client.invoke_shell()
             shell.settimeout(timeout)
 
+            # Attendre le prompt initial
             time.sleep(1)
             if shell.recv_ready():
                 shell.recv(65535)
 
+            # Mode enable si demandé
             if enable:
                 shell.send("enable\n")
                 time.sleep(1)
@@ -273,17 +284,20 @@ class CiscoConnectionService:
                                 return (
                                     False,
                                     "",
-                                    "Enable password rejected by device.",
+                                    "Enable password rejeté par le switch.",
                                 )
 
+            # Désactiver la pagination
             shell.send("terminal length 0\n")
             time.sleep(1)
             if shell.recv_ready():
                 shell.recv(65535)
 
+            # Envoyer la commande
             shell.send(command + "\n")
             time.sleep(3)
 
+            # Lire la sortie
             output = b""
             for _ in range(20):
                 if shell.recv_ready():
@@ -296,46 +310,100 @@ class CiscoConnectionService:
 
             decoded = output.decode("utf-8", errors="replace")
             logger.info(
-                "[SSH] Command executed, output length: %d", len(decoded)
+                "[SSH] Commande exécutée, longueur sortie: %d",
+                len(decoded),
             )
             return True, decoded, ""
 
         except socket.timeout:
             msg = (
-                f"[SSH] Command timed out after {timeout}s: '{command}'"
+                f"[SSH] Timeout après {timeout}s pour "
+                f"la commande: '{command}'"
             )
             logger.error(msg)
             return False, "", msg
-
         except paramiko.AuthenticationException:
             msg = (
-                f"[SSH] Authentication failed for "
+                f"[SSH] Erreur d'authentification pour "
                 f"{self.switch.username}@{self.switch.host}"
             )
             logger.error(msg)
             return False, "", msg
-
         except paramiko.SSHException as e:
             msg = (
-                f"[SSH] Protocol error executing '{command}': {str(e)}"
+                f"[SSH] Erreur protocole lors de "
+                f"l'exécution de '{command}': {e}"
             )
             logger.error(msg)
             return False, "", msg
-
         except Exception as e:
             msg = (
-                f"[SSH] Unexpected error executing '{command}': "
-                f"{type(e).__name__}: {str(e)}"
+                f"[SSH] Erreur inattendue lors de "
+                f"l'exécution de '{command}': "
+                f"{type(e).__name__}: {e}"
             )
             logger.exception(msg)
             return False, "", msg
-
         finally:
             client.close()
 
-    # ──────────────────────────────────────────────────
-    #  Telnet — Execute Command
-    # ──────────────────────────────────────────────────
+    def execute_ssh_command_legacy(
+        self, command: str, timeout: int = 20
+    ) -> Tuple[bool, str, str]:
+        """Exécute une commande SSH avec algorithmes legacy"""
+        try:
+            logger.info(
+                f"[SSH-LEGACY] Exécution commande: {command!r}"
+            )
+
+            cmd = [
+                "ssh",
+                "-o", "HostKeyAlgorithms=+ssh-rsa",
+                "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", f"ConnectTimeout={timeout}",
+                "-tt",  # Force TTY for Cisco IOS
+                f"{self.switch.username}@{self.switch.host}",
+                "-p", str(self.switch.ssh_port),
+                command,
+            ]
+
+            result = subprocess.run(
+                cmd,
+                input=f"{self.switch.password}\n".encode(),
+                capture_output=True,
+                timeout=timeout + 5,
+            )
+
+            out = result.stdout.decode("utf-8", errors="ignore")
+            err = result.stderr.decode("utf-8", errors="ignore")
+
+            if result.returncode == 0:
+                logger.info(
+                    "[SSH-LEGACY] Commande exécutée avec succès"
+                )
+                return True, out, err
+            else:
+                logger.warning(
+                    f"[SSH-LEGACY] Commande retournée code "
+                    f"{result.returncode}"
+                )
+                return False, out, err
+
+        except subprocess.TimeoutExpired:
+            msg = (
+                "[SSH-LEGACY] Timeout lors de l'exécution "
+                "de la commande."
+            )
+            logger.error(msg)
+            return False, "", msg
+        except Exception as e:
+            msg = (
+                f"[SSH-LEGACY] Erreur lors de l'exécution "
+                f"de la commande : {e}"
+            )
+            logger.exception(msg)
+            return False, "", msg
 
     def execute_telnet_command(
         self,
@@ -344,23 +412,36 @@ class CiscoConnectionService:
         timeout: int = 20,
         idle_timeout: float = 2.0,
     ) -> Tuple[bool, str, str]:
+        """
+        Exécute une commande via Telnet en lisant la sortie jusqu'à
+        ce qu'il n'y ait plus de données pendant idle_timeout secondes,
+        ou qu'on dépasse timeout au total.
+        """
         try:
-            logger.info("[TELNET] Executing command: %r", command)
+            logger.info(f"[TELNET] Exécution commande: {command!r}")
             with telnetlib.Telnet(
-                self.switch.host, self.switch.telnet_port, timeout=timeout
+                self.switch.host,
+                self.switch.telnet_port,
+                timeout=timeout,
             ) as tn:
-                tn.expect([b"sername:", b"ogin:"], timeout=timeout)
+                # --- Login ---
+                tn.expect(
+                    [b"sername:", b"ogin:"], timeout=timeout
+                )
                 tn.write(
                     self.switch.username.encode("ascii") + b"\n"
                 )
+
                 tn.expect([b"assword:"], timeout=timeout)
                 tn.write(
                     self.switch.password.encode("ascii") + b"\n"
                 )
 
+                # On laisse le prompt arriver puis on vide le buffer
                 time.sleep(1)
                 tn.read_very_eager()
 
+                # Mode enable si demandé
                 if enable:
                     tn.write(b"enable\n")
                     time.sleep(1)
@@ -386,130 +467,188 @@ class CiscoConnectionService:
                             return (
                                 False,
                                 "",
-                                "Enable password rejected by device.",
+                                "Enable password rejeté par le switch.",
                             )
 
+                # Désactiver la pagination
                 tn.write(b"terminal length 0\n")
                 time.sleep(1)
                 tn.read_very_eager()
 
-                tn.write(command.encode("ascii") + b"\n")
-                time.sleep(3)
+                # --- Envoi de la commande ---
+                for line in command.split("\n"):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    tn.write(line.encode("ascii") + b"\n")
+                    time.sleep(0.2)
 
+                # --- Lecture de la sortie ---
+                time.sleep(1)  # post_send_delay
                 end_time = time.time() + timeout
                 last_data_time = time.time()
-                buf = b""
+                buffer = b""
 
                 while time.time() < end_time:
                     chunk = tn.read_very_eager()
                     if chunk:
-                        buf += chunk
+                        buffer += chunk
                         last_data_time = time.time()
                     else:
-                        if buf and (
+                        if buffer and (
                             time.time() - last_data_time
                         ) > idle_timeout:
                             break
                         time.sleep(0.2)
 
-                output = buf.decode("utf-8", errors="replace")
-                logger.info(
-                    "[TELNET] Command executed, output length: %d",
-                    len(output),
-                )
+                output = buffer.decode("utf-8", errors="replace")
+                logger.info("[TELNET] Commande exécutée.")
                 return True, output, ""
 
-        except socket.timeout:
-            msg = f"[TELNET] Command timed out: '{command}'"
+        except (socket.timeout, ConnectionRefusedError) as e:
+            msg = (
+                f"[TELNET] Impossible de se connecter "
+                f"(timeout/refus) : {e}"
+            )
             logger.error(msg)
             return False, "", msg
-
         except EOFError as e:
             msg = (
-                f"[TELNET] Connection closed during '{command}': "
-                f"{str(e)}"
+                f"[TELNET] Connexion fermée pendant "
+                f"'{command}': {e}"
             )
             logger.error(msg)
             return False, "", msg
-
-        except ConnectionRefusedError:
-            msg = (
-                f"[TELNET] Connection refused by "
-                f"{self.switch.host}:{self.switch.telnet_port}"
-            )
-            logger.error(msg)
-            return False, "", msg
-
         except Exception as e:
             msg = (
-                f"[TELNET] Error executing '{command}': "
-                f"{type(e).__name__}: {str(e)}"
+                f"[TELNET] Erreur lors de l'exécution "
+                f"de la commande : {e}"
             )
             logger.exception(msg)
             return False, "", msg
 
-    # ──────────────────────────────────────────────────
-    #  Strategy — test connection with fallback
-    # ──────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════
+    #  TESTS AVEC STRATÉGIES (identique à ISAM)
+    # ═══════════════════════════════════════════════════════
 
     def test_connection_preference(
         self, timeout: int = 10
-    ) -> Tuple[bool, Optional[Protocol], str]:
+    ) -> Tuple[bool, Optional[str], str]:
+        """
+        Stratégie identique à ISAMConnectionService :
+        SSH → SSH-Legacy → Telnet (si auto)
+        """
+        # Préférence Telnet uniquement
         if self.switch.protocol_preference == "telnet":
             ok, msg = self.test_telnet_connection(timeout=timeout)
             return ok, "telnet" if ok else None, msg
 
+        # Essai SSH standard
         ssh_ok, ssh_msg = self.test_ssh_connection(timeout=timeout)
         if ssh_ok:
             return True, "ssh", ssh_msg
 
-        if self.switch.protocol_preference == "ssh":
-            return False, None, ssh_msg
+        # SSH legacy
+        logger.info(
+            "[STRATEGY] SSH standard échoué, "
+            "tentative SSH legacy..."
+        )
+        ssh_legacy_ok, ssh_legacy_msg = (
+            self.test_ssh_connection_legacy(timeout=timeout)
+        )
+        if ssh_legacy_ok:
+            return True, "ssh-legacy", ssh_legacy_msg
 
-        logger.info("[STRATEGY] SSH failed, trying Telnet...")
-        telnet_ok, telnet_msg = self.test_telnet_connection(timeout=timeout)
+        # Si préférence SSH uniquement, on s'arrête
+        if self.switch.protocol_preference == "ssh":
+            return (
+                False,
+                None,
+                f"SSH: {ssh_msg} ; SSH-LEGACY: {ssh_legacy_msg}",
+            )
+
+        # Auto : fallback Telnet
+        logger.info(
+            "[STRATEGY] SSH échoué, tentative Telnet..."
+        )
+        telnet_ok, telnet_msg = self.test_telnet_connection(
+            timeout=timeout
+        )
         if telnet_ok:
             return True, "telnet", telnet_msg
 
-        return False, None, f"SSH: {ssh_msg} | TELNET: {telnet_msg}"
-
-    # ──────────────────────────────────────────────────
-    #  Strategy — execute command with fallback
-    # ──────────────────────────────────────────────────
+        return (
+            False,
+            None,
+            f"SSH: {ssh_msg} ; SSH-LEGACY: {ssh_legacy_msg} "
+            f"; TELNET: {telnet_msg}",
+        )
 
     def execute_command_preference(
         self,
         command: str,
         enable: bool = False,
         timeout: int = 20,
-    ) -> Tuple[bool, Optional[Protocol], str, str]:
+    ) -> Tuple[bool, Optional[str], str, str]:
+        """
+        Stratégie d'exécution identique à ISAMConnectionService :
+        SSH → SSH-Legacy → Telnet (si auto)
+        """
+        # Préférence Telnet uniquement
         if self.switch.protocol_preference == "telnet":
             ok, out, err = self.execute_telnet_command(
                 command, enable=enable, timeout=timeout
             )
             return ok, "telnet" if ok else None, out, err
 
+        # Essai SSH standard
         ok, out, err = self.execute_ssh_command(
             command, enable=enable, timeout=timeout
         )
         if ok:
             return True, "ssh", out, err
 
-        if self.switch.protocol_preference == "ssh":
-            return False, None, out, err
+        # SSH legacy
+        logger.info(
+            "[STRATEGY] SSH standard échoué, "
+            "tentative SSH legacy..."
+        )
+        ok_legacy, out_legacy, err_legacy = (
+            self.execute_ssh_command_legacy(command, timeout=timeout)
+        )
+        if ok_legacy:
+            return True, "ssh-legacy", out_legacy, err_legacy
 
-        logger.info("[STRATEGY] SSH command failed, trying Telnet...")
-        ok_tel, out_tel, err_tel = self.execute_telnet_command(
+        # Si préférence SSH uniquement, on s'arrête
+        if self.switch.protocol_preference == "ssh":
+            return (
+                False,
+                None,
+                out,
+                f"SSH: {err} ; SSH-LEGACY: {err_legacy}",
+            )
+
+        # Auto : fallback Telnet
+        logger.info(
+            "[STRATEGY] SSH échoué, tentative Telnet..."
+        )
+        ok_tel, out_tel, msg_tel = self.execute_telnet_command(
             command, enable=enable, timeout=timeout
         )
         if ok_tel:
-            return True, "telnet", out_tel, err_tel
+            return True, "telnet", out_tel, msg_tel
 
-        return False, None, "", f"SSH: {err} | TELNET: {err_tel}"
+        return (
+            False,
+            None,
+            "",
+            f"SSH: {err} ; SSH-LEGACY: {err_legacy} "
+            f"; TELNET: {msg_tel}",
+        )
 
-    # ──────────────────────────────────────────────────
-    #  Port Status (show interfaces status)
-    # ──────────────────────────────────────────────────
+    # ═══════════════════════════════════════════════════════
+    #  PORT STATUS / CONFIG / VLAN CHANGE
+    # ═══════════════════════════════════════════════════════
 
     def get_all_port_status(
         self, timeout: int = 20
@@ -525,6 +664,7 @@ class CiscoConnectionService:
 
         ports = parse_interfaces_status(output)
 
+        # Essayer de récupérer les MAC (best-effort)
         try:
             mac_ok, _, mac_out, _ = self.execute_command_preference(
                 "show mac address-table", timeout=15
@@ -534,13 +674,9 @@ class CiscoConnectionService:
                 for p in ports:
                     p["mac_address"] = mac_map.get(p["port_label"])
         except Exception as e:
-            logger.debug("MAC table fetch skipped: %s", e)
+            logger.debug("MAC table fetch ignoré: %s", e)
 
         return True, proto, ports, None
-
-    # ──────────────────────────────────────────────────
-    #  Port Config
-    # ──────────────────────────────────────────────────
 
     def get_port_running_config(
         self, port_label: str, timeout: int = 15
@@ -549,10 +685,6 @@ class CiscoConnectionService:
         full_name = expand_interface_name(port_label)
         cmd = f"show running-config interface {full_name}"
         return self.execute_command_preference(cmd, timeout=timeout)
-
-    # ──────────────────────────────────────────────────
-    #  VLAN Change (config mode)
-    # ──────────────────────────────────────────────────
 
     def change_vlan(
         self,
@@ -563,7 +695,7 @@ class CiscoConnectionService:
         timeout: int = 30,
     ) -> Tuple[bool, Optional[str], str, Optional[str]]:
         """
-        Change VLAN on a port.
+        Change VLAN on a port. Uses config mode commands.
         Returns (success, protocol_used, output, error).
         """
         full_name = expand_interface_name(port_label)
@@ -593,32 +725,43 @@ class CiscoConnectionService:
 
         script = "\n".join(commands)
 
+        # Préférence Telnet
         if self.switch.protocol_preference == "telnet":
             ok, out, err = self.execute_telnet_command(
-                script, timeout=timeout
+                script, enable=True, timeout=timeout
             )
             return ok, "telnet" if ok else None, out, err
 
+        # SSH config
         ok, out, err = self._ssh_config_commands(commands, timeout)
         if ok:
             return True, "ssh", out, err
 
+        # SSH uniquement → arrêt
         if self.switch.protocol_preference == "ssh":
             return False, None, out, err
 
-        logger.info("[STRATEGY] SSH config failed, trying Telnet...")
+        # Auto : fallback Telnet
+        logger.info(
+            "[STRATEGY] SSH config échoué, tentative Telnet..."
+        )
         ok_t, out_t, err_t = self.execute_telnet_command(
-            script, timeout=timeout
+            script, enable=True, timeout=timeout
         )
         if ok_t:
             return True, "telnet", out_t, err_t
 
-        return False, None, "", f"SSH: {err} | TELNET: {err_t}"
+        return (
+            False,
+            None,
+            "",
+            f"SSH: {err} ; TELNET: {err_t}",
+        )
 
     def _ssh_config_commands(
         self, commands: List[str], timeout: int = 30
     ) -> Tuple[bool, str, str]:
-        """Send multiple config commands via SSH interactive shell."""
+        """Envoie des commandes de config via SSH interactive shell."""
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
@@ -639,11 +782,13 @@ class CiscoConnectionService:
             if shell.recv_ready():
                 shell.recv(65535)
 
+            # Désactiver la pagination
             shell.send("terminal length 0\n")
             time.sleep(0.5)
             if shell.recv_ready():
                 shell.recv(65535)
 
+            # Envoyer les commandes une par une
             for cmd in commands:
                 shell.send(cmd.strip() + "\n")
                 time.sleep(0.3)
@@ -665,15 +810,15 @@ class CiscoConnectionService:
                 return (
                     False,
                     decoded,
-                    "Device returned an error in command output.",
+                    "Le switch a retourné une erreur.",
                 )
 
             return True, decoded, ""
 
         except Exception as e:
             msg = (
-                f"[SSH-CONFIG] Error: "
-                f"{type(e).__name__}: {str(e)}"
+                f"[SSH-CONFIG] Erreur : "
+                f"{type(e).__name__}: {e}"
             )
             logger.error(msg)
             return False, "", msg
@@ -681,13 +826,246 @@ class CiscoConnectionService:
             client.close()
 
 
-# ──────────────────────────────────────────────────
-#  Parsers
-# ──────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════
+#  SESSION TELNET PERSISTANTE (multi-commandes sur une seule
+#  connexion) — identique à ISAMPersistentTelnet
+# ═══════════════════════════════════════════════════════════════════
+
+
+class CiscoPersistentTelnet:
+    """
+    Session Telnet persistante pour Cisco : UNE connexion, N commandes.
+
+    Résout les mêmes problèmes que ISAMPersistentTelnet :
+      1. Saturation des sessions (limite de sessions simultanées)
+      2. idle_timeout trop court
+    """
+
+    def __init__(self, switch: CiscoSwitch, timeout: int = 30):
+        self.switch = switch
+        self.timeout = timeout
+        self._tn: Optional[telnetlib.Telnet] = None
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    # ── connect ─────────────────────────────────────────
+
+    def connect(self) -> Tuple[bool, str]:
+        """
+        Ouvre la connexion Telnet et effectue le login
+        UNE SEULE FOIS.
+        """
+        try:
+            logger.info(
+                "[TELNET-PERSIST] Ouverture session vers %s:%s …",
+                self.switch.host,
+                self.switch.telnet_port,
+            )
+            self._tn = telnetlib.Telnet(
+                self.switch.host,
+                self.switch.telnet_port,
+                timeout=self.timeout,
+            )
+
+            # ── Login ────────────────────────────────────
+            idx, _, _ = self._tn.expect(
+                [
+                    b"sername:",
+                    b"Username:",
+                    b"ogin:",
+                    b"Login:",
+                ],
+                timeout=self.timeout,
+            )
+            if idx == -1:
+                self._cleanup()
+                return (
+                    False,
+                    "[TELNET-PERSIST] Prompt login non détecté.",
+                )
+
+            self._tn.write(
+                self.switch.username.encode("ascii") + b"\n"
+            )
+
+            idx2, _, _ = self._tn.expect(
+                [b"Password:", b"password:", b"assword:"],
+                timeout=self.timeout,
+            )
+            if idx2 == -1:
+                self._cleanup()
+                return (
+                    False,
+                    "[TELNET-PERSIST] Prompt password non détecté.",
+                )
+
+            self._tn.write(
+                self.switch.password.encode("ascii") + b"\n"
+            )
+
+            # Laisser le MOTD / bannière arriver
+            time.sleep(2.0)
+            try:
+                initial = self._tn.read_very_eager().decode(
+                    "ascii", errors="ignore"
+                )
+                # Vérifier l'authentification
+                if (
+                    "%" in initial
+                    or "failed" in initial.lower()
+                    or "invalid" in initial.lower()
+                ):
+                    self._cleanup()
+                    return (
+                        False,
+                        "[TELNET-PERSIST] Authentification échouée.",
+                    )
+            except Exception:
+                pass
+
+            # Désactiver la pagination
+            self._tn.write(b"terminal length 0\n")
+            time.sleep(0.5)
+            try:
+                self._tn.read_very_eager()
+            except Exception:
+                pass
+
+            self._connected = True
+            msg = "[TELNET-PERSIST] Session ouverte avec succès."
+            logger.info(msg)
+            return True, msg
+
+        except Exception as e:
+            self._cleanup()
+            msg = f"[TELNET-PERSIST] Échec connexion : {e}"
+            logger.exception(msg)
+            return False, msg
+
+    # ── close ───────────────────────────────────────────
+
+    def close(self):
+        """Ferme proprement la session."""
+        self._cleanup()
+        logger.info("[TELNET-PERSIST] Session fermée.")
+
+    def _cleanup(self):
+        if self._tn:
+            try:
+                self._tn.close()
+            except Exception:
+                pass
+            self._tn = None
+        self._connected = False
+
+    # ── exécution d'une commande ────────────────────────
+
+    def execute(
+        self,
+        command: str,
+        idle_timeout: float = 3.0,
+        post_send_delay: float = 1.0,
+    ) -> Tuple[bool, str, str]:
+        """
+        Exécute une commande sur la session déjà ouverte.
+
+        Paramètres :
+          - idle_timeout : secondes sans nouvelles données
+            avant d'arrêter la lecture
+          - post_send_delay : pause après envoi de la commande
+            avant de commencer à lire
+
+        Retourne (success, output, error_message).
+        """
+        if not self._connected or not self._tn:
+            return (
+                False,
+                "",
+                "[TELNET-PERSIST] Session non connectée.",
+            )
+
+        try:
+            # Vider d'éventuels résidus du buffer
+            try:
+                self._tn.read_very_eager()
+            except Exception:
+                pass
+
+            logger.debug("[TELNET-PERSIST] >>> %r", command)
+
+            # Envoi de la commande (support multi-lignes)
+            for line in command.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                self._tn.write(line.encode("ascii") + b"\n")
+                time.sleep(0.3)
+
+            # ── Pause post-envoi ─────────────────────────
+            time.sleep(post_send_delay)
+
+            # ── Lecture de la réponse ────────────────────
+            end_time = time.time() + self.timeout
+            last_data_time = time.time()
+            buf = b""
+
+            while time.time() < end_time:
+                try:
+                    chunk = self._tn.read_very_eager()
+                except EOFError:
+                    self._connected = False
+                    logger.warning(
+                        "[TELNET-PERSIST] Connexion fermée "
+                        "par le switch."
+                    )
+                    break
+
+                if chunk:
+                    buf += chunk
+                    last_data_time = time.time()
+                else:
+                    if buf and (
+                        time.time() - last_data_time
+                    ) > idle_timeout:
+                        break
+                    time.sleep(0.2)
+
+            output = buf.decode("ascii", errors="ignore")
+            logger.debug(
+                "[TELNET-PERSIST] <<< %d octets pour %r",
+                len(buf),
+                command,
+            )
+            return True, output, ""
+
+        except Exception as e:
+            self._connected = False
+            msg = f"[TELNET-PERSIST] Erreur exécution : {e}"
+            logger.exception(msg)
+            return False, "", msg
+
+    # ── context-manager ─────────────────────────────────
+
+    def __enter__(self):
+        ok, msg = self.connect()
+        if not ok:
+            raise ConnectionError(msg)
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  PARSERS
+# ═══════════════════════════════════════════════════════════════════
 
 
 def parse_show_version(output: str) -> dict:
-    """Parse 'show version' into structured data."""
+    """Parse 'show version' en données structurées."""
     info: dict = {
         "hostname": None,
         "model": None,
@@ -701,7 +1079,7 @@ def parse_show_version(output: str) -> dict:
         if m:
             info["hostname"] = m.group(1)
     except Exception as e:
-        logger.debug("Parse hostname failed: %s", e)
+        logger.debug("Parse hostname échoué: %s", e)
 
     try:
         m = re.search(
@@ -711,7 +1089,7 @@ def parse_show_version(output: str) -> dict:
         if m:
             info["model"] = m.group(1)
     except Exception as e:
-        logger.debug("Parse model failed: %s", e)
+        logger.debug("Parse model échoué: %s", e)
 
     try:
         m = re.search(
@@ -720,27 +1098,29 @@ def parse_show_version(output: str) -> dict:
         if m:
             info["ios_version"] = m.group(1).rstrip(",")
     except Exception as e:
-        logger.debug("Parse IOS version failed: %s", e)
+        logger.debug("Parse IOS version échoué: %s", e)
 
     try:
-        m = re.search(r"[Pp]rocessor\s+board\s+ID\s+(\S+)", output)
+        m = re.search(
+            r"[Pp]rocessor\s+board\s+ID\s+(\S+)", output
+        )
         if m:
             info["serial_number"] = m.group(1)
     except Exception as e:
-        logger.debug("Parse serial failed: %s", e)
+        logger.debug("Parse serial échoué: %s", e)
 
     try:
         m = re.search(r"uptime is\s+(.+)", output)
         if m:
             info["uptime"] = m.group(1).strip()
     except Exception as e:
-        logger.debug("Parse uptime failed: %s", e)
+        logger.debug("Parse uptime échoué: %s", e)
 
     return info
 
 
 def parse_interfaces(output: str) -> List[dict]:
-    """Parse 'show ip interface brief' output."""
+    """Parse 'show ip interface brief'."""
     interfaces: List[dict] = []
     try:
         for line in output.strip().split("\n"):
@@ -766,18 +1146,19 @@ def parse_interfaces(output: str) -> List[dict]:
                     }
                 )
     except Exception as e:
-        logger.warning("Failed to parse interfaces: %s", e)
+        logger.warning("Échec parsing interfaces: %s", e)
 
     return interfaces
 
 
 def parse_vlans(output: str) -> List[dict]:
-    """Parse 'show vlan brief' output."""
+    """Parse 'show vlan brief'."""
     vlans: List[dict] = []
     try:
         for line in output.strip().split("\n"):
             m = re.match(
-                r"(\d+)\s+(\S+)\s+(active|act/unsup|suspend)\s*(.*)",
+                r"(\d+)\s+(\S+)\s+(active|act/unsup|suspend)"
+                r"\s*(.*)",
                 line.strip(),
             )
             if m:
@@ -795,31 +1176,13 @@ def parse_vlans(output: str) -> List[dict]:
                     }
                 )
     except Exception as e:
-        logger.warning("Failed to parse VLANs: %s", e)
+        logger.warning("Échec parsing VLANs: %s", e)
 
     return vlans
 
 
-# ──────────────────────────────────────────────────
-#  Helper for health checks
-# ──────────────────────────────────────────────────
-
-
-def test_connection_for_switch(
-    switch: CiscoSwitch, timeout: int = 10
-) -> Tuple[bool, Optional[str], str, int]:
-    """
-    Returns (success, protocol_used, message, response_time_ms).
-    """
-    service = CiscoConnectionService(switch)
-    start = time.time()
-    ok, proto, msg = service.test_connection_preference(timeout=timeout)
-    duration_ms = int((time.time() - start) * 1000)
-    return ok, proto, msg, duration_ms
-
-
 def parse_running_config_vlan(output: str) -> Optional[str]:
-    """Extract current VLAN from show running-config interface output."""
+    """Extrait le VLAN courant du running-config interface."""
     m = re.search(r"switchport access vlan (\d+)", output)
     if m:
         return "Access " + m.group(1)
@@ -855,7 +1218,7 @@ def extract_port_number(label: str) -> int:
 
 
 def parse_interfaces_status(output: str) -> List[dict]:
-    """Parse 'show interfaces status' output."""
+    """Parse 'show interfaces status'."""
     ports: List[dict] = []
     status_keywords = (
         "connected",
@@ -878,11 +1241,17 @@ def parse_interfaces_status(output: str) -> List[dict]:
         r"(\S+)"
         r"(?:\s+(.+))?$"
     )
-    physical_prefixes = ("Gi", "Fa", "Te", "Tw", "Fo", "Hu", "Et")
+    physical_prefixes = (
+        "Gi", "Fa", "Te", "Tw", "Fo", "Hu", "Et",
+    )
 
     for line in output.strip().split("\n"):
         line = line.rstrip()
-        if not line or line.startswith("Port") or line.startswith("-"):
+        if (
+            not line
+            or line.startswith("Port")
+            or line.startswith("-")
+        ):
             continue
         m = pattern.match(line)
         if not m:
@@ -911,9 +1280,8 @@ def parse_mac_table(output: str) -> dict:
     for line in output.strip().split("\n"):
         m = re.match(
             r"\s*\d+\s+"
-            r"([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})\s+"
-            r"\S+\s+"
-            r"(\S+)",
+            r"([0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4})"
+            r"\s+\S+\s+(\S+)",
             line.strip(),
         )
         if m:
@@ -923,3 +1291,22 @@ def parse_mac_table(output: str) -> dict:
             )
             mac_map[m.group(2)] = mac
     return mac_map
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Helper pour les health-checks
+# ═══════════════════════════════════════════════════════════════════
+
+
+def test_connection_for_switch(
+    switch: CiscoSwitch, timeout: int = 10
+) -> Tuple[bool, Optional[str], str, int]:
+    """
+    Helper pour les health-checks.
+    Retourne (success, protocol_used, message, response_time_ms)
+    """
+    service = CiscoConnectionService(switch)
+    start = time.time()
+    ok, proto, msg = service.test_connection_preference(timeout=timeout)
+    duration_ms = int((time.time() - start) * 1000)
+    return ok, proto, msg, duration_ms
