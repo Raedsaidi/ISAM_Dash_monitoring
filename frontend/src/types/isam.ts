@@ -1,10 +1,10 @@
 export interface Junction {
   id: string;
   name: string;
-  type: 'tcp' | 'ssl' | 'mutual';
+  type: "tcp" | "ssl" | "mutual";
   backendServer: string;
   port: number;
-  status: 'active' | 'inactive' | 'error';
+  status: "active" | "inactive" | "error";
   healthCheck: boolean;
   lastChecked: string;
   responseTime: number;
@@ -15,7 +15,7 @@ export interface ReverseProxyInstance {
   name: string;
   hostname: string;
   port: number;
-  status: 'running' | 'stopped' | 'warning';
+  status: "running" | "stopped" | "warning";
   junctions: Junction[];
   sslEnabled: boolean;
   httpEnabled: boolean;
@@ -29,11 +29,10 @@ export interface AuditLog {
   action: string;
   user: string;
   resource: string;
-  result: 'success' | 'failure' | 'warning';
+  result: "success" | "failure" | "warning";
   details: string;
   ipAddress: string;
 }
-
 
 export interface SystemMetrics {
   cpuUsage: number;
@@ -46,4 +45,15 @@ export interface SystemMetrics {
   uptime: string;
 }
 
-export type NavSection = 'overview' | 'junctions' |  'audit-logs' |'user-management'|'wan-templates' ;
+// src/types/isam.ts
+// src/types/isam.ts
+// src/types/isam.ts  (add "vlan-management" to the union)
+export type NavSection =
+  | "overview"
+  | "junctions"
+  | "audit-logs"
+  | "user-management"
+  | "wan-templates"
+  | "switch-management"
+  | "port-management"
+  | "vlan-management";

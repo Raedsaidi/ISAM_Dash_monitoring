@@ -44,14 +44,14 @@ def register_self(
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ce nom d'utilisateur existe déjà.",
+            detail="this username already exists.",
         )
 
     existing_email = db.query(User).filter(User.email == user_in.email).first()
     if existing_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cet email est déjà utilisé.",
+            detail="this email is already in use.",
         )
 
     user = User(
@@ -81,31 +81,31 @@ def login(
     if not username or not password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username et mot de passe sont obligatoires.",
+            detail="Username and password are required.",
         )
 
     if not (3 <= len(username) <= 32):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Le nom d'utilisateur doit contenir entre 3 et 32 caractères.",
+            detail="Username must be between 3 and 32 characters.",
         )
     if not (8 <= len(password) <= 72):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Le mot de passe doit contenir entre 8 et 72 caractères.",
+            detail="Password must be between 8 and 72 characters.",
         )
 
     user = db.query(User).filter(User.username == username).first()
     if not user or not verify_password(password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Identifiants invalides.",
+            detail="Invalid credentials.",
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Compte utilisateur désactivé.",
+            detail="User account is disabled.",
         )
 
     access_token_expires = timedelta(
@@ -137,28 +137,33 @@ def refresh_access_token(
     if not raw_refresh_token:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="refresh_token manquant.",
+            detail="refresh_token missing.",
         )
 
     stored: RefreshToken | None = get_stored_refresh_token(db, raw_refresh_token)
     if stored is None or stored.revoked:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token invalide.",
+            detail="Refresh token invalid.",
         )
 
-    if stored.expires_at < datetime.now(timezone.utc):
+    expires_at = stored.expires_at 
+    now_utc = datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if expires_at < now_utc:
         revoke_refresh_token(db, stored)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token expiré.",
+            detail="Refresh token expired.",
         )
 
     user = stored.user
     if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utilisateur invalide ou désactivé.",
+            detail="Invalid or disabled user.",
         )
 
     revoke_refresh_token(db, stored)
@@ -231,21 +236,21 @@ def create_user_admin(
     if current_user.role == UserRole.ADMIN.value and user_in.role != UserRole.USER:
         raise HTTPException(
             status_code=403,
-            detail="Un ADMIN ne peut créer que des USER.",
+            detail="An ADMIN can only create USER accounts.",
         )
 
     existing = db.query(User).filter(User.username == user_in.username).first()
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ce nom d'utilisateur existe déjà.",
+            detail="This username already exists.",
         )
 
     existing_email = db.query(User).filter(User.email == user_in.email).first()
     if existing_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cet email est déjà utilisé.",
+            detail="This email is already in use.",
         )
 
     user = User(
@@ -273,7 +278,7 @@ def create_user_admin(
     if user_in.role == UserRole.USER and not created_ports:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Au moins un port est requis pour un utilisateur USER.",
+            detail="At least one port is required for a USER account.",
         )
 
     # Remplir les champs legacy uniquement si on a au moins un port
@@ -358,27 +363,27 @@ def update_user_admin(
         .first()
     )
     if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur non trouvé.")
+        raise HTTPException(status_code=404, detail="User not found.")
 
     # ADMIN ne peut modifier que des USER
     if current_user.role == UserRole.ADMIN.value and user.role != UserRole.USER.value:
-        raise HTTPException(status_code=403, detail="Un ADMIN ne peut modifier que des USER.")
+        raise HTTPException(status_code=403, detail="An ADMIN can only modify USER accounts.")
 
     # Si on tente de modifier role => SUPER_ADMIN only
     if user_in.role is not None and current_user.role != UserRole.SUPER_ADMIN.value:
-        raise HTTPException(status_code=403, detail="Seul un SUPER_ADMIN peut changer les rôles.")
+        raise HTTPException(status_code=403, detail="Only a SUPER_ADMIN can change roles.")
 
     # Protéger SUPER_ADMIN contre modifications par non superadmin
     if user.role == UserRole.SUPER_ADMIN.value and current_user.role != UserRole.SUPER_ADMIN.value:
-        raise HTTPException(status_code=403, detail="Impossible de modifier un SUPER_ADMIN.")
+        raise HTTPException(status_code=403, detail="Impossible to modify a SUPER_ADMIN.")
 
     # Interdire de changer ton propre rôle
     if user_in.role is not None and user.id == current_user.id and user_in.role.value != user.role:
-        raise HTTPException(status_code=403, detail="Vous ne pouvez pas modifier votre propre rôle.")
+        raise HTTPException(status_code=403, detail="You cannot modify your own role.")
 
     # Interdire de changer le rôle d'un SUPER_ADMIN (même par SUPER_ADMIN)
     if user_in.role is not None and user.role == UserRole.SUPER_ADMIN.value:
-        raise HTTPException(status_code=403, detail="Impossible de modifier le rôle d'un SUPER_ADMIN.")
+        raise HTTPException(status_code=403, detail="Impossible to modify the role of a SUPER_ADMIN.")
 
     # --- role ---
     if user_in.role is not None:
@@ -394,7 +399,7 @@ def update_user_admin(
         if existing_email:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cet email est déjà utilisé.",
+                detail="This email is already in use.",
             )
         user.email = str(user_in.email)
 
@@ -428,7 +433,7 @@ def update_user_admin(
         if not created_ports:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Au moins un port valide est requis.",
+                detail="At least one valid port is required.",
             )
 
         first_port = created_ports[0]
@@ -456,20 +461,20 @@ def delete_user(
     """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="Utilisateur non trouvé.")
+        raise HTTPException(status_code=404, detail="User not found.")
 
     # Cannot delete yourself
     if user.id == current_user.id:
         raise HTTPException(
             status_code=400,
-            detail="Vous ne pouvez pas supprimer votre propre compte.",
+            detail="You cannot delete your own account.",
         )
 
     # Nobody can delete a SUPER_ADMIN
     if user.role == UserRole.SUPER_ADMIN.value:
         raise HTTPException(
             status_code=403,
-            detail="Les utilisateurs SUPER_ADMIN ne peuvent pas être supprimés.",
+            detail="Un account with SUPER_ADMIN role cannot be deleted.",
         )
 
     # ADMIN can only delete USER
@@ -477,7 +482,7 @@ def delete_user(
         if user.role != UserRole.USER.value:
             raise HTTPException(
                 status_code=403,
-                detail="Un ADMIN ne peut supprimer que des USER.",
+                detail="An ADMIN can only delete USER accounts.",
             )
 
     db.delete(user)

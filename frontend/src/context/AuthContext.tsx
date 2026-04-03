@@ -162,7 +162,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
       // Refresh 60s before expiry, minimum 5s
       const msUntilExpiry = expiryMs - Date.now();
-      const refreshIn = Math.max(msUntilExpiry - 60_000, 5_000);
+      const refreshIn = Math.max(msUntilExpiry - 10_000, 5_000);
 
       refreshTimerRef.current = setTimeout(() => {
         doRefreshToken();

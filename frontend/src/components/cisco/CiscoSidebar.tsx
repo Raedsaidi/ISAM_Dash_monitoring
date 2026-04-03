@@ -5,6 +5,9 @@ import { NavSection } from "../../types/isam";
 import {
   LayoutDashboard,
   Users,
+  Network,
+  Cable,
+  Layers,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -23,19 +26,37 @@ export default function CiscoSidebar({
   collapsed,
   onToggle,
 }: CiscoSidebarProps) {
-  const navItems: { section: NavSection; label: string; icon: React.ReactNode }[] =
-    [
-      {
-        section: "overview",
-        label: "Overview",
-        icon: <LayoutDashboard size={20} />,
-      },
-      {
-        section: "user-management",
-        label: "User Management",
-        icon: <Users size={20} />,
-      },
-    ];
+  const navItems: {
+    section: NavSection;
+    label: string;
+    icon: React.ReactNode;
+  }[] = [
+    {
+      section: "overview",
+      label: "Overview",
+      icon: <LayoutDashboard size={20} />,
+    },
+    {
+      section: "user-management",
+      label: "User Management",
+      icon: <Users size={20} />,
+    },
+    {
+      section: "switch-management",
+      label: "Switch Management",
+      icon: <Network size={20} />,
+    },
+    {
+      section: "port-management",
+      label: "Port Management",
+      icon: <Cable size={20} />,
+    },
+    {
+      section: "vlan-management",
+      label: "VLAN Management",
+      icon: <Layers size={20} />,
+    },
+  ];
 
   return (
     <aside
@@ -79,7 +100,6 @@ export default function CiscoSidebar({
           </button>
         ))}
       </nav>
-
     </aside>
   );
 }

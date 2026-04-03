@@ -22,6 +22,9 @@ import CiscoSidebar from "./components/cisco/CiscoSidebar";
 import CiscoHeader from "./components/cisco/CiscoHeader";
 import CiscoOverviewSection from "./components/cisco/CiscoOverviewSection";
 import CiscoUserManagementSection from "./components/cisco/CiscoUserManagementSection";
+import CiscoSwitchManagementSection from "./components/cisco/CiscoSwitchManagementSection";
+import CiscoPortManagementSection from "./components/cisco/CiscoPortManagementSection";
+import CiscoVlanManagementSection from "./components/cisco/CiscoVlanManagementSection";
 
 import ProductSelection from "./components/ProductSelection";
 import LoginForm from "./components/auth/LoginForm";
@@ -53,6 +56,18 @@ const isamSectionMeta: Record<NavSection, { title: string; subtitle: string }> =
       title: "WAN Templates",
       subtitle: "Configure WAN connection templates",
     },
+    "switch-management": {
+      title: "Switch Management",
+      subtitle: "Manage network switches",
+    },
+    "port-management": {
+      title: "Port Management",
+      subtitle: "View and control switch ports",
+    },
+    "vlan-management": {
+      title: "VLAN Management",
+      subtitle: "View and manage VLANs",
+    },
   };
 
 /* ------------ Cisco metadata ------------ */
@@ -68,6 +83,20 @@ const ciscoSectionMeta: Partial<
     title: "Cisco User Management",
     subtitle: "Manage Cisco-related users and roles",
   },
+  "switch-management": {
+    title: "Cisco Switch Management",
+    subtitle: "View and manage all network switches in your infrastructure",
+  },
+  "port-management": {
+    title: "Cisco Port Management",
+    subtitle:
+      "View and control individual switch ports — lock or unlock to manage access",
+  },
+  "vlan-management": {
+    title: "Cisco VLAN Management",
+    subtitle:
+      "Create, view, and delete VLANs — assign VLANs to ports in Access or Trunk mode",
+  },
 };
 
 function App() {
@@ -75,7 +104,6 @@ function App() {
   const navigate = useNavigate();
 
   if (loading) {
-    // Écran de chargement global pendant la vérification de session
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="flex flex-col items-center gap-3">
@@ -89,7 +117,6 @@ function App() {
   return (
     <>
       <Routes>
-        {/* --------- Auth routes --------- */}
         <Route
           path="/login"
           element={
@@ -110,8 +137,6 @@ function App() {
             )
           }
         />
-
-        {/* --------- Product selection (home) --------- */}
         <Route
           path="/"
           element={
@@ -125,34 +150,26 @@ function App() {
             )
           }
         />
-
-        {/* --------- ISAM dashboard --------- */}
         <Route
           path="/isam/*"
           element={user ? <IsamLayout /> : <Navigate to="/login" replace />}
         />
-
-        {/* --------- Cisco dashboard --------- */}
         <Route
           path="/cisco/*"
           element={user ? <CiscoLayout /> : <Navigate to="/login" replace />}
         />
-
-        {/* --------- Fallback --------- */}
         <Route
           path="*"
           element={<Navigate to={user ? "/" : "/login"} replace />}
         />
       </Routes>
-
       <Toaster position="top-right" richColors closeButton />
     </>
   );
 }
 
 /* ============================================================
-   ISAM Layout (sidebar + header + nested routes)
-   URL: /isam/...
+   ISAM Layout  (unchanged)
    ============================================================ */
 
 function IsamLayout() {
@@ -160,7 +177,6 @@ function IsamLayout() {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Extrait la sous-route après /isam/
   const pathAfterIsam = location.pathname.replace(/^\/isam\/?/, "");
   const sub = pathAfterIsam.split("/")[0] || "overview";
 
@@ -222,10 +238,7 @@ function IsamLayout() {
             <Route path="audit-logs" element={<AuditLogsSection />} />
             <Route path="user-management" element={<UserManagementSection />} />
             <Route path="wan-templates" element={<WanTemplatesSection />} />
-
-            {/* /isam -> /isam/overview */}
             <Route index element={<Navigate to="overview" replace />} />
-            {/* sous-routes inconnues -> overview */}
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>
         </div>
@@ -235,8 +248,7 @@ function IsamLayout() {
 }
 
 /* ============================================================
-   Cisco Layout (sidebar + header + nested routes)
-   URL: /cisco/...
+   Cisco Layout  (UPDATED — added vlan-management)
    ============================================================ */
 
 function CiscoLayout() {
@@ -252,22 +264,39 @@ function CiscoLayout() {
     case "user-management":
       activeSection = "user-management";
       break;
+    case "switch-management":
+      activeSection = "switch-management";
+      break;
+    case "port-management":
+      activeSection = "port-management";
+      break;
+    case "vlan-management":
+      activeSection = "vlan-management";
+      break;
     case "overview":
     default:
       activeSection = "overview";
   }
 
-  const meta =
-    ciscoSectionMeta[activeSection] ?? {
-      title: "Cisco",
-      subtitle: "",
-    };
+  const meta = ciscoSectionMeta[activeSection] ?? {
+    title: "Cisco",
+    subtitle: "",
+  };
 
   const handleNavigate = (section: NavSection) => {
     let subPath: string;
     switch (section) {
       case "user-management":
         subPath = "user-management";
+        break;
+      case "switch-management":
+        subPath = "switch-management";
+        break;
+      case "port-management":
+        subPath = "port-management";
+        break;
+      case "vlan-management":
+        subPath = "vlan-management";
         break;
       case "overview":
       default:
@@ -298,8 +327,18 @@ function CiscoLayout() {
               path="user-management"
               element={<CiscoUserManagementSection />}
             />
-
-            {/* /cisco -> /cisco/overview */}
+            <Route
+              path="switch-management"
+              element={<CiscoSwitchManagementSection />}
+            />
+            <Route
+              path="port-management"
+              element={<CiscoPortManagementSection />}
+            />
+            <Route
+              path="vlan-management"
+              element={<CiscoVlanManagementSection />}
+            />
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>
