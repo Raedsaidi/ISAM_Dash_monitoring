@@ -1,8 +1,7 @@
 // src/api/ciscoVlanApi.ts
 
 const API_BASE =
-  (import.meta as any).env?.VITE_CISCO_API_URL ||
-  "http://localhost:8002/api/v1/cisco";
+  (import.meta.env.VITE_CISCO_BASE_URL ?? "http://localhost:8002") + "/api/v1/cisco";
 
 function getToken(): string | null {
   // ✅ Added all auth_ prefixed keys that your app actually uses
@@ -115,9 +114,8 @@ export async function fetchVlanStats() {
 
 /* ─── VLANs ─── */
 export async function fetchVlans(search = "") {
-  const url = `${API_BASE}/vlan-management/vlans${
-    search ? `?search=${encodeURIComponent(search)}` : ""
-  }`;
+  const url = `${API_BASE}/vlan-management/vlans${search ? `?search=${encodeURIComponent(search)}` : ""
+    }`;
   const res = await fetch(url, { headers: headers() });
   return handleRes(res);
 }
@@ -141,9 +139,8 @@ export async function deleteVlan(dbId: number) {
 
 /* ─── Port Assignments ─── */
 export async function fetchPorts(search = "") {
-  const url = `${API_BASE}/vlan-management/ports${
-    search ? `?search=${encodeURIComponent(search)}` : ""
-  }`;
+  const url = `${API_BASE}/vlan-management/ports${search ? `?search=${encodeURIComponent(search)}` : ""
+    }`;
   const res = await fetch(url, { headers: headers() });
   return handleRes(res);
 }
