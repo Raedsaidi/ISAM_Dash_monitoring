@@ -1,3 +1,4 @@
+import re
 from datetime import timedelta, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -26,12 +27,44 @@ from app.models.auth import (
     UserAdminRead,
     UserList,
     RefreshTokenRequest,
+    FilteredMyPortsResponse,
 )
 from app.models.user import User, UserRole, UserPort
 from app.models.refresh_token import RefreshToken
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+def normalize_port_label(label: str | None) -> str:
+    return (label or "").strip().upper()
+
+
+def normalize_wan_model(wan_model: str | None) -> str | None:
+    if wan_model is None:
+        return None
+    cleaned = wan_model.strip().upper()
+    return cleaned or None
+
+
+def port_label_matches_wan_model(
+    port_label: str | None,
+    wan_model: str | None,
+) -> bool:
+    """
+    Règles:
+    - si wan_model absent => aucun filtrage, on retourne tous les ports
+    - si wan_model == XDSL => accepte XDSL, VDSL, ADSL, DSL
+    - sinon égalité stricte sur le label
+    """
+    normalized_model = normalize_wan_model(wan_model)
+    if not normalized_model:
+        return True
+
+    normalized_label = normalize_port_label(port_label)
+
+    if normalized_model == "XDSL":
+        return normalized_label in {"XDSL", "VDSL", "ADSL", "DSL"}
+
+    return normalized_label == normalized_model
 
 # ----- Self-register (visiteur) -----
 
@@ -216,6 +249,34 @@ def get_me(
     )
     return user
 
+# -------My ports with optional filtering by WAN model -------
+@router.get("/my-ports", response_model=FilteredMyPortsResponse)
+def get_my_ports_filtered(
+    wan_model: str | None = Query(None, max_length=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    user = (
+        db.query(User)
+        .options(selectinload(User.ports))
+        .filter(User.id == current_user.id)
+        .first()
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    normalized_model = normalize_wan_model(wan_model)
+
+    filtered_ports = [
+        port
+        for port in user.ports
+        if port_label_matches_wan_model(port.label, normalized_model)
+    ]
+
+    return FilteredMyPortsResponse(
+        wan_model=normalized_model,
+        ports=filtered_ports,
+    )
 
 # ----- ADMIN / SUPER_ADMIN : gestion users -----
 

@@ -13,20 +13,18 @@ import {
   Lock,
   Unlock,
   Settings2,
-  Database,
   Cable,
   Layers,
   HardDrive,
   Clock,
   AlertCircle,
-  Server
+  Server,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../../context/AuthContext';
 import TemplateWorkspaceOverlay from './TemplateWorkspaceOverlay';
 import LTSlotsOverlay from './LTSlotsOverlay';
 
-// Ajuste si ton isam-service n'est pas sur 8001
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
 type StatusType = 'active' | 'inactive' | 'error';
@@ -109,6 +107,93 @@ function parseJwt(token: string | null): any | null {
   }
 }
 
+function extractErrorMessage(err: any): string {
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  if (typeof err?.message === 'string') return err.message;
+  return '';
+}
+
+function toReadableError(message?: string | null, fallback = 'Something went wrong.') {
+  const raw = (message || '').trim();
+  const msg = raw.toLowerCase();
+
+  if (!raw) return fallback;
+
+  if (msg.includes('timed out') || msg.includes('timeout')) {
+    return 'The ISAM device did not respond in time.';
+  }
+
+  if (
+    msg.includes('unable to connect') ||
+    msg.includes('impossible de se connecter') ||
+    msg.includes('connection refused') ||
+    msg.includes('no valid connections') ||
+    msg.includes('network is unreachable')
+  ) {
+    return 'Unable to connect to the ISAM device.';
+  }
+
+  if (
+    msg.includes('authentication') ||
+    msg.includes("erreur d'authentification") ||
+    msg.includes('auth failed')
+  ) {
+    return 'Authentication failed while contacting the ISAM device.';
+  }
+
+  if (msg.includes('forbidden') || msg.includes('unauthorized')) {
+    return 'You are not authorized to perform this action.';
+  }
+
+  if (msg.includes('not found')) {
+    return 'Requested resource was not found.';
+  }
+
+  if (msg.includes('ssh:') || msg.includes('telnet:') || msg.includes('ssh-legacy')) {
+    return 'Unable to contact the ISAM device.';
+  }
+
+  return fallback;
+}
+
+function toReadableSnapshotError(
+  message?: string | null,
+  fallback = 'Failed to refresh hardware data.',
+) {
+  const raw = (message || '').trim();
+  const msg = raw.toLowerCase();
+
+  if (!raw) return fallback;
+
+  if (msg.includes('timed out') || msg.includes('timeout')) {
+    return 'The ISAM device did not respond in time during refresh.';
+  }
+
+  if (
+    msg.includes('unable to connect') ||
+    msg.includes('connection refused') ||
+    msg.includes('no valid connections') ||
+    msg.includes('impossible de se connecter')
+  ) {
+    return 'Unable to connect to the ISAM device during refresh.';
+  }
+
+  if (
+    msg.includes('ssh:') ||
+    msg.includes('telnet:') ||
+    msg.includes('ssh-legacy')
+  ) {
+    return 'The ISAM device could not be reached during refresh.';
+  }
+
+  if (msg.includes('authentication')) {
+    return 'Authentication failed during refresh.';
+  }
+
+  return fallback;
+}
+
 async function authFetchJson<T>(
   url: string,
   accessToken: string | null,
@@ -126,7 +211,7 @@ async function authFetchJson<T>(
   try {
     data = await res.json();
   } catch {
-    // no json
+    //
   }
 
   if (!res.ok) {
@@ -177,14 +262,11 @@ export default function JunctionsSection() {
   const [showTemplateWorkspace, setShowTemplateWorkspace] = useState(false);
   const [showLTSlotsOverlay, setShowLTSlotsOverlay] = useState(false);
 
-  /* ---- Load on mount ---- */
   useEffect(() => {
     if (!accessToken) return;
     loadInstances();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
-
-  /* ---- API calls ---- */
 
   async function loadInstances(nextSelectedId?: number | null) {
     setLoading(true);
@@ -212,7 +294,13 @@ export default function JunctionsSection() {
         setSelectedInstanceId(data.instances[0].id);
       }
     } catch (err: any) {
-      setGlobalError(err.message || 'Failed to load ISAM instances.');
+      console.error('Failed to load ISAM instances:', err);
+      setGlobalError(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to load ISAM instances.',
+        ),
+      );
     } finally {
       setLoading(false);
     }
@@ -264,7 +352,13 @@ export default function JunctionsSection() {
       await loadInstances();
       toast.success('The ISAM instance has been created successfully.');
     } catch (err: any) {
-      setFormErrors({ general: err.message || 'Failed to add ISAM.' });
+      console.error('Failed to add ISAM:', err);
+      setFormErrors({
+        general: toReadableError(
+          extractErrorMessage(err),
+          'Failed to add the ISAM instance.',
+        ),
+      });
     } finally {
       setSubmitAdding(false);
     }
@@ -301,10 +395,20 @@ export default function JunctionsSection() {
       if (res.success) {
         toast.success(res.message || 'Connection OK', { id: toastId });
       } else {
-        toast.error(res.message || 'Connection failed', { id: toastId });
+        toast.error(
+          toReadableError(res.message, 'Connection failed.'),
+          { id: toastId },
+        );
       }
     } catch (err: any) {
-      toast.error(err.message || 'Failed to test connection.', { id: toastId });
+      console.error('Failed to test connection:', err);
+      toast.error(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to test the connection.',
+        ),
+        { id: toastId },
+      );
     }
   }
 
@@ -324,14 +428,17 @@ export default function JunctionsSection() {
       });
       return true;
     } catch (err: any) {
-      toast.error(err.message || 'Failed to delete this ISAM instance.', {
-        id: toastId,
-      });
+      console.error('Failed to delete ISAM:', err);
+      toast.error(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to delete this ISAM instance.',
+        ),
+        { id: toastId },
+      );
       return false;
     }
   }
-
-  /* ---- Filtering ---- */
 
   const filtered = instances.filter((inst) => {
     if (filter !== 'all' && inst.status !== filter) return false;
@@ -339,8 +446,9 @@ export default function JunctionsSection() {
       searchTerm &&
       !inst.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
       !inst.host.toLowerCase().includes(searchTerm.toLowerCase())
-    )
+    ) {
       return false;
+    }
     return true;
   });
 
@@ -349,14 +457,10 @@ export default function JunctionsSection() {
     instances.find((i) => i.id === selectedInstanceId) ||
     null;
 
-  /* ---- Render ---- */
-
   return (
     <div className="space-y-6">
-      {/* ══════════ Toolbar ══════════ */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3 flex-wrap">
-          {/* Search */}
           <div className="relative">
             <Search
               size={16}
@@ -371,7 +475,6 @@ export default function JunctionsSection() {
             />
           </div>
 
-          {/* Filter pills */}
           <div className="flex bg-slate-100 rounded-lg p-0.5">
             {(['all', 'active', 'inactive', 'error'] as const).map((f) => (
               <button
@@ -415,23 +518,19 @@ export default function JunctionsSection() {
         </div>
       </div>
 
-      {/* ══════════ Global error ══════════ */}
       {globalError && (
         <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
           {globalError}
         </div>
       )}
 
-      {/* ══════════ Instance Cards ══════════ */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {filtered.map((inst) => (
           <div
             key={inst.id}
             className={cn(
               'bg-white rounded-xl border border-slate-200 p-5 hover:shadow-md transition-shadow cursor-pointer',
-              selectedInstance && selectedInstance.id === inst.id
-                ? 'ring-2 ring-blue-500'
-                : '',
+              selectedInstance && selectedInstance.id === inst.id ? 'ring-2 ring-blue-500' : '',
             )}
             onClick={() => setSelectedInstanceId(inst.id)}
           >
@@ -492,16 +591,14 @@ export default function JunctionsSection() {
                 <span
                   className={cn(
                     'font-mono font-medium',
-                    !inst.last_response_time_ms ||
-                      inst.last_response_time_ms === 0
+                    !inst.last_response_time_ms || inst.last_response_time_ms === 0
                       ? 'text-red-500'
                       : inst.last_response_time_ms > 100
                         ? 'text-amber-500'
                         : 'text-green-600',
                   )}
                 >
-                  {!inst.last_response_time_ms ||
-                  inst.last_response_time_ms === 0
+                  {!inst.last_response_time_ms || inst.last_response_time_ms === 0
                     ? 'N/A'
                     : `${inst.last_response_time_ms}ms`}
                 </span>
@@ -533,7 +630,6 @@ export default function JunctionsSection() {
         ))}
       </div>
 
-      {/* ══════════ Configuration + Details Panels ══════════ */}
       {selectedInstance && (
         <div className="space-y-4">
           <IsamConfigurationPanel
@@ -556,7 +652,6 @@ export default function JunctionsSection() {
         </div>
       )}
 
-      {/* ══════════ LT Slots Overlay (full-page) ══════════ */}
       {selectedInstance && showLTSlotsOverlay && (
         <LTSlotsOverlay
           instanceId={selectedInstance.id}
@@ -568,7 +663,6 @@ export default function JunctionsSection() {
         />
       )}
 
-      {/* ══════════ Template Workspace Overlay ══════════ */}
       {selectedInstance && showTemplateWorkspace && (
         <TemplateWorkspaceOverlay
           instance={selectedInstance}
@@ -576,7 +670,6 @@ export default function JunctionsSection() {
         />
       )}
 
-      {/* ══════════ Add ISAM Modal ══════════ */}
       {showAddModal && isAdmin && (
         <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-lg w-full max-w-lg p-6 relative">
@@ -591,7 +684,6 @@ export default function JunctionsSection() {
             )}
 
             <form onSubmit={handleAddIsam} className="space-y-3 text-sm">
-              {/* Name + Host */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
@@ -610,9 +702,7 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.name && (
-                    <div className="text-xs text-red-500 mt-1">
-                      {formErrors.name}
-                    </div>
+                    <div className="text-xs text-red-500 mt-1">{formErrors.name}</div>
                   )}
                 </div>
 
@@ -633,14 +723,11 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.host && (
-                    <div className="text-xs text-red-500 mt-1">
-                      {formErrors.host}
-                    </div>
+                    <div className="text-xs text-red-500 mt-1">{formErrors.host}</div>
                   )}
                 </div>
               </div>
 
-              {/* Telnet + SSH ports */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
@@ -663,9 +750,7 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.telnet_port && (
-                    <div className="text-xs text-red-500 mt-1">
-                      {formErrors.telnet_port}
-                    </div>
+                    <div className="text-xs text-red-500 mt-1">{formErrors.telnet_port}</div>
                   )}
                 </div>
 
@@ -690,14 +775,11 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.ssh_port && (
-                    <div className="text-xs text-red-500 mt-1">
-                      {formErrors.ssh_port}
-                    </div>
+                    <div className="text-xs text-red-500 mt-1">{formErrors.ssh_port}</div>
                   )}
                 </div>
               </div>
 
-              {/* Protocol preference */}
               <div>
                 <label className="block font-medium text-slate-700 mb-1">
                   Protocol Preference
@@ -707,8 +789,7 @@ export default function JunctionsSection() {
                   onChange={(e) =>
                     setForm((f) => ({
                       ...f,
-                      protocol_preference: e.target
-                        .value as ProtocolPreference,
+                      protocol_preference: e.target.value as ProtocolPreference,
                     }))
                   }
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -719,7 +800,6 @@ export default function JunctionsSection() {
                 </select>
               </div>
 
-              {/* Username + Password */}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">
@@ -738,9 +818,7 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.username && (
-                    <div className="text-xs text-red-500 mt-1">
-                      {formErrors.username}
-                    </div>
+                    <div className="text-xs text-red-500 mt-1">{formErrors.username}</div>
                   )}
                 </div>
 
@@ -762,14 +840,11 @@ export default function JunctionsSection() {
                     )}
                   />
                   {formErrors.password && (
-                    <div className="text-xs text-red-500 mt-1">
-                      {formErrors.password}
-                    </div>
+                    <div className="text-xs text-red-500 mt-1">{formErrors.password}</div>
                   )}
                 </div>
               </div>
 
-              {/* Actions */}
               <div className="flex justify-end gap-2 pt-3">
                 <button
                   type="button"
@@ -794,10 +869,6 @@ export default function JunctionsSection() {
   );
 }
 
-/* ============================================================
-   STATUS BADGE
-   ============================================================ */
-
 function StatusBadge({ status }: { status: StatusType }) {
   return (
     <span
@@ -815,10 +886,6 @@ function StatusBadge({ status }: { status: StatusType }) {
   );
 }
 
-/* ============================================================
-   CONFIGURATION PANEL
-   ============================================================ */
-
 function IsamConfigurationPanel({
   instance,
   isAdmin,
@@ -835,22 +902,23 @@ function IsamConfigurationPanel({
       ? 'N/A'
       : `${instance.last_response_time_ms} ms`;
 
+  const readableLastError = instance.last_error
+    ? toReadableError(instance.last_error, 'An error was reported by the device.')
+    : 'None';
+
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      {/* Header with 2 buttons */}
       <div className="p-5 border-b border-slate-200 flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h3 className="font-semibold text-slate-900 text-lg">
             {instance.name} — Configuration
           </h3>
           <p className="text-sm text-slate-500">
-            {instance.host} (Telnet:{instance.telnet_port} / SSH:
-            {instance.ssh_port})
+            {instance.host} (Telnet:{instance.telnet_port} / SSH:{instance.ssh_port})
           </p>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Button 1: Open Configuration Workspace */}
           <button
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             onClick={onOpenTemplateForm}
@@ -859,7 +927,6 @@ function IsamConfigurationPanel({
             Open Configuration Workspace
           </button>
 
-          {/* Button 2: LT Slots & Ports (admin only) */}
           {isAdmin && (
             <button
               className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg hover:from-violet-700 hover:to-purple-700 transition-all shadow-sm"
@@ -872,9 +939,7 @@ function IsamConfigurationPanel({
         </div>
       </div>
 
-      {/* Config grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-5">
-        {/* General */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             General Settings
@@ -882,10 +947,7 @@ function IsamConfigurationPanel({
           <div className="space-y-3">
             <ConfigRow label="Instance Name" value={instance.name} />
             <ConfigRow label="Host" value={instance.host} />
-            <ConfigRow
-              label="Telnet Port"
-              value={String(instance.telnet_port)}
-            />
+            <ConfigRow label="Telnet Port" value={String(instance.telnet_port)} />
             <ConfigRow label="SSH Port" value={String(instance.ssh_port)} />
             <ConfigRow
               label="Last Checked"
@@ -899,7 +961,6 @@ function IsamConfigurationPanel({
           </div>
         </div>
 
-        {/* Protocol */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             Protocol Settings
@@ -908,9 +969,7 @@ function IsamConfigurationPanel({
             <div className="flex items-center justify-between p-3 bg-slate-50 rounded-lg">
               <div className="flex items-center gap-2">
                 <Lock size={16} className="text-green-500" />
-                <span className="text-sm text-slate-700">
-                  Preferred Protocol
-                </span>
+                <span className="text-sm text-slate-700">Preferred Protocol</span>
               </div>
               <span className="text-xs font-medium px-2.5 py-1 rounded-full bg-slate-200 text-slate-700 uppercase">
                 {instance.protocol_preference}
@@ -936,18 +995,11 @@ function IsamConfigurationPanel({
               </span>
             </div>
 
-            <ConfigRow
-              label="Status"
-              value={instance.status.toUpperCase()}
-            />
-            <ConfigRow
-              label="Last Error"
-              value={instance.last_error || 'None'}
-            />
+            <ConfigRow label="Status" value={instance.status.toUpperCase()} />
+            <ConfigRow label="Last Error" value={readableLastError} />
           </div>
         </div>
 
-        {/* Session */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             Session Management
@@ -959,7 +1011,6 @@ function IsamConfigurationPanel({
           </div>
         </div>
 
-        {/* Network */}
         <div className="space-y-4">
           <h4 className="font-medium text-slate-800 text-sm uppercase tracking-wider">
             Network Settings
@@ -976,10 +1027,6 @@ function IsamConfigurationPanel({
   );
 }
 
-/* ============================================================
-   DETAILS PANEL (admin only)
-   ============================================================ */
-
 function IsamDetailsPanel({
   instance,
   onDeleted,
@@ -994,48 +1041,27 @@ function IsamDetailsPanel({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  /* ---- Memory usage state ---- */
-  const [memoryUsage, setMemoryUsage] = useState<{
-    loading: boolean;
-    error: string | null;
-    parsed: any;
-    protocol_used: string | null;
-    cached_at: string | null;
-    last_refresh_at: string | null;
-    last_refresh_success: boolean;
-    last_refresh_error: string | null;
-  }>({
+  const [memoryUsage, setMemoryUsage] = useState({
     loading: false,
-    error: null,
+    error: null as string | null,
     parsed: {},
-    protocol_used: null,
-    cached_at: null,
-    last_refresh_at: null,
+    protocol_used: null as string | null,
+    cached_at: null as string | null,
+    last_refresh_at: null as string | null,
     last_refresh_success: false,
-    last_refresh_error: null,
+    last_refresh_error: null as string | null,
   });
 
-  /* ---- Ports state ---- */
-  const [ports, setPorts] = useState<{
-    loading: boolean;
-    error: string | null;
-    ports: any[];
-    port_count: number;
-    protocol_used: string | null;
-    cached_at: string | null;
-    last_refresh_at: string | null;
-    last_refresh_success: boolean;
-    last_refresh_error: string | null;
-  }>({
+  const [ports, setPorts] = useState({
     loading: false,
-    error: null,
-    ports: [],
+    error: null as string | null,
+    ports: [] as any[],
     port_count: 0,
-    protocol_used: null,
-    cached_at: null,
-    last_refresh_at: null,
+    protocol_used: null as string | null,
+    cached_at: null as string | null,
+    last_refresh_at: null as string | null,
     last_refresh_success: false,
-    last_refresh_error: null,
+    last_refresh_error: null as string | null,
   });
 
   useEffect(() => {
@@ -1046,57 +1072,85 @@ function IsamDetailsPanel({
 
   async function loadCachedMemoryUsage() {
     setMemoryUsage((s) => ({ ...s, loading: true, error: null }));
+
     try {
       const res = await authFetchJson<CachedMemoryUsageResponse>(
         `${ISAM_BASE_URL}/api/v1/isam/instances/${instance.id}/cached-memory-usage`,
         accessToken,
       );
+
       setMemoryUsage({
         loading: false,
         error: res.success
           ? null
-          : res.message || 'No cached memory usage available.',
+          : toReadableSnapshotError(
+              res.message,
+              'No cached memory usage data available.',
+            ),
         parsed: res.parsed || {},
         protocol_used: res.protocol_used,
         cached_at: res.cached_at,
         last_refresh_at: res.last_refresh_at,
         last_refresh_success: res.last_refresh_success,
-        last_refresh_error: res.last_refresh_error,
+        last_refresh_error: res.last_refresh_error
+          ? toReadableSnapshotError(
+              res.last_refresh_error,
+              'Failed to refresh memory data.',
+            )
+          : null,
       });
     } catch (err: any) {
+      console.error('Failed to load cached memory usage:', err);
       setMemoryUsage((s) => ({
         ...s,
         loading: false,
-        error: err.message || 'Failed to load cached memory usage.',
+        error: toReadableSnapshotError(
+          extractErrorMessage(err),
+          'Failed to load cached memory usage.',
+        ),
       }));
     }
   }
 
   async function loadCachedPorts() {
     setPorts((s) => ({ ...s, loading: true, error: null }));
+
     try {
       const res = await authFetchJson<CachedPortsResponse>(
         `${ISAM_BASE_URL}/api/v1/isam/instances/${instance.id}/cached-ports`,
         accessToken,
       );
+
       setPorts({
         loading: false,
         error: res.success
           ? null
-          : res.message || 'No cached ports available.',
+          : toReadableSnapshotError(
+              res.message,
+              'No cached port data available.',
+            ),
         ports: res.ports || [],
         port_count: res.port_count || 0,
         protocol_used: res.protocol_used,
         cached_at: res.cached_at,
         last_refresh_at: res.last_refresh_at,
         last_refresh_success: res.last_refresh_success,
-        last_refresh_error: res.last_refresh_error,
+        last_refresh_error: res.last_refresh_error
+          ? toReadableSnapshotError(
+              res.last_refresh_error,
+              'Failed to refresh port data.',
+            )
+          : null,
       });
     } catch (err: any) {
+      console.error('Failed to load cached ports:', err);
       setPorts((s) => ({
         ...s,
         loading: false,
-        error: err.message || 'Failed to load cached ports.',
+        error: toReadableSnapshotError(
+          extractErrorMessage(err),
+          'Failed to load cached ports.',
+        ),
       }));
     }
   }
@@ -1111,12 +1165,13 @@ function IsamDetailsPanel({
     }
   }
 
-  const memoryEntries = Array.isArray(memoryUsage.parsed?.entries) ? memoryUsage.parsed.entries : [];
+  const memoryEntries = Array.isArray(memoryUsage.parsed?.entries)
+    ? memoryUsage.parsed.entries
+    : [];
 
   return (
     <>
       <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-6">
-        {/* Header */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h3 className="font-semibold text-slate-900 text-lg">
@@ -1136,10 +1191,7 @@ function IsamDetailsPanel({
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          
-          {/* ==================== MEMORY USAGE CARD ==================== */}
           <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-            {/* Memory Header */}
             <div className="bg-white p-4 border-b border-slate-200 flex justify-between items-center">
               <div className="flex items-center gap-2">
                 <div className="bg-indigo-100 p-2 rounded-lg">
@@ -1149,18 +1201,23 @@ function IsamDetailsPanel({
                   <h4 className="font-semibold text-slate-800">Memory Allocation</h4>
                   <div className="flex items-center gap-1 text-[11px] text-slate-500">
                     <Clock size={12} />
-                    {formatDateTime(memoryUsage.cached_at)} 
-                    {memoryUsage.protocol_used && <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">{memoryUsage.protocol_used}</span>}
+                    {formatDateTime(memoryUsage.cached_at)}
+                    {memoryUsage.protocol_used && (
+                      <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">
+                        {memoryUsage.protocol_used}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
               <div className="text-right">
                 <span className="text-2xl font-bold text-slate-700">{memoryEntries.length}</span>
-                <span className="text-xs text-slate-500 block uppercase tracking-wider">Slots</span>
+                <span className="text-xs text-slate-500 block uppercase tracking-wider">
+                  Slots
+                </span>
               </div>
             </div>
 
-            {/* Memory Body */}
             <div className="p-4 flex-1 overflow-y-auto max-h-[360px] custom-scrollbar">
               {memoryUsage.loading ? (
                 <div className="flex flex-col items-center justify-center py-8 text-slate-400">
@@ -1176,37 +1233,47 @@ function IsamDetailsPanel({
                 <div className="space-y-5">
                   {!memoryUsage.last_refresh_success && memoryUsage.last_refresh_error && (
                     <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                       <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                       <p>Refresh failed: {memoryUsage.last_refresh_error}</p>
+                      <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                      <p>{memoryUsage.last_refresh_error}</p>
                     </div>
                   )}
 
                   {memoryEntries.map((entry: any, idx: number) => {
                     const pct = Number(entry.used_percent) || 0;
-                    const colorClass = pct > 85 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
-                    const lightColorClass = pct > 85 ? 'bg-red-100' : pct > 60 ? 'bg-amber-100' : 'bg-emerald-100';
-                    
+                    const colorClass =
+                      pct > 85 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500';
+                    const lightColorClass =
+                      pct > 85 ? 'bg-red-100' : pct > 60 ? 'bg-amber-100' : 'bg-emerald-100';
+
                     return (
                       <div key={idx} className="relative">
                         <div className="flex justify-between items-end mb-1.5">
                           <div className="flex items-center gap-2">
                             <Server size={14} className="text-slate-400" />
-                            <span className="font-semibold text-slate-700 text-sm">{entry.slot}</span>
+                            <span className="font-semibold text-slate-700 text-sm">
+                              {entry.slot}
+                            </span>
                           </div>
                           <div className="text-xs text-slate-500 font-mono">
-                            <span className="text-slate-900 font-medium">{entry.used_mb}</span> / {entry.total_mb} MB
+                            <span className="text-slate-900 font-medium">{entry.used_mb}</span> /{' '}
+                            {entry.total_mb} MB
                           </div>
                         </div>
-                        
+
                         <div className="w-full bg-slate-200 rounded-full h-2.5 overflow-hidden flex">
-                          <div 
-                            className={`h-full ${colorClass} transition-all duration-1000 ease-out`} 
+                          <div
+                            className={`h-full ${colorClass} transition-all duration-1000 ease-out`}
                             style={{ width: `${pct}%` }}
                           />
                         </div>
-                        
+
                         <div className="flex justify-end mt-1">
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${lightColorClass} ${colorClass.replace('bg-', 'text-')}`}>
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${lightColorClass} ${colorClass.replace(
+                              'bg-',
+                              'text-',
+                            )}`}
+                          >
                             {pct}% Used
                           </span>
                         </div>
@@ -1222,9 +1289,7 @@ function IsamDetailsPanel({
             </div>
           </div>
 
-          {/* ==================== PORTS CARD ==================== */}
           <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-            {/* Ports Header */}
             <div className="bg-white p-4 border-b border-slate-200 flex justify-between items-center">
               <div className="flex items-center gap-2">
                 <div className="bg-blue-100 p-2 rounded-lg">
@@ -1235,17 +1300,22 @@ function IsamDetailsPanel({
                   <div className="flex items-center gap-1 text-[11px] text-slate-500">
                     <Clock size={12} />
                     {formatDateTime(ports.cached_at)}
-                    {ports.protocol_used && <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">{ports.protocol_used}</span>}
+                    {ports.protocol_used && (
+                      <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">
+                        {ports.protocol_used}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
               <div className="text-right">
                 <span className="text-2xl font-bold text-slate-700">{ports.port_count}</span>
-                <span className="text-xs text-slate-500 block uppercase tracking-wider">Total</span>
+                <span className="text-xs text-slate-500 block uppercase tracking-wider">
+                  Total
+                </span>
               </div>
             </div>
 
-            {/* Ports Body */}
             <div className="p-4 flex-1 overflow-y-auto max-h-[360px] custom-scrollbar">
               {ports.loading ? (
                 <div className="flex flex-col items-center justify-center py-8 text-slate-400">
@@ -1261,24 +1331,22 @@ function IsamDetailsPanel({
                 <div className="space-y-4">
                   {!ports.last_refresh_success && ports.last_refresh_error && (
                     <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                       <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                       <p>Refresh failed: {ports.last_refresh_error}</p>
+                      <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                      <p>{ports.last_refresh_error}</p>
                     </div>
                   )}
 
-                  {/* Grid of ports */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                     {ports.ports.map((p: any, idx: number) => {
-                      // Détermine le statut du port pour la couleur
                       const isUp = p.port_state?.toLowerCase().includes('up');
                       const isAdminDown = p.admin_state?.toLowerCase().includes('down');
-                      
+
                       let dotColor = 'bg-slate-300';
                       let dotShadow = '';
-                      
+
                       if (isUp) {
                         dotColor = 'bg-emerald-500';
-                        dotShadow = 'shadow-[0_0_6px_rgba(16,185,129,0.6)]'; // Glow effect
+                        dotShadow = 'shadow-[0_0_6px_rgba(16,185,129,0.6)]';
                       } else if (isAdminDown) {
                         dotColor = 'bg-slate-400';
                       } else {
@@ -1286,14 +1354,18 @@ function IsamDetailsPanel({
                       }
 
                       return (
-                        <div 
-                          key={idx} 
+                        <div
+                          key={idx}
                           className="bg-white border border-slate-200 rounded-lg p-2.5 flex items-center justify-between hover:border-slate-300 transition-colors"
                           title={`Admin: ${p.admin_state} | Port: ${p.port_state}`}
                         >
                           <div className="flex flex-col truncate pr-2">
-                            <span className="font-mono text-[13px] font-bold text-slate-800">{p.port_id}</span>
-                            <span className="text-[10px] text-slate-500 uppercase truncate">{p.board || 'Unknown'}</span>
+                            <span className="font-mono text-[13px] font-bold text-slate-800">
+                              {p.port_id}
+                            </span>
+                            <span className="text-[10px] text-slate-500 uppercase truncate">
+                              {p.board || 'Unknown'}
+                            </span>
                           </div>
                           <div className="flex items-center justify-center shrink-0 w-6 h-6 rounded-full bg-slate-50">
                             <div className={`w-2.5 h-2.5 rounded-full ${dotColor} ${dotShadow}`} />
@@ -1310,11 +1382,9 @@ function IsamDetailsPanel({
               )}
             </div>
           </div>
-          
         </div>
       </div>
 
-      {/* Delete confirm dialog */}
       <ConfirmDialog
         open={showDeleteDialog}
         title="Delete this ISAM instance?"
@@ -1327,8 +1397,7 @@ function IsamDetailsPanel({
         }}
         onConfirm={handleDelete}
       />
-      
-      {/* Styles personnalisés pour la scrollbar dans ce composant si nécessaire */}
+
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
           width: 6px;
@@ -1344,10 +1413,6 @@ function IsamDetailsPanel({
     </>
   );
 }
-
-/* ============================================================
-   CONFIRM DIALOG
-   ============================================================ */
 
 function ConfirmDialog({
   open,
@@ -1416,10 +1481,6 @@ function ConfirmDialog({
     </div>
   );
 }
-
-/* ============================================================
-   CONFIG ROW
-   ============================================================ */
 
 function ConfigRow({ label, value }: { label: string; value: string }) {
   return (

@@ -193,9 +193,35 @@ function normalizeText(v: string) {
   return v.trim().toLowerCase();
 }
 
+function tokenizeTemplateName(value: string): string[] {
+  return value
+    .trim()
+    .toLowerCase()
+    .split(/[_\-\s]+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function extractMatchedWanModel(name: string, models: WanModel[]): string | null {
+  const tokens = tokenizeTemplateName(name);
+  if (!tokens.length) return null;
+
+  const modelsMap = new Map(
+    models
+      .map((m) => [normalizeText(m.name), m.name] as const)
+      .filter(([key]) => !!key)
+  );
+
+  for (const token of tokens) {
+    const matched = modelsMap.get(token);
+    if (matched) return matched;
+  }
+
+  return null;
+}
+
 function isValidTemplateName(name: string, models: WanModel[]) {
-  const normalized = normalizeText(name);
-  return models.some((m) => normalizeText(m.name) === normalized);
+  return Boolean(extractMatchedWanModel(name, models));
 }
 
 function getSimpleErrorMessage(err: any, fallback = "Something went wrong.") {
@@ -509,8 +535,11 @@ function TemplateNameHint() {
       <div className="flex items-start gap-2">
         <Info size={13} className="mt-0.5 shrink-0 text-sky-600" />
         <div className="text-[11px] text-sky-700 leading-relaxed">
-          <span className="font-semibold">Rule:</span> Template name must match
-          an existing WAN model.
+          <span className="font-semibold">Rule:</span> Template name must contain
+          at least one existing WAN Mode token. Examples:{" "}
+          <span className="font-mono">GPON</span>,{" "}
+          <span className="font-mono">GPON-DHCP</span>,{" "}
+          <span className="font-mono">USERNAME_GPON-DHCP_Generic</span>.
         </div>
       </div>
     </div>
@@ -719,7 +748,7 @@ function ProjectSelector({
 }
 
 // ================================================================
-// ======== WAN MODELS MODAL =====================================
+// ======== WAN MODES MODAL ======================================
 // ================================================================
 
 function WanModelsModal({
@@ -757,7 +786,7 @@ function WanModelsModal({
       );
       setModels(res.models || []);
     } catch (err: any) {
-      toast.error(getSimpleErrorMessage(err, "Unable to load WAN models."));
+      toast.error(getSimpleErrorMessage(err, "Unable to load WAN Modes."));
     } finally {
       setLoading(false);
     }
@@ -790,7 +819,7 @@ function WanModelsModal({
       setNewDesc("");
       await loadModels();
       await notifyParent();
-      toast.success("WAN model created.");
+      toast.success("WAN Mode created.");
     } catch (err: any) {
       toast.error(getSimpleErrorMessage(err, "Unable to create model."));
     } finally {
@@ -819,9 +848,9 @@ function WanModelsModal({
       setEditingId(null);
       await loadModels();
       await notifyParent();
-      toast.success("WAN model updated.");
+      toast.success("WAN mode updated.");
     } catch (err: any) {
-      toast.error(getSimpleErrorMessage(err, "Unable to update model."));
+      toast.error(getSimpleErrorMessage(err, "Unable to update mode."));
     } finally {
       setSaving(false);
     }
@@ -838,9 +867,9 @@ function WanModelsModal({
 
       await loadModels();
       await notifyParent();
-      toast.success("WAN model deleted.");
+      toast.success("WAN mode deleted.");
     } catch (err: any) {
-      toast.error(getSimpleErrorMessage(err, "Unable to delete model."));
+      toast.error(getSimpleErrorMessage(err, "Unable to delete mode."));
     } finally {
       setDeletingId(null);
     }
@@ -860,8 +889,8 @@ function WanModelsModal({
         <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50/80 px-6 py-4 shrink-0">
           <SectionTitle
             icon={Layers}
-            title="WAN Models"
-            description="Manage WAN model types (GPON, SAFRAN, ETHERNET...)"
+            title="WAN Modes"
+            description="Manage WAN mode types (GPON, SAFRAN, ETHERNET...)"
           />
           <button
             onClick={onClose}
@@ -921,7 +950,7 @@ function WanModelsModal({
             </div>
           ) : models.length === 0 ? (
             <div className="text-center py-8 text-sm text-slate-500">
-              No WAN models yet.
+              No WAN Mode yet.
             </div>
           ) : (
             <div className="space-y-2">
@@ -1078,6 +1107,11 @@ export default function WanTemplatesSection() {
 
   const finalName = useMemo(() => buildFinalName(name, project), [name, project]);
 
+  const matchedWanModel = useMemo(
+    () => extractMatchedWanModel(name, wanModels),
+    [name, wanModels]
+  );
+
   useEffect(() => {
     if (!accessToken) return;
     loadData();
@@ -1203,7 +1237,7 @@ export default function WanTemplatesSection() {
 
     if (!trimmedNameLocal) return "Template name is required.";
     if (!isValidTemplateName(trimmedNameLocal, wanModels)) {
-      return "Choose a valid WAN model name.";
+      return "Template name must contain an existing WAN mode.";
     }
     if (!trimmedCommands) return "Template content is required.";
     if (trimmedNameLocal.length > 100) return "Template name is too long.";
@@ -1369,7 +1403,8 @@ export default function WanTemplatesSection() {
         message: res.message,
       });
 
-      if (res.success) toast.success(res.message || "Test successful.", { id: tid });
+      if (res.success)
+        toast.success(res.message || "Test successful.", { id: tid });
       else toast.error(res.message || "Test failed.", { id: tid });
     } catch (err: any) {
       const simpleMsg = getSimpleErrorMessage(err, "Unable to test template.");
@@ -1497,19 +1532,19 @@ export default function WanTemplatesSection() {
     confirmDialog.action === "delete-template"
       ? `Delete "${confirmDialog.template?.name ?? ""}"?`
       : confirmDialog.action === "clear-template-content"
-      ? "Clear template content?"
-      : confirmDialog.action === "clear-all-form"
-      ? "Reset the whole form?"
-      : "";
+        ? "Clear template content?"
+        : confirmDialog.action === "clear-all-form"
+          ? "Reset the whole form?"
+          : "";
 
   const confirmBtnText =
     confirmDialog.action === "delete-template"
       ? "Delete"
       : confirmDialog.action === "clear-template-content"
-      ? "Clear"
-      : confirmDialog.action === "clear-all-form"
-      ? "Reset"
-      : "Confirm";
+        ? "Clear"
+        : confirmDialog.action === "clear-all-form"
+          ? "Reset"
+          : "Confirm";
 
   return (
     <>
@@ -1543,7 +1578,7 @@ export default function WanTemplatesSection() {
                 onClick={() => setShowWanModelsModal(true)}
               >
                 <Layers size={16} />
-                WAN Models
+                WAN Modes
               </Btn>
 
               <Btn variant="primary" onClick={openCreateModal}>
@@ -1752,7 +1787,7 @@ export default function WanTemplatesSection() {
                         <Input
                           value={name}
                           onChange={(e) => setName(e.target.value)}
-                          placeholder="Example: GPON"
+                          placeholder="Examples: GPON, GPON-DHCP, USERNAME_GPON-DHCP_Generic"
                           list="wan-models-list"
                           className={cn(
                             showNameValidation &&
@@ -1774,21 +1809,24 @@ export default function WanTemplatesSection() {
                         <div className="mt-2">
                           {loadingWanModels ? (
                             <div className="text-[11px] text-slate-500">
-                              Loading WAN models...
+                              Loading WAN modes...
                             </div>
                           ) : showNameValidation ? (
                             templateNameExistsInModels ? (
                               <div className="text-[11px] text-emerald-600">
-                                Valid WAN model name.
+                                Valid name. Matched WAN mode:{" "}
+                                <span className="font-semibold">
+                                  {matchedWanModel}
+                                </span>
                               </div>
                             ) : (
                               <div className="text-[11px] text-red-600">
-                                Name must match an existing WAN model.
+                                Name must contain an existing WAN mode token.
                               </div>
                             )
                           ) : (
                             <div className="text-[11px] text-slate-500">
-                              Use a name from WAN Models.
+                              Use a name containing one WAN mode token.
                             </div>
                           )}
                         </div>
