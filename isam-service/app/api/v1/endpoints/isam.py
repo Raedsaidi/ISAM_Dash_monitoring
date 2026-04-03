@@ -932,6 +932,7 @@ def create_wan_template(
         created_by=current_user.username,
         scope=body.scope,
         source_template_id=source_template.id if source_template else None,
+        saved_parameters=body.saved_parameters.model_dump() if body.saved_parameters else None,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -1107,6 +1108,10 @@ def update_wan_template(
     ensure_template_editable(current_user, tpl)
 
     data = body.model_dump(exclude_unset=True)
+
+    if "saved_parameters" in data and body.saved_parameters is not None:
+        data["saved_parameters"] = body.saved_parameters.model_dump()
+
     for field, value in data.items():
         setattr(tpl, field, value)
 

@@ -131,12 +131,14 @@ class WanTemplateCreate(WanTemplateBase):
     isam_instance_id: Optional[int] = None
     source_template_id: Optional[int] = None
     project: Optional[str] = None
+    saved_parameters: Optional[WanTemplateSavedParameters] = None
 
 
 class WanTemplateUpdate(BaseModel):
     name: Optional[str] = None
     commands_template: Optional[str] = None
     project: Optional[str] = None
+    saved_parameters: Optional[WanTemplateSavedParameters] = None
 
 
 class WanTemplateRead(WanTemplateBase):
@@ -146,6 +148,7 @@ class WanTemplateRead(WanTemplateBase):
     created_by: Optional[str] = None
     source_template_id: Optional[int] = None
     project: Optional[str] = None
+    saved_parameters: Optional[WanTemplateSavedParameters] = None
     created_at: datetime
     updated_at: datetime
 
@@ -169,6 +172,13 @@ class ApplyWanTemplateResponse(BaseModel):
     raw_output: str
     message: str
 
+class WanTemplateSavedParameters(BaseModel):
+    selected_port: Optional[str] = None
+    manual_port: Optional[str] = None
+    effective_port: Optional[str] = None
+    variables: Dict[str, str] = Field(default_factory=dict)
+    saved_from: Optional[Literal["manual-edit", "apply-success"]] = None
+    applied_at: Optional[datetime] = None
 
 # -------- Template rendering / preview / test / live apply --------
 

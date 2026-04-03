@@ -19,7 +19,17 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s   # gives MySQL time to fully initialize
-
+    
+  # ---------- Logs-service ----------
+  logs-service:
+    image: amir20/dozzle:latest
+    container_name: logs-service-container
+    ports:
+      - "8010:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    
   # ---------- Auth-service ----------
   auth-service:
     build: ./auth-service
@@ -53,6 +63,26 @@ services:
         condition: service_started   # ← waits for auth to start
     restart: on-failure
 
+  # ── Cisco-service (NEW — same pattern as isam-service) ──
+  cisco-services:
+    build:
+      context: ./cisco-services
+      dockerfile: Dockerfile
+    container_name: cisco-services
+    ports:
+      - "8002:8002"
+    environment:
+      - DB_URL=mysql+pymysql://pfe_user:pfe_pass@db:3306/isam_dash
+      - AUTH_SERVICE_URL=http://auth-service:9000
+      - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
+      - JWT_ALGORITHM=HS256
+      - CISCO_CONNECTION_TIMEOUT=15
+      - CISCO_COMMAND_TIMEOUT=30
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    
   # ---------- Frontend ----------
   frontend:
       build:
@@ -61,7 +91,9 @@ services:
         args:
           #- VITE_AUTH_BASE_URL=http://10.255.25.77:9000
           #- VITE_ISAM_BASE_URL=http://10.255.25.77:8001
+          #- VITE_CISCO_BASE_URL=http://10.255.25.77:8002
           - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
+          - VITE_CISCO_BASE_URL=http://127.0.0.1:8002
           - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
       container_name: isam-frontend-container
       ports:
@@ -69,6 +101,7 @@ services:
       depends_on:
         - auth-service
         - isam-service
+        - cisco-services
       restart: on-failure
 
 volumes:
