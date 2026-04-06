@@ -21,13 +21,6 @@ import {
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
 import { useAuth } from '../../context/AuthContext';
 
-/**
- * Ajuste ici selon ton architecture :
- * - auth-service
- * - isam-service
- *
- * Si tu as un API gateway unique, mets les 2 à la même valeur.
- */
 const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
@@ -102,14 +95,9 @@ interface MeResponse {
   full_name: string;
   role: UserRole;
   is_active: boolean;
-
-  // compat ancien
   port_label?: string | null;
   port_value?: string | null;
-
-  // nouveau modèle
   ports?: UserPort[];
-
   created_at?: string;
   last_login_at?: string | null;
 }
@@ -132,6 +120,69 @@ function parseJwt(token: string | null): any | null {
   }
 }
 
+function extractErrorMessage(err: any): string {
+  if (!err) return '';
+  if (typeof err === 'string') return err;
+  if (typeof err?.message === 'string') return err.message;
+  return '';
+}
+
+function toReadableError(
+  message?: string | null,
+  fallback = 'Something went wrong.',
+): string {
+  const raw = (message || '').trim();
+  const msg = raw.toLowerCase();
+
+  if (!raw) return fallback;
+
+  if (msg.includes('timed out') || msg.includes('timeout')) {
+    return 'The request timed out. Please try again in a moment.';
+  }
+
+  if (
+    msg.includes('unable to connect') ||
+    msg.includes('impossible de se connecter') ||
+    msg.includes('connection refused') ||
+    msg.includes('no valid connections') ||
+    msg.includes('failed to establish') ||
+    msg.includes('network is unreachable')
+  ) {
+    return 'Unable to connect to the device or service.';
+  }
+
+  if (
+    msg.includes('authentication') ||
+    msg.includes("erreur d'authentification") ||
+    msg.includes('auth failed') ||
+    msg.includes('unauthorized')
+  ) {
+    return 'Authentication failed. Please verify your access rights.';
+  }
+
+  if (msg.includes('forbidden')) {
+    return 'You are not authorized to perform this action.';
+  }
+
+  if (msg.includes('not found')) {
+    return 'Requested resource was not found.';
+  }
+
+  if (msg.includes('failed to load')) {
+    return fallback;
+  }
+
+  if (msg.includes('refresh failed')) {
+    return fallback;
+  }
+
+  if (msg.includes('ssh:') || msg.includes('telnet:') || msg.includes('ssh-legacy')) {
+    return 'Unable to contact the ISAM device at the moment.';
+  }
+
+  return fallback;
+}
+
 async function authFetchJson<T>(
   url: string,
   accessToken: string | null,
@@ -149,7 +200,7 @@ async function authFetchJson<T>(
   try {
     data = await res.json();
   } catch {
-    // réponse vide ou non json
+    //
   }
 
   if (!res.ok) {
@@ -271,10 +322,9 @@ export default function OverviewSection() {
       loadTemplatesAll();
       loadHistoryAdmin();
     } else {
-      // USER
       setInstances([]);
       setInstancesError(null);
-      loadTemplatesAll(); // on filtre ensuite par created_by == me.username
+      loadTemplatesAll();
       loadHistoryUser();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -291,7 +341,13 @@ export default function OverviewSection() {
       );
       setMe(data);
     } catch (err: any) {
-      setMeError(err.message || 'Failed to load profile.');
+      console.error('Failed to load profile:', err);
+      setMeError(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to load your profile information.',
+        ),
+      );
     } finally {
       setLoadingMe(false);
     }
@@ -308,7 +364,13 @@ export default function OverviewSection() {
       );
       setInstances(data.instances ?? []);
     } catch (err: any) {
-      setInstancesError(err.message || 'Failed to load ISAM instances.');
+      console.error('Failed to load ISAM instances:', err);
+      setInstancesError(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to load ISAM instances.',
+        ),
+      );
     } finally {
       setLoadingInstances(false);
     }
@@ -325,7 +387,13 @@ export default function OverviewSection() {
       );
       setTemplates(data.templates ?? []);
     } catch (err: any) {
-      setTemplatesError(err.message || 'Failed to load templates.');
+      console.error('Failed to load templates:', err);
+      setTemplatesError(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to load templates.',
+        ),
+      );
     } finally {
       setLoadingTemplates(false);
     }
@@ -342,7 +410,13 @@ export default function OverviewSection() {
       );
       setHistory(data.items ?? []);
     } catch (err: any) {
-      setHistoryError(err.message || 'Failed to load configuration history.');
+      console.error('Failed to load configuration history:', err);
+      setHistoryError(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to load configuration history.',
+        ),
+      );
     } finally {
       setLoadingHistory(false);
     }
@@ -359,7 +433,13 @@ export default function OverviewSection() {
       );
       setHistory(data.items ?? []);
     } catch (err: any) {
-      setHistoryError(err.message || 'Failed to load my history.');
+      console.error('Failed to load user configuration history:', err);
+      setHistoryError(
+        toReadableError(
+          extractErrorMessage(err),
+          'Failed to load your activity history.',
+        ),
+      );
     } finally {
       setLoadingHistory(false);
     }
@@ -370,7 +450,6 @@ export default function OverviewSection() {
       return me.ports;
     }
 
-    // compat ancien système si jamais un user a encore un port unique
     if (me?.port_value) {
       return [
         {
@@ -386,10 +465,8 @@ export default function OverviewSection() {
 
   const visibleTemplates = useMemo<WanTemplate[]>(() => {
     if (isAdmin) return templates;
-
     if (templates.length === 0) return [];
 
-    // si created_by est renvoyé, on filtre vraiment par user courant
     const hasCreatedByField = templates.some((t) => typeof t.created_by !== 'undefined');
 
     if (hasCreatedByField) {
@@ -397,7 +474,6 @@ export default function OverviewSection() {
       return templates.filter((t) => t.created_by === me.username);
     }
 
-    // fallback si le backend ne renvoie pas created_by
     return templates;
   }, [templates, isAdmin, me?.username]);
 
@@ -430,7 +506,6 @@ export default function OverviewSection() {
   const latestHistory = history.slice(0, 5);
   const myPortsCount = myPorts.length;
 
-  // ===================== ADMIN VIEW =====================
   if (isAdmin) {
     return (
       <div className="space-y-6">
@@ -680,10 +755,8 @@ export default function OverviewSection() {
     );
   }
 
-  // ===================== USER VIEW =====================
   return (
     <div className="space-y-6">
-      {/* Account information */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -702,50 +775,17 @@ export default function OverviewSection() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-          <InfoItem
-            icon={<UserIcon size={14} />}
-            label="Username"
-            value={me?.username ?? '-'}
-          />
-          <InfoItem
-            icon={<UserIcon size={14} />}
-            label="Full name"
-            value={me?.full_name ?? '-'}
-          />
-          <InfoItem
-            icon={<Mail size={14} />}
-            label="Email"
-            value={me?.email ?? '-'}
-          />
-          <InfoItem
-            icon={<ShieldCheck size={14} />}
-            label="Role"
-            value={me?.role ?? roleFromJwt ?? '-'}
-          />
-          <InfoItem
-            icon={<CheckCircle2 size={14} />}
-            label="Status"
-            value={me?.is_active ? 'Active' : 'Disabled'}
-          />
-          <InfoItem
-            icon={<Cable size={14} />}
-            label="Assigned DB ports"
-            value={myPortsCount}
-          />
-          <InfoItem
-            icon={<CalendarDays size={14} />}
-            label="Created at"
-            value={formatDate(me?.created_at)}
-          />
-          <InfoItem
-            icon={<LogIn size={14} />}
-            label="Last login"
-            value={formatDate(me?.last_login_at)}
-          />
+          <InfoItem icon={<UserIcon size={14} />} label="Username" value={me?.username ?? '-'} />
+          <InfoItem icon={<UserIcon size={14} />} label="Full name" value={me?.full_name ?? '-'} />
+          <InfoItem icon={<Mail size={14} />} label="Email" value={me?.email ?? '-'} />
+          <InfoItem icon={<ShieldCheck size={14} />} label="Role" value={me?.role ?? roleFromJwt ?? '-'} />
+          <InfoItem icon={<CheckCircle2 size={14} />} label="Status" value={me?.is_active ? 'Active' : 'Disabled'} />
+          <InfoItem icon={<Cable size={14} />} label="Assigned DB ports" value={myPortsCount} />
+          <InfoItem icon={<CalendarDays size={14} />} label="Created at" value={formatDate(me?.created_at)} />
+          <InfoItem icon={<LogIn size={14} />} label="Last login" value={formatDate(me?.last_login_at)} />
         </div>
       </div>
 
-      {/* Stats user */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           title="My Ports"
@@ -785,7 +825,6 @@ export default function OverviewSection() {
         />
       </div>
 
-      {/* Activity + pie */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-200 p-5">
           <div className="flex items-center justify-between mb-4">
@@ -898,7 +937,6 @@ export default function OverviewSection() {
         </div>
       </div>
 
-      {/* Ports DB assignés */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-3">
           <div>
@@ -941,7 +979,6 @@ export default function OverviewSection() {
         </div>
       </div>
 
-      {/* Templates user */}
       <div className="bg-white rounded-xl border border-slate-200 p-5">
         <div className="flex items-center justify-between mb-3">
           <div>
