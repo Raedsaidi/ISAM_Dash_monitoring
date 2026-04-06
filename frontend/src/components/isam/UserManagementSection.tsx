@@ -23,6 +23,7 @@ import {
 import { toast } from "sonner";
 
 const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
+const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type RoleFilter = "ALL" | UserRole;
@@ -49,6 +50,16 @@ interface UserAdminRead {
 
 interface UserListResponse {
   users: UserAdminRead[];
+}
+
+interface WanModelRead {
+  id: number;
+  name: string;
+  description?: string | null;
+}
+
+interface WanModelListResponse {
+  models: WanModelRead[];
 }
 
 interface PortForm {
@@ -504,6 +515,9 @@ export default function UserManagementSection() {
   const [loading, setLoading] = useState(false);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
+  const [wanModels, setWanModels] = useState<WanModelRead[]>([]);
+  const [wanModelsLoading, setWanModelsLoading] = useState(false);
+
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("ALL");
 
@@ -597,10 +611,28 @@ export default function UserManagementSection() {
     [authFetch, searchTerm, roleFilter],
   );
 
+  const loadWanModels = useCallback(async () => {
+    setWanModelsLoading(true);
+    try {
+      const data = await authFetchJson<WanModelListResponse>(
+        `${ISAM_BASE_URL}/api/v1/isam/wan-models`,
+      );
+      setWanModels(data.models || []);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to load WAN modes.");
+    } finally {
+      setWanModelsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadUsers("", "ALL");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    loadWanModels();
+  }, [loadWanModels]);
 
   useEffect(() => {
     return () => {
@@ -726,19 +758,29 @@ export default function UserManagementSection() {
     let hasAtLeastOnePortValue = false;
 
     form.ports.forEach((p, index) => {
+      const l = (p.label || "").trim();
       const v = (p.value || "").trim();
+
+      if (!l) {
+        e[`ports.${index}.label`] = "WAN mode is required.";
+      }
+
       if (!v) {
         if (portsAreRequired)
           e[`ports.${index}.value`] = "Port value is required.";
         return;
       }
+
       hasAtLeastOnePortValue = true;
+
       if (/\s/.test(v))
         e[`ports.${index}.value`] = "Port value must not contain spaces.";
       else if (!/^\d+(\/\d+)*$/.test(v))
         e[`ports.${index}.value`] = "Invalid format. Example: 1/1/7/3";
+
       if (seenValues.has(v))
         e[`ports.${index}.value`] = "Duplicate port value is not allowed.";
+
       seenValues.add(v);
     });
 
@@ -857,10 +899,7 @@ export default function UserManagementSection() {
       (u) => u.role === "ADMIN" || u.role === "SUPER_ADMIN",
     ).length;
     const totalStandardUsers = users.filter((u) => u.role === "USER").length;
-    const totalPorts = users.reduce(
-      (acc, u) => acc + getUserPorts(u).length,
-      0,
-    );
+    const totalPorts = users.reduce((acc, u) => acc + getUserPorts(u).length, 0);
     return { totalUsers, totalAdmins, totalStandardUsers, totalPorts };
   }, [users]);
 
@@ -878,14 +917,9 @@ export default function UserManagementSection() {
       ? `Delete ${confirmDialog.target?.username ?? "user"}?`
       : "";
 
-  /* ═══════════════════════════════════════════════════════════════
-     RENDER
-     ═══════════════════════════════════════════════════════════════ */
-
   return (
     <>
       <div className="space-y-5">
-        {/* ─── Header ─── */}
         <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
           <div className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
@@ -954,14 +988,12 @@ export default function UserManagementSection() {
           </div>
         </div>
 
-        {/* ─── Error ─── */}
         {globalError && (
           <AlertBanner variant="error" onClose={() => setGlobalError(null)}>
             {globalError}
           </AlertBanner>
         )}
 
-        {/* ─── Stats ─── */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Total Users"
@@ -989,7 +1021,6 @@ export default function UserManagementSection() {
           />
         </div>
 
-        {/* ─── Table ─── */}
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-5 py-3">
             <SectionTitle
@@ -1206,14 +1237,10 @@ export default function UserManagementSection() {
           )}
         </div>
 
-        {/* ═══════════════════════════════════════════════════════════
-           CREATE / EDIT MODAL
-           ═══════════════════════════════════════════════════════════ */}
         {userModalOpen && (
           <div className="fixed inset-0 z-50 bg-slate-800/40 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
             <div className="mx-auto my-8 w-full max-w-3xl">
               <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-                {/* Modal Header */}
                 <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50/60 px-6 py-4">
                   <SectionTitle
                     icon={userModalMode === "create" ? Plus : Pencil}
@@ -1240,7 +1267,6 @@ export default function UserManagementSection() {
                   </button>
                 </div>
 
-                {/* Modal Body */}
                 <div className="max-h-[calc(100vh-200px)] overflow-y-auto">
                   <div className="p-6">
                     {formErrors.general && (
@@ -1252,7 +1278,6 @@ export default function UserManagementSection() {
                     )}
 
                     <form onSubmit={handleSubmitUserForm} className="space-y-5">
-                      {/* Username + Email */}
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                         <div>
                           <FieldLabel required={userModalMode === "create"}>
@@ -1308,7 +1333,6 @@ export default function UserManagementSection() {
                         </div>
                       </div>
 
-                      {/* Full name */}
                       <div>
                         <FieldLabel required>Full name</FieldLabel>
                         <Input
@@ -1332,7 +1356,6 @@ export default function UserManagementSection() {
                         )}
                       </div>
 
-                      {/* Password + Role + Status */}
                       <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                         <div className="md:col-span-1">
                           <FieldLabel required={userModalMode === "create"}>
@@ -1436,7 +1459,6 @@ export default function UserManagementSection() {
                         </div>
                       </div>
 
-                      {/* Ports */}
                       <div className="rounded-xl border border-slate-200 bg-slate-50/40 overflow-hidden">
                         <div className="flex items-start justify-between gap-3 border-b border-slate-200 p-4">
                           <div>
@@ -1473,19 +1495,40 @@ export default function UserManagementSection() {
                                 className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-3.5 md:grid-cols-[1fr_1fr_auto]"
                               >
                                 <div>
-                                  <FieldLabel>Label</FieldLabel>
-                                  <Input
+                                  <FieldLabel required>WAN Mode</FieldLabel>
+                                  <Select
                                     value={p.label}
                                     onChange={(e) =>
-                                      updatePortRow(
-                                        index,
-                                        "label",
-                                        e.target.value,
-                                      )
+                                      updatePortRow(index, "label", e.target.value)
                                     }
-                                    placeholder="ex: Client A"
-                                  />
+                                    disabled={wanModelsLoading}
+                                    className={cn(
+                                      formErrors[`ports.${index}.label`] &&
+                                        "border-red-300 focus:ring-red-50 focus:border-red-300",
+                                    )}
+                                  >
+                                    <option value="">
+                                      {wanModelsLoading
+                                        ? "Loading WAN modes..."
+                                        : "Select WAN mode"}
+                                    </option>
+                                    {wanModels.map((wm) => (
+                                      <option key={wm.id} value={wm.name}>
+                                        {wm.name}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                  {formErrors[`ports.${index}.label`] && (
+                                    <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                                      <AlertCircle
+                                        size={12}
+                                        className="opacity-70"
+                                      />
+                                      {formErrors[`ports.${index}.label`]}
+                                    </div>
+                                  )}
                                 </div>
+
                                 <div>
                                   <FieldLabel required={form.role === "USER"}>
                                     Port value
@@ -1493,11 +1536,7 @@ export default function UserManagementSection() {
                                   <Input
                                     value={p.value}
                                     onChange={(e) =>
-                                      updatePortRow(
-                                        index,
-                                        "value",
-                                        e.target.value,
-                                      )
+                                      updatePortRow(index, "value", e.target.value)
                                     }
                                     placeholder="ex: 1/1/7/3/95"
                                     className={cn(
@@ -1516,6 +1555,7 @@ export default function UserManagementSection() {
                                     </div>
                                   )}
                                 </div>
+
                                 <div className="md:pt-7">
                                   <Btn
                                     type="button"
@@ -1535,7 +1575,6 @@ export default function UserManagementSection() {
                         </div>
                       </div>
 
-                      {/* Form Actions */}
                       <div className="flex flex-wrap justify-end gap-2 pt-3 border-t border-slate-100">
                         <Btn
                           type="button"
@@ -1576,9 +1615,6 @@ export default function UserManagementSection() {
         )}
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════
-         CONFIRM DIALOG
-         ═══════════════════════════════════════════════════════════ */}
       <ConfirmDialog
         open={confirmDialog.open}
         title={confirmTitle}

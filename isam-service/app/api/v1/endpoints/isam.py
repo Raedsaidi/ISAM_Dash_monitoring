@@ -3,7 +3,7 @@ import logging
 import math
 from typing import List, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request ,BackgroundTasks
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
@@ -18,6 +18,7 @@ from app.models.config_history import ConfigHistory
 from app.models.isam_data import ISAMDataType
 from app.models.port_lock import PortLock
 from app.services.isam_cache import get_cached_isam_data, load_cached_parsed_data
+from app.services.isam_bootstrap import bootstrap_new_isam_instance
 from app.models.wan_template import WanTemplate, WanTemplateScope
 from app.models.wan_model import WanModel
 from app.models.template_project import TemplateProject
@@ -319,6 +320,7 @@ def get_template_project_or_404(db: Session, project_id: int) -> TemplateProject
 def create_isam_instance(
     body: ISAMInstanceCreate,
     request: Request,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
@@ -348,6 +350,9 @@ def create_isam_instance(
         message="Instance created",
         ip_address=client_ip,
     )
+
+    # Bootstrap initial en arrière-plan
+    background_tasks.add_task(bootstrap_new_isam_instance, inst.id)
 
     return inst
 
@@ -956,6 +961,31 @@ def create_wan_template(
 
     return tpl
 
+@router.get("/wan-templates/my-existing-copy", response_model=WanTemplateRead)
+def get_my_existing_copy(
+    source_template_id: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    root_template = get_template_or_404(db, source_template_id)
+    ensure_template_visible_to_user(current_user, root_template)
+
+    existing_copy = (
+        db.query(WanTemplate)
+        .filter(
+            WanTemplate.scope == WanTemplateScope.USER_INSTANCE.value,
+            WanTemplate.created_by == current_user.username,
+            WanTemplate.source_template_id == source_template_id,
+        )
+        .order_by(WanTemplate.updated_at.desc(), WanTemplate.id.desc())
+        .first()
+    )
+
+    if not existing_copy:
+        raise HTTPException(status_code=404, detail="No existing copy found.")
+
+    return existing_copy
+
 
 @router.get("/wan-templates", response_model=WanTemplateList)
 def list_wan_templates(
@@ -1272,8 +1302,6 @@ def apply_live_template(
     template_name_for_validation = ""
     if tpl:
         template_name_for_validation = tpl.name
-    else:
-        template_name_for_validation = ""
 
     # ── ÉTAPE 2 : Valider le WAN model dans le nom du template ──
     wan_model_found = ""
@@ -1285,54 +1313,71 @@ def apply_live_template(
             template_name_for_validation,
         )
 
-    # ── ÉTAPE 3 : Exécuter les commandes du template ──
     data_service = ISAMDataService(inst)
-    success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
+
+    # ── ÉTAPE 3 : Si nécessaire, exécuter le DOWN AVANT le template ──
+    commands_executed: list[str] = []
+    raw_output = ""
+    pre_apply_message = ""
+
+    if wan_model_found:
+        down_ok, down_output, down_commands, down_msg = data_service.execute_bridge_port_down_if_needed(
+            port=selected_port,
+            wan_model=wan_model_found,
+            timeout=30,
+        )
+
+        if down_commands:
+            commands_executed.extend(down_commands)
+            raw_output = (raw_output or "") + ("\n" if raw_output else "") + (down_output or "")
+
+        if not down_ok:
+            final_message = (
+                f"Failed before applying template: down command failed for WAN model "
+                f"'{wan_model_found}': {down_msg}"
+            )
+
+            client_ip = request.client.host if request.client else None
+            log_config_history(
+                db,
+                username=current_user.username,
+                action="APPLY_TEMPLATE_LIVE",
+                isam_instance_id=inst.id,
+                port_id=selected_port,
+                template_id=template_id,
+                success=False,
+                message=final_message,
+                ip_address=client_ip,
+                commands_executed=commands_executed,
+                raw_output=raw_output,
+            )
+
+            return ApplyWanTemplateResponse(
+                success=False,
+                protocol_used=None,
+                commands_executed=commands_executed,
+                raw_output=raw_output,
+                message=final_message,
+            )
+
+        if down_commands:
+            pre_apply_message = f"Down command executed for WAN model '{wan_model_found}'. "
+
+    # ── ÉTAPE 4 : Exécuter les commandes du template ──
+    success, proto, apply_output, msg, template_commands = data_service.apply_template_content(
         commands_template=body.commands_template,
         selected_port=selected_port,
         variables=body.variables,
         timeout=60,
     )
 
-    # ── ÉTAPE 4 : Si succès ET WAN model trouvé, exécuter le cycle admin-state ──
-    cycle_message = ""
-    if success and wan_model_found:
-        logger.info(
-            "[APPLY_LIVE] Template applied successfully. "
-            "Executing admin-state cycle (down → up) on port %s...",
-            selected_port,
-        )
-
-        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
-            port=selected_port,
-            delay_seconds=2.0,
-            timeout=30,
-        )
-
-        commands_executed.extend(cycle_commands)
-        raw_output = (raw_output or "") + "\n" + cycle_output
-
-        if cycle_ok:
-            cycle_message = f" | Admin-state cycle OK (down → up) for WAN model '{wan_model_found}'."
-            logger.info(
-                "[APPLY_LIVE] Admin-state cycle completed successfully on port %s",
-                selected_port,
-            )
-        else:
-            cycle_message = (
-                f" | WARNING: Admin-state cycle FAILED for WAN model '{wan_model_found}': {cycle_msg}. "
-                f"Template commands were applied successfully but the port restart failed."
-            )
-            logger.warning(
-                "[APPLY_LIVE] Admin-state cycle FAILED on port %s: %s",
-                selected_port,
-                cycle_msg,
-            )
+    commands_executed.extend(template_commands)
+    raw_output = (raw_output or "") + ("\n" if raw_output and apply_output else "") + (apply_output or "")
 
     # ── ÉTAPE 5 : Construire le message final ──
-    final_message = msg + cycle_message
+    final_message = pre_apply_message + msg
 
-    # ── ÉTAPE 6 : Logger dans l'historique ──
+    # ── ÉTAPE 6 : Logger ──
     client_ip = request.client.host if request.client else None
     log_config_history(
         db,
@@ -1355,7 +1400,6 @@ def apply_live_template(
         raw_output=raw_output,
         message=final_message,
     )
-
 
 @router.post(
     "/instances/{instance_id}/ports/{port_id:path}/apply-template/{template_id}",
@@ -1381,34 +1425,70 @@ def apply_template_to_port(
         current_user=current_user,
     )
 
-    # ── Valider le WAN model ──
+    # ── ÉTAPE 1 : Valider le WAN model ──
     wan_model_found = validate_template_wan_model(db, tpl.name)
 
     data_service = ISAMDataService(inst)
-    success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
+
+    # ── ÉTAPE 2 : DOWN éventuel AVANT le template ──
+    commands_executed: list[str] = []
+    raw_output = ""
+    pre_apply_message = ""
+
+    if wan_model_found:
+        down_ok, down_output, down_commands, down_msg = data_service.execute_bridge_port_down_if_needed(
+            port=port_id,
+            wan_model=wan_model_found,
+            timeout=30,
+        )
+
+        if down_commands:
+            commands_executed.extend(down_commands)
+            raw_output = (raw_output or "") + ("\n" if raw_output else "") + (down_output or "")
+
+        if not down_ok:
+            final_message = (
+                f"Failed before applying template: down command failed for WAN model "
+                f"'{wan_model_found}': {down_msg}"
+            )
+
+            client_ip = request.client.host if request.client else None
+            log_config_history(
+                db,
+                username=current_user.username,
+                action="APPLY_TEMPLATE",
+                isam_instance_id=inst.id,
+                port_id=port_id,
+                template_id=tpl.id,
+                success=False,
+                message=final_message,
+                ip_address=client_ip,
+                commands_executed=commands_executed,
+                raw_output=raw_output,
+            )
+
+            return ApplyWanTemplateResponse(
+                success=False,
+                protocol_used=None,
+                commands_executed=commands_executed,
+                raw_output=raw_output,
+                message=final_message,
+            )
+
+        if down_commands:
+            pre_apply_message = f"Down command executed for WAN model '{wan_model_found}'. "
+
+    # ── ÉTAPE 3 : Appliquer le template ──
+    success, proto, apply_output, msg, template_commands = data_service.apply_template_content(
         commands_template=tpl.commands_template,
         selected_port=port_id,
         variables={},
     )
 
-    # ── Si succès et WAN model trouvé, cycle admin-state ──
-    cycle_message = ""
-    if success and wan_model_found:
-        cycle_ok, cycle_output, cycle_commands, cycle_msg = data_service.execute_admin_state_cycle(
-            port=port_id,
-            delay_seconds=2.0,
-            timeout=30,
-        )
+    commands_executed.extend(template_commands)
+    raw_output = (raw_output or "") + ("\n" if raw_output and apply_output else "") + (apply_output or "")
 
-        commands_executed.extend(cycle_commands)
-        raw_output = (raw_output or "") + "\n" + cycle_output
-
-        if cycle_ok:
-            cycle_message = f" | Admin-state cycle OK for WAN model '{wan_model_found}'."
-        else:
-            cycle_message = f" | WARNING: Admin-state cycle FAILED: {cycle_msg}."
-
-    final_message = msg + cycle_message
+    final_message = pre_apply_message + msg
 
     client_ip = request.client.host if request.client else None
     log_config_history(
@@ -1432,8 +1512,6 @@ def apply_template_to_port(
         raw_output=raw_output,
         message=final_message,
     )
-
-
 # -------- MY ACCOUNT --------
 
 @router.get("/my-port", response_model=MyPortResponse)

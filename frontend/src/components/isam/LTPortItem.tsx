@@ -1,5 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Lock, Zap, Cable, Radio, Wifi, CheckCircle2, Circle } from 'lucide-react';
+import {
+  Lock,
+  Zap,
+  Cable,
+  Radio,
+  Wifi,
+  CheckCircle2,
+  Circle,
+} from 'lucide-react';
 import { cn } from '../../utils/cn';
 import PortLockButton from './PortLockButton';
 
@@ -21,11 +29,9 @@ interface LTPortItemProps {
   accessToken: string | null;
   isAdmin: boolean;
   onLockToggle: () => void;
-  /** Optionnel : si le parent pré-charge les statuts en batch */
   templateStatus?: TemplateStatus | null;
 }
 
-// Helper: check if a value is "empty" (0, "-", "", null, undefined)
 function isEmpty(val: any): boolean {
   if (val === null || val === undefined || val === '') return true;
   if (typeof val === 'number' && val === 0) return true;
@@ -64,17 +70,17 @@ export default function LTPortItem({
   onLockToggle,
   templateStatus: externalStatus,
 }: LTPortItemProps) {
-  const [status, setStatus] = useState<TemplateStatus | null>(externalStatus ?? null);
+  const [status, setStatus] = useState<TemplateStatus | null>(
+    externalStatus ?? null,
+  );
   const [statusLoading, setStatusLoading] = useState(false);
 
-  // Si le parent fournit le statut, on l'utilise directement
   useEffect(() => {
     if (externalStatus !== undefined) {
       setStatus(externalStatus);
       return;
     }
 
-    // Sinon, fetch individuel
     if (!instanceId || !port.port_id || !accessToken) return;
 
     let cancelled = false;
@@ -102,40 +108,47 @@ export default function LTPortItem({
 
   function getPortTypeIcon() {
     const pt = (port.port_type || '').toLowerCase();
-    if (pt.includes('xdsl')) return <Zap size={13} />;
-    if (pt.includes('ethernet')) return <Cable size={13} />;
-    if (pt.includes('pon') || pt.includes('ont')) return <Radio size={13} />;
-    return <Wifi size={13} />;
+    if (pt.includes('xdsl')) return <Zap size={14} />;
+    if (pt.includes('ethernet')) return <Cable size={14} />;
+    if (pt.includes('pon') || pt.includes('ont')) return <Radio size={14} />;
+    return <Wifi size={14} />;
   }
 
   function getTypeStyle() {
     const pt = (port.port_type || '').toLowerCase();
-    if (pt.includes('xdsl'))
+
+    if (pt.includes('xdsl')) {
       return {
         bg: 'bg-amber-50',
         border: 'border-amber-200',
         text: 'text-amber-700',
-        badge: 'bg-amber-100 text-amber-800 border-amber-300',
+        badge: 'bg-amber-50 text-amber-800 border-amber-200',
       };
-    if (pt.includes('ethernet'))
+    }
+
+    if (pt.includes('ethernet')) {
       return {
         bg: 'bg-sky-50',
         border: 'border-sky-200',
         text: 'text-sky-700',
-        badge: 'bg-sky-100 text-sky-800 border-sky-300',
+        badge: 'bg-sky-50 text-sky-800 border-sky-200',
       };
-    if (pt.includes('pon') || pt.includes('ont'))
+    }
+
+    if (pt.includes('pon') || pt.includes('ont')) {
       return {
         bg: 'bg-violet-50',
         border: 'border-violet-200',
         text: 'text-violet-700',
-        badge: 'bg-violet-100 text-violet-800 border-violet-300',
+        badge: 'bg-violet-50 text-violet-800 border-violet-200',
       };
+    }
+
     return {
-      bg: 'bg-zinc-50',
-      border: 'border-zinc-200',
-      text: 'text-zinc-600',
-      badge: 'bg-zinc-100 text-zinc-700 border-zinc-300',
+      bg: 'bg-slate-50',
+      border: 'border-slate-200',
+      text: 'text-slate-600',
+      badge: 'bg-slate-50 text-slate-700 border-slate-200',
     };
   }
 
@@ -153,23 +166,22 @@ export default function LTPortItem({
   return (
     <div
       className={cn(
-        'group relative rounded-lg border transition-all duration-100',
+        'group relative rounded-xl border transition-all duration-200 shadow-[0_1px_3px_rgba(15,23,42,0.04)]',
         isLocked
-          ? 'border-orange-300 bg-orange-50/40 border-dashed'
-          : 'border-zinc-200/80 bg-white hover:border-zinc-300 hover:shadow-[0_1px_4px_rgba(0,0,0,0.03)]',
+          ? 'border-orange-200 bg-gradient-to-r from-orange-50 via-orange-50/60 to-white'
+          : 'border-slate-200/80 bg-white hover:border-slate-300 hover:shadow-[0_8px_20px_rgba(15,23,42,0.06)]',
       )}
     >
       {isLocked && (
-        <div className="absolute left-0 top-2 bottom-2 w-[3px] bg-orange-400 rounded-full" />
+        <div className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full bg-gradient-to-b from-orange-300 to-orange-500" />
       )}
 
-      <div className="px-3 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          {/* Left */}
-          <div className="flex items-center gap-2.5 flex-1 min-w-0">
+      <div className="px-3.5 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3 flex-1 min-w-0">
             <div
               className={cn(
-                'flex items-center justify-center w-7 h-7 rounded-md border shrink-0',
+                'flex items-center justify-center w-8 h-8 rounded-lg border shadow-sm shrink-0 ring-1 ring-white',
                 style.bg,
                 style.border,
                 style.text,
@@ -179,13 +191,14 @@ export default function LTPortItem({
             </div>
 
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-mono font-bold text-zinc-900 text-[13px] leading-none">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono font-semibold text-slate-900 text-[13px] leading-none tracking-tight">
                   {port.port_id}
                 </span>
+
                 <span
                   className={cn(
-                    'inline-flex px-1.5 py-px rounded text-[8px] font-bold uppercase tracking-widest border leading-none',
+                    'inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.14em] border leading-none',
                     style.badge,
                   )}
                 >
@@ -193,15 +206,13 @@ export default function LTPortItem({
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5 mt-1.5">
+              <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                 <StateDot label="Admin" up={adminUp} value={port.admin_state} />
-                <div className="w-px h-2.5 bg-zinc-200" />
                 <StateDot label="Port" up={portUp} value={port.port_state} />
 
                 {hasDetails && (
                   <>
-                    <div className="w-px h-2.5 bg-zinc-200 hidden sm:block" />
-                    <div className="hidden sm:flex items-center gap-1">
+                    <div className="hidden sm:flex items-center gap-1.5 flex-wrap">
                       {mtuDisplay && <MicroChip label="MTU" value={mtuDisplay} />}
                       {hasMode && <MicroChip label="Mode" value={port.mode} />}
                       {hasEncap && <MicroChip label="Encap" value={port.encap} />}
@@ -212,14 +223,14 @@ export default function LTPortItem({
             </div>
           </div>
 
-          {/* Right */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-2 shrink-0">
             {isLocked && (
-              <div className="flex items-center gap-1 px-1.5 py-0.5 bg-orange-100 border border-orange-300 rounded text-[9px] font-bold text-orange-700 uppercase tracking-wider">
-                <Lock size={9} />
+              <div className="inline-flex items-center gap-1 px-2 py-1 bg-orange-50 border border-orange-200 rounded-full text-[9px] font-bold text-orange-700 uppercase tracking-[0.12em] shadow-sm">
+                <Lock size={10} />
                 Locked
               </div>
             )}
+
             {isAdmin && (
               <PortLockButton
                 portId={port.port_id}
@@ -232,68 +243,65 @@ export default function LTPortItem({
           </div>
         </div>
 
-        {/* ── Template status row ── */}
         {!statusLoading && status && (
-          <div className="mt-2 pt-1.5 border-t border-zinc-100">
+          <div className="mt-2.5 pt-2 border-t border-slate-100">
             {isConfigured ? (
               <div className="flex items-center gap-1.5 flex-wrap">
-                <div className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-50 border border-emerald-200 rounded text-[9px] font-semibold text-emerald-700">
-                  <CheckCircle2 size={9} className="shrink-0" />
+                <div className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded-full text-[9px] font-semibold text-emerald-700 shadow-sm">
+                  <CheckCircle2 size={10} className="shrink-0" />
                   Configured
                 </div>
 
                 {status.last_template_name && (
-                  <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-zinc-100 border border-zinc-200 text-[9px] font-mono font-semibold text-zinc-700">
+                  <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[9px] font-mono font-semibold text-slate-700">
                     {status.last_template_name}
                   </span>
                 )}
 
                 {status.last_project && (
-                  <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-violet-50 border border-violet-200 text-[9px] font-semibold text-violet-600">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-violet-50 border border-violet-200 text-[9px] font-semibold text-violet-700">
                     {status.last_project}
                   </span>
                 )}
 
                 {status.last_applied_by && (
-                  <span className="text-[9px] text-zinc-400">
+                  <span className="text-[9px] text-slate-400">
                     by{' '}
-                    <span className="font-semibold text-zinc-500">
+                    <span className="font-semibold text-slate-500">
                       {status.last_applied_by}
                     </span>
                   </span>
                 )}
 
                 {status.last_applied_at && (
-                  <span className="text-[9px] text-zinc-300">
+                  <span className="text-[9px] text-slate-300">
                     · {formatRelativeTime(status.last_applied_at)}
                   </span>
                 )}
 
                 {(status.apply_count ?? 0) > 1 && (
-                  <span className="text-[9px] text-zinc-300">
+                  <span className="text-[9px] text-slate-300">
                     · {status.apply_count}× applied
                   </span>
                 )}
               </div>
             ) : (
-              <div className="flex items-center gap-1">
-                <Circle size={8} className="text-zinc-300 shrink-0" />
-                <span className="text-[9px] text-zinc-400">Not configured</span>
+              <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                <Circle size={8} className="text-slate-300 shrink-0" />
+                <span>Not configured</span>
               </div>
             )}
           </div>
         )}
 
-        {/* Loading skeleton */}
         {statusLoading && (
-          <div className="mt-2 pt-1.5 border-t border-zinc-100">
-            <div className="h-3 w-32 bg-zinc-100 rounded animate-pulse" />
+          <div className="mt-2.5 pt-2 border-t border-slate-100">
+            <div className="h-3 w-32 bg-slate-100 rounded-full animate-pulse" />
           </div>
         )}
 
-        {/* Mobile details row */}
         {hasDetails && (
-          <div className="sm:hidden mt-2 pt-1.5 border-t border-zinc-100 flex items-center gap-1 flex-wrap">
+          <div className="sm:hidden mt-2.5 pt-2 border-t border-slate-100 flex items-center gap-1.5 flex-wrap">
             {mtuDisplay && <MicroChip label="MTU" value={mtuDisplay} />}
             {hasMode && <MicroChip label="Mode" value={port.mode} />}
             {hasEncap && <MicroChip label="Encap" value={port.encap} />}
@@ -314,18 +322,18 @@ function StateDot({
   value: string;
 }) {
   return (
-    <div className="flex items-center gap-1">
+    <div className="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-full bg-slate-50 border border-slate-100">
       <div
         className={cn(
-          'w-[5px] h-[5px] rounded-full shrink-0',
-          up ? 'bg-emerald-500' : 'bg-zinc-300',
+          'w-1.5 h-1.5 rounded-full shrink-0',
+          up ? 'bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.12)]' : 'bg-slate-300',
         )}
       />
-      <span className="text-[10px] text-zinc-400">{label}</span>
+      <span className="text-[10px] text-slate-400">{label}</span>
       <span
         className={cn(
-          'text-[10px] font-semibold',
-          up ? 'text-emerald-700' : 'text-zinc-400',
+          'text-[10px] font-semibold uppercase',
+          up ? 'text-emerald-700' : 'text-slate-500',
         )}
       >
         {value}
@@ -336,9 +344,11 @@ function StateDot({
 
 function MicroChip({ label, value }: { label: string; value: string }) {
   return (
-    <span className="inline-flex items-center gap-0.5 px-1 py-px rounded bg-zinc-100/80 text-[9px]">
-      <span className="font-medium text-zinc-400 uppercase">{label}</span>
-      <span className="font-mono font-semibold text-zinc-600">{value}</span>
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-[9px] shadow-sm">
+      <span className="font-semibold text-slate-400 uppercase tracking-wide">
+        {label}
+      </span>
+      <span className="font-mono font-semibold text-slate-700">{value}</span>
     </span>
   );
 }

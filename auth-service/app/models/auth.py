@@ -424,3 +424,9 @@ class UserList(BaseModel):
 
 class ChangeRoleRequest(StrictInputModel):
     role: UserRole
+
+
+
+class FilteredMyPortsResponse(StrictInputModel):
+    wan_model: Optional[str] = None
+    ports: list[UserPortRead] = Field(default_factory=list)

@@ -132,6 +132,21 @@ interface MeResponse {
   ports?: UserPort[];
 }
 
+interface FilteredUserPortsResponse {
+  wan_model?: string | null;
+  ports: UserPort[];
+}
+
+interface WanModelRead {
+  id: number;
+  name: string;
+  description?: string | null;
+}
+
+interface WanModelListResponse {
+  models: WanModelRead[];
+}
+
 interface CachedPortsResponse {
   success: boolean;
   protocol_used: string | null;
@@ -236,6 +251,33 @@ function extractTemplateVariables(template: string): string[] {
   }
 
   return result;
+}
+
+function extractWanModelFromTemplateName(
+  templateName: string,
+  wanModels: WanModelRead[],
+): string | null {
+  const raw = (templateName || "").trim();
+  if (!raw || !wanModels.length) return null;
+
+  const tokens = raw
+    .toUpperCase()
+    .split(/[_\-\s]+/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  const modelsByUpper = new Map(
+    wanModels
+      .map((wm) => [wm.name.trim().toUpperCase(), wm.name.trim()] as const)
+      .filter(([name]) => !!name),
+  );
+
+  for (const token of tokens) {
+    const matched = modelsByUpper.get(token);
+    if (matched) return matched;
+  }
+
+  return null;
 }
 
 function isPortVariable(name: string) {
@@ -649,6 +691,9 @@ export default function TemplateWorkspaceOverlay({
   const [loadingProjects, setLoadingProjects] = useState(false);
   const [projectFilter, setProjectFilter] = useState<string>("ALL");
 
+  const [wanModels, setWanModels] = useState<WanModelRead[]>([]);
+  const [loadingWanModels, setLoadingWanModels] = useState(false);
+
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
   const [portsError, setPortsError] = useState<string | null>(null);
@@ -722,6 +767,11 @@ export default function TemplateWorkspaceOverlay({
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
     [templates, selectedTemplateId],
   );
+
+  const detectedWanModel = useMemo(() => {
+    if (!selectedTemplate?.name) return null;
+    return extractWanModelFromTemplateName(selectedTemplate.name, wanModels);
+  }, [selectedTemplate?.name, wanModels]);
 
   const detectedVariables = useMemo(
     () => extractTemplateVariables(commands),
@@ -915,6 +965,29 @@ export default function TemplateWorkspaceOverlay({
     }
   }, [accessToken]);
 
+  const loadWanModels = useCallback(async () => {
+    if (!accessToken) {
+      setWanModels([]);
+      setLoadingWanModels(false);
+      return;
+    }
+
+    setLoadingWanModels(true);
+
+    try {
+      const res = await authFetchJson<WanModelListResponse>(
+        `${ISAM_BASE_URL}/api/v1/isam/wan-models`,
+        accessToken,
+      );
+      setWanModels(res.models || []);
+    } catch (err) {
+      setWanModels([]);
+      toast.error(getReadableErrorMessage(err) || "Failed to load WAN modes.");
+    } finally {
+      setLoadingWanModels(false);
+    }
+  }, [accessToken]);
+
   const loadTemplates = useCallback(async () => {
     const requestId = ++templatesRequestIdRef.current;
 
@@ -1001,20 +1074,20 @@ export default function TemplateWorkspaceOverlay({
 
     try {
       if (isUser || currentRole === "ADMIN") {
-        const me = await authFetchJson<MeResponse>(
-          `${AUTH_BASE_URL}/api/v1/auth/me`,
+        const params = new URLSearchParams();
+
+        if (detectedWanModel?.trim()) {
+          params.set("wan_model", detectedWanModel.trim());
+        }
+
+        const res = await authFetchJson<FilteredUserPortsResponse>(
+          `${AUTH_BASE_URL}/api/v1/auth/my-ports${params.toString() ? `?${params.toString()}` : ""}`,
           accessToken,
         );
 
         if (requestId !== portsRequestIdRef.current) return;
 
-        let ports: string[] = (me.ports || [])
-          .map((p) => p.value)
-          .filter(Boolean);
-
-        if (ports.length === 0 && me.port_value) {
-          ports = [me.port_value];
-        }
+        const ports = (res.ports || []).map((p) => p.value).filter(Boolean);
 
         setAvailablePorts(ports);
         setSelectedPort((prev) =>
@@ -1046,7 +1119,15 @@ export default function TemplateWorkspaceOverlay({
         setLoadingPorts(false);
       }
     }
-  }, [accessToken, user?.role, isUser, isSuperAdmin, currentRole, instance.id]);
+  }, [
+    accessToken,
+    user?.role,
+    isUser,
+    isSuperAdmin,
+    currentRole,
+    instance.id,
+    detectedWanModel,
+  ]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -1089,6 +1170,10 @@ export default function TemplateWorkspaceOverlay({
   useEffect(() => {
     loadProjects();
   }, [loadProjects]);
+
+  useEffect(() => {
+    loadWanModels();
+  }, [loadWanModels]);
 
   useEffect(() => {
     loadTemplates();
@@ -1386,16 +1471,18 @@ export default function TemplateWorkspaceOverlay({
           appliedAt: new Date().toISOString(),
         });
 
-                if (outputAnalysis.level === "error") {
+        if (outputAnalysis.level === "error") {
           toast.error("Template applied but execution errors were detected.");
-                } else if (outputAnalysis.level === "warning") {
+        } else if (outputAnalysis.level === "warning") {
           toast('Template applied with warning: "invalid token" detected.');
         } else {
           toast.success(res.message || "Template applied.");
         }
       } else {
         clearSuccessfulApplySnapshot();
-        toast.error("Failed to connect to the ISAM instance or apply the template.");
+        toast.error(
+          "Failed to connect to the ISAM instance or apply the template.",
+        );
         return;
       }
     } catch (err) {
@@ -1416,106 +1503,147 @@ export default function TemplateWorkspaceOverlay({
     }
   }
 
-  async function handleSave(mode: "update" | "copy" = "update") {
-    if (!selectedTemplate) return;
 
-    const isCopyAction = isUser || mode === "copy";
-
-    if (!isCopyAction && !editMode) {
-      toast.info('Click "Enable editing" first to modify.');
-      return;
+  async function findExistingUserCopy(sourceTemplateId: number) {
+  try {
+    const copy = await authFetchJson<WanTemplate>(
+      `${ISAM_BASE_URL}/api/v1/isam/wan-templates/my-existing-copy?source_template_id=${sourceTemplateId}`,
+      accessToken,
+    );
+    return copy;
+  } catch (err: any) {
+    const msg = String(err?.message || "").toLowerCase();
+    if (msg.includes("404") || msg.includes("no existing copy found")) {
+      return null;
     }
+    throw err;
+  }
+}
 
-    if (isCopyAction && !editMode && !lastSuccessfulApplySnapshot) {
-      toast.info(
-        'To save a copy, either use "Edit" mode or do a successful "Apply" first.',
-      );
-      return;
-    }
 
-    const validationError =
-      editMode || !lastSuccessfulApplySnapshot
-        ? validateWorkspace("save")
-        : null;
+async function handleSave(mode: "update" | "copy" = "update") {
+  if (!selectedTemplate) return;
 
-    if (validationError) {
-      toast.error(validationError);
-      return;
-    }
+  const isCopyAction = isUser || mode === "copy";
 
-    let saveSelectedPort = selectedPort;
-    let saveManualPort = manualPort;
-    let saveVariableValues = variableValues;
-    let saveOrigin: SaveOrigin = "manual-edit";
+  if (!isCopyAction && !editMode) {
+    toast.info('Click "Enable editing" first to modify.');
+    return;
+  }
 
-    if (isCopyAction && !editMode && lastSuccessfulApplySnapshot) {
-      saveSelectedPort = lastSuccessfulApplySnapshot.selectedPort;
-      saveManualPort = lastSuccessfulApplySnapshot.manualPort;
-      saveVariableValues = lastSuccessfulApplySnapshot.variableValues;
-      saveOrigin = "apply-success";
-    }
+  if (isCopyAction && !editMode && !lastSuccessfulApplySnapshot) {
+    toast.info(
+      'To save a copy, either use "Edit" mode or do a successful "Apply" first.',
+    );
+    return;
+  }
 
-    const effectivePort = getEffectivePort(saveSelectedPort, saveManualPort);
+  const validationError =
+    editMode || !lastSuccessfulApplySnapshot
+      ? validateWorkspace("save")
+      : null;
 
-    if (isUser && !effectivePort) {
-      toast.error(
-        "Please select a port or enter one manually; it will be included in the template name.",
-      );
-      return;
-    }
+  if (validationError) {
+    toast.error(validationError);
+    return;
+  }
 
-    let finalName: string;
+  let saveSelectedPort = selectedPort;
+  let saveManualPort = manualPort;
+  let saveVariableValues = variableValues;
+  let saveOrigin: SaveOrigin = "manual-edit";
 
-    if (isUser) {
-      const baseName = getBaseTemplateNameForUser(
-        selectedTemplate.name,
-        user?.username,
-      );
+  if (isCopyAction && !editMode && lastSuccessfulApplySnapshot) {
+    saveSelectedPort = lastSuccessfulApplySnapshot.selectedPort;
+    saveManualPort = lastSuccessfulApplySnapshot.manualPort;
+    saveVariableValues = lastSuccessfulApplySnapshot.variableValues;
+    saveOrigin = "apply-success";
+  }
 
-      finalName = buildUserTemplateName(
-        user?.username,
-        baseName,
-        effectivePort,
-      );
-    } else {
-      finalName = name.trim();
-    }
+  const effectivePort = getEffectivePort(saveSelectedPort, saveManualPort);
 
-    if (!finalName) {
-      toast.error("Template name is required.");
-      return;
-    }
+  if (isUser && !effectivePort) {
+    toast.error(
+      "Please select a port or enter one manually; it will be included in the template name.",
+    );
+    return;
+  }
 
-    setSaving(true);
+  let finalName: string;
 
-    try {
-      let saved: WanTemplate;
+  if (isUser) {
+    const baseName = getBaseTemplateNameForUser(
+      selectedTemplate.name,
+      user?.username,
+    );
 
-      if (isCopyAction) {
-        const scopeForNew: TemplateScope = isUser
-          ? "USER_INSTANCE"
-          : selectedTemplate.scope;
+    finalName = buildUserTemplateName(
+      user?.username,
+      baseName,
+      effectivePort,
+    );
+  } else {
+    finalName = name.trim();
+  }
 
-        const instanceIdForNew =
-          scopeForNew === "GLOBAL"
-            ? null
-            : selectedTemplate.isam_instance_id ?? instance.id;
+  if (!finalName) {
+    toast.error("Template name is required.");
+    return;
+  }
 
-        const savedParametersPayload =
-          saveOrigin === "apply-success"
-            ? buildSavedParametersPayload(
-                "apply-success",
-                lastSuccessfulApplySnapshot,
-              )
-            : {
-                selected_port: saveSelectedPort || null,
-                manual_port: saveManualPort || null,
-                effective_port: effectivePort || null,
-                variables: saveVariableValues || {},
-                saved_from: "manual-edit" as const,
-                applied_at: null,
-              };
+  setSaving(true);
 
+  try {
+    let saved: WanTemplate;
+
+    if (isCopyAction) {
+      const scopeForNew: TemplateScope = isUser
+        ? "USER_INSTANCE"
+        : selectedTemplate.scope;
+
+      const instanceIdForNew =
+        scopeForNew === "GLOBAL"
+          ? null
+          : selectedTemplate.isam_instance_id ?? instance.id;
+
+      const savedParametersPayload =
+        saveOrigin === "apply-success"
+          ? buildSavedParametersPayload(
+              "apply-success",
+              lastSuccessfulApplySnapshot,
+            )
+          : {
+              selected_port: saveSelectedPort || null,
+              manual_port: saveManualPort || null,
+              effective_port: effectivePort || null,
+              variables: saveVariableValues || {},
+              saved_from: "manual-edit" as const,
+              applied_at: null,
+            };
+
+      const rootSourceTemplateId =
+        selectedTemplate.source_template_id ?? selectedTemplate.id;
+
+      const existingUserCopy = await findExistingUserCopy(rootSourceTemplateId);
+
+      if (existingUserCopy) {
+        saved = await authFetchJson<WanTemplate>(
+          `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${existingUserCopy.id}`,
+          accessToken,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: finalName,
+              commands_template: commands,
+              project: inheritedProject,
+              saved_parameters: savedParametersPayload,
+            }),
+          },
+        );
+
+        toast.success("Template copy updated.");
+      } else {
         saved = await authFetchJson<WanTemplate>(
           `${ISAM_BASE_URL}/api/v1/isam/wan-templates`,
           accessToken,
@@ -1527,46 +1655,45 @@ export default function TemplateWorkspaceOverlay({
               commands_template: commands,
               scope: scopeForNew,
               isam_instance_id: instanceIdForNew,
-              source_template_id: selectedTemplate.id,
+              source_template_id: rootSourceTemplateId,
               project: inheritedProject,
               saved_parameters: savedParametersPayload,
             }),
           },
         );
-      } else {
-        saved = await authFetchJson<WanTemplate>(
-          `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${selectedTemplate.id}`,
-          accessToken,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: finalName,
-              commands_template: commands,
-              saved_parameters: buildSavedParametersPayload("manual-edit"),
-            }),
-          },
-        );
+
+        toast.success("Template copy created with saved parameters.");
       }
-
-      await loadTemplates();
-      setSelectedTemplateId(saved.id);
-      setEditMode(false);
-      resetExecutionStates();
-      setLastPreviewFingerprint("");
-      clearSuccessfulApplySnapshot();
-
-      toast.success(
-        isCopyAction
-          ? "Template copy created with saved parameters."
-          : "Template updated.",
+    } else {
+      saved = await authFetchJson<WanTemplate>(
+        `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${selectedTemplate.id}`,
+        accessToken,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: finalName,
+            commands_template: commands,
+            saved_parameters: buildSavedParametersPayload("manual-edit"),
+          }),
+        },
       );
-    } catch (err) {
-      toast.error(getReadableErrorMessage(err) || "Failed to save.");
-    } finally {
-      setSaving(false);
+
+      toast.success("Template updated.");
     }
+
+    await loadTemplates();
+    setSelectedTemplateId(saved.id);
+    setEditMode(false);
+    resetExecutionStates();
+    setLastPreviewFingerprint("");
+    clearSuccessfulApplySnapshot();
+  } catch (err) {
+    toast.error(getReadableErrorMessage(err) || "Failed to save.");
+  } finally {
+    setSaving(false);
   }
+}
 
   function handleClearContent() {
     if (!commands.trim()) return;
@@ -1747,7 +1874,10 @@ export default function TemplateWorkspaceOverlay({
                         </span>
 
                         {tpl.scope === "GLOBAL" ? (
-                          <Globe size={12} className="shrink-0 text-violet-500" />
+                          <Globe
+                            size={12}
+                            className="shrink-0 text-violet-500"
+                          />
                         ) : (
                           <User size={12} className="shrink-0 text-sky-500" />
                         )}
@@ -1768,7 +1898,8 @@ export default function TemplateWorkspaceOverlay({
                           <>
                             <span>·</span>
                             <span>
-                              {tpl.saved_parameters.saved_from === "apply-success"
+                              {tpl.saved_parameters.saved_from ===
+                              "apply-success"
                                 ? "saved from apply"
                                 : "saved from edit"}
                             </span>
@@ -1989,7 +2120,9 @@ export default function TemplateWorkspaceOverlay({
                           <div className="mt-3">
                             <AlertBanner variant="warning">
                               Missing required variables:{" "}
-                              <strong>{missingRequiredVariables.join(", ")}</strong>
+                              <strong>
+                                {missingRequiredVariables.join(", ")}
+                              </strong>
                             </AlertBanner>
                           </div>
                         )}
@@ -2047,7 +2180,9 @@ export default function TemplateWorkspaceOverlay({
 
                           <div className="mt-2">
                             <label className="mb-1 block text-[11px] font-medium text-slate-600">
-                              {isSuperAdmin ? "Port (manual entry)" : "Manual entry"}
+                              {isSuperAdmin
+                                ? "Port (manual entry)"
+                                : "Manual entry"}
                             </label>
                             <Input
                               value={manualPort}
@@ -2085,15 +2220,38 @@ export default function TemplateWorkspaceOverlay({
                                   : "Choose a port from the list OR type one manually."}
                           </div>
 
+                          {detectedWanModel && (
+                            <div className="mt-1.5 text-[11px] text-slate-500">
+                              WAN mode detected:{" "}
+                              <span className="font-semibold text-slate-700">
+                                {detectedWanModel}
+                              </span>
+                            </div>
+                          )}
+
+                          {selectedTemplate?.name &&
+                            !detectedWanModel &&
+                            !loadingWanModels && (
+                              <div className="mt-1.5">
+                                <AlertBanner variant="warning">
+                                  No WAN mode was detected from the template
+                                  name.
+                                </AlertBanner>
+                              </div>
+                            )}
+
                           {!isSuperAdmin && loadingPorts && (
                             <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-slate-500">
-                              <Loader2 size={11} className="animate-spin" /> Loading ports...
+                              <Loader2 size={11} className="animate-spin" />{" "}
+                              Loading ports...
                             </div>
                           )}
 
                           {!isSuperAdmin && portsError && (
                             <div className="mt-1.5">
-                              <AlertBanner variant="error">{portsError}</AlertBanner>
+                              <AlertBanner variant="error">
+                                {portsError}
+                              </AlertBanner>
                             </div>
                           )}
                         </div>
@@ -2130,13 +2288,16 @@ export default function TemplateWorkspaceOverlay({
 
                         {lastSuccessfulApplySnapshot && (
                           <AlertBanner variant="success">
-                            Last successful apply is available. You can now save a
-                            reusable copy with the exact applied parameters.
+                            Last successful apply is available. You can now save
+                            a reusable copy with the exact applied parameters.
                           </AlertBanner>
                         )}
 
                         <div className="flex flex-wrap items-center gap-2 pt-2">
-                          <Btn onClick={handlePreview} disabled={previewState.loading}>
+                          <Btn
+                            onClick={handlePreview}
+                            disabled={previewState.loading}
+                          >
                             {previewState.loading ? (
                               <Loader2 size={14} className="animate-spin" />
                             ) : (
@@ -2202,7 +2363,11 @@ export default function TemplateWorkspaceOverlay({
 
                           <div className="flex-1" />
 
-                          <Btn variant="danger" size="sm" onClick={handleClearAll}>
+                          <Btn
+                            variant="danger"
+                            size="sm"
+                            onClick={handleClearAll}
+                          >
                             <RotateCcw size={13} />
                             Reset
                           </Btn>
@@ -2210,8 +2375,8 @@ export default function TemplateWorkspaceOverlay({
 
                         {!editMode && !lastSuccessfulApplySnapshot && (
                           <div className="text-[11px] text-slate-500">
-                            Save Copy becomes available after either entering Edit
-                            mode or completing a successful Apply.
+                            Save Copy becomes available after either entering
+                            Edit mode or completing a successful Apply.
                           </div>
                         )}
                       </div>
@@ -2391,7 +2556,7 @@ export default function TemplateWorkspaceOverlay({
             </div>
 
             <div className="text-[11px] text-slate-400">
-              ISAM Template Manager 
+              ISAM Template Manager
             </div>
           </footer>
         </div>
