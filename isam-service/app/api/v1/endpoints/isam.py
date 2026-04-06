@@ -1219,22 +1219,112 @@ def test_wan_template(
 ):
     inst = get_instance_or_404(db, body.instance_id)
 
+    selected_port = (body.selected_port or "").strip()
+    tpl = None
+
+    # Si un template_id est fourni, charger la template pour récupérer son nom
+    # et vérifier qu'elle est applicable à l'instance
+    template_name_for_validation = (body.template_name or "").strip()
+
+    if body.template_id is not None:
+        tpl = get_template_or_404(db, body.template_id)
+        ensure_template_visible_to_user(current_user, tpl, instance_id=inst.id)
+        ensure_template_applicable_to_instance(tpl, inst.id)
+        template_name_for_validation = tpl.name
+
+    # Si un port est fourni, vérifier qu'il n'est pas verrouillé
+    if selected_port:
+        ensure_port_not_locked_for_user(
+            db=db,
+            instance_id=inst.id,
+            port_id=selected_port,
+            current_user=current_user,
+        )
+
+    # ── ÉTAPE 1 : Valider le WAN model depuis le nom du template ──
+    wan_model_found = ""
+    if template_name_for_validation:
+        wan_model_found = validate_template_wan_model(db, template_name_for_validation)
+        logger.info(
+            "[TEST_TEMPLATE] WAN model validated: '%s' (from template '%s')",
+            wan_model_found,
+            template_name_for_validation,
+        )
+
     data_service = ISAMDataService(inst)
-    success, proto, raw_output, msg, commands_executed = data_service.apply_template_content(
+
+    # ── ÉTAPE 2 : DOWN éventuel AVANT le template ──
+    commands_executed: list[str] = []
+    raw_output = ""
+    pre_test_message = ""
+
+    if wan_model_found and selected_port:
+        down_ok, down_output, down_commands, down_msg = data_service.execute_bridge_port_down_if_needed(
+            port=selected_port,
+            wan_model=wan_model_found,
+            timeout=30,
+        )
+
+        if down_commands:
+            commands_executed.extend(down_commands)
+            raw_output = (raw_output or "") + ("\n" if raw_output else "") + (down_output or "")
+
+        if not down_ok:
+            final_message = (
+                f"Failed before testing template: down command failed for WAN model "
+                f"'{wan_model_found}': {down_msg}"
+            )
+
+            client_ip = request.client.host if request.client else None
+            log_config_history(
+                db,
+                username=current_user.username,
+                action="TEST_TEMPLATE",
+                isam_instance_id=inst.id,
+                port_id=selected_port or None,
+                template_id=body.template_id,
+                success=False,
+                message=final_message,
+                ip_address=client_ip,
+                commands_executed=commands_executed,
+                raw_output=raw_output,
+            )
+
+            return TemplateTestResponse(
+                success=False,
+                protocol_used=None,
+                rendered_commands=commands_executed,
+                raw_output=raw_output,
+                message=final_message,
+            )
+
+        if down_commands:
+            pre_test_message = f"Down command executed for WAN model '{wan_model_found}'. "
+
+    # ── ÉTAPE 3 : Exécuter le contenu du template ──
+    success, proto, apply_output, msg, template_commands = data_service.apply_template_content(
         commands_template=body.commands_template,
-        selected_port=body.selected_port or "",
+        selected_port=selected_port,
         variables=body.variables,
         timeout=60,
     )
 
+    commands_executed.extend(template_commands)
+    raw_output = (raw_output or "") + ("\n" if raw_output and apply_output else "") + (apply_output or "")
+
+    final_message = pre_test_message + msg
+
+    # ── ÉTAPE 4 : Logger ──
     client_ip = request.client.host if request.client else None
     log_config_history(
         db,
         username=current_user.username,
         action="TEST_TEMPLATE",
         isam_instance_id=inst.id,
+        port_id=selected_port or None,
+        template_id=body.template_id,
         success=success,
-        message=msg,
+        message=final_message,
         ip_address=client_ip,
         commands_executed=commands_executed,
         raw_output=raw_output,
@@ -1245,9 +1335,8 @@ def test_wan_template(
         protocol_used=proto,
         rendered_commands=commands_executed,
         raw_output=raw_output,
-        message=msg,
+        message=final_message,
     )
-
 
 # ================================================================
 # ========  APPLY LIVE (avec validation WAN model + cycle)  ======

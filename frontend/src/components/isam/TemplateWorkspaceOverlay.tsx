@@ -40,7 +40,7 @@ type TemplateScope = "GLOBAL" | "USER_INSTANCE";
 type ProtocolPreference = "telnet" | "ssh" | "auto";
 type StatusType = "active" | "inactive" | "error";
 type ConfirmActionType = "clear-content" | "clear-all";
-type TemplateOwnerFilter = "ALL" | "MINE";
+type TemplateOwnerFilter = "ALL" | "MINE" | "GLOBAL";
 type SaveOrigin = "manual-edit" | "apply-success";
 
 interface IsamInstance {
@@ -1016,6 +1016,10 @@ export default function TemplateWorkspaceOverlay({
 
       if (ownerFilter === "MINE") {
         params.set("mine", "true");
+      } 
+      
+      else if (ownerFilter === "GLOBAL") {
+       params.set("scope", "GLOBAL");
       }
 
       if (projectFilter !== "ALL") {
@@ -1799,8 +1803,9 @@ async function handleSave(mode: "update" | "copy" = "update") {
                     }}
                     className="py-1.5 text-xs"
                   >
-                    <option value="ALL">All templates</option>
-                    <option value="MINE">My templates</option>
+                    <option value="ALL">All visible templates</option>
+                    <option value="MINE">My personal templates</option>
+                    <option value="GLOBAL">Global templates only</option>
                   </Select>
 
                   <Select

@@ -196,6 +196,8 @@ class TemplateRenderResponse(BaseModel):
 
 class TemplateTestRequest(TemplateRenderRequest):
     instance_id: int
+    template_id: Optional[int] = None
+    template_name: Optional[str] = None
 
 
 class TemplateTestResponse(BaseModel):
