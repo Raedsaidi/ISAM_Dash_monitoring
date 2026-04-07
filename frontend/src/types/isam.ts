@@ -45,15 +45,13 @@ export interface SystemMetrics {
   uptime: string;
 }
 
-// src/types/isam.ts
-// src/types/isam.ts
-// src/types/isam.ts  (add "vlan-management" to the union)
 export type NavSection =
   | "overview"
   | "junctions"
   | "audit-logs"
   | "user-management"
   | "wan-templates"
+  | "my-templates"
   | "switch-management"
   | "port-management"
   | "vlan-management";

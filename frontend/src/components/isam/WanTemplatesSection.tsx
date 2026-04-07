@@ -1389,6 +1389,8 @@ export default function WanTemplatesSection() {
             commands_template: commandsTemplate,
             selected_port: testPort.trim() || null,
             variables: variableValues,
+            template_id: editingTemplate?.id ?? null,
+            template_name: finalName || name.trim() || null,
           }),
         }
       );

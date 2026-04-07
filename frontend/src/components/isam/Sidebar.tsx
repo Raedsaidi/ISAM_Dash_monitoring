@@ -10,6 +10,7 @@ import {
   ChevronRight,
   User,
   Globe2,
+  FolderOpen,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -28,34 +29,33 @@ export default function Sidebar({
 }: SidebarProps) {
   const { user } = useAuth();
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const isUser = user?.role === 'USER';
 
-  // On construit le tableau étape par étape pour éviter les problèmes de type
   const navItems: { section: NavSection; label: string; icon: React.ReactNode }[] = [
     { section: 'overview', label: 'Overview', icon: <LayoutDashboard size={20} /> },
+    { section: 'junctions', label: 'ISAM', icon: <Network size={20} /> },
   ];
-    navItems.push(
-    {
-      section: 'junctions',
-      label: 'ISAM',
-      icon: <Network size={20} />},
-  );
 
-  // On ajoute 'junctions' uniquement pour les admins
+  if (isUser) {
+    navItems.push({
+      section: 'my-templates',
+      label: 'My Templates',
+      icon: <FolderOpen size={20} />,
+    });
+  }
+
   if (isAdmin) {
     navItems.push(
-    { section: 'wan-templates', label: 'WAN Templates', icon: <Globe2 size={20} /> },
-    { section: 'user-management',label: 'User Management', icon: <User size={20} /> 
-    },
-    
-  );
+      { section: 'wan-templates', label: 'WAN Templates', icon: <Globe2 size={20} /> },
+      { section: 'user-management', label: 'User Management', icon: <User size={20} /> },
+    );
   }
-      navItems.push(
-    { section: 'audit-logs', label: 'Audit Logs', icon: <ScrollText size={20} /> },
-  );
 
-
-
-
+  navItems.push({
+    section: 'audit-logs',
+    label: 'Audit Logs',
+    icon: <ScrollText size={20} />,
+  });
 
   return (
     <aside
@@ -85,7 +85,7 @@ export default function Sidebar({
             key={item.section}
             onClick={() => onNavigate(item.section)}
             className={cn(
-              'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all.duration-200',
+              'w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200',
               activeSection === item.section
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                 : 'text-slate-300 hover:bg-slate-800 hover:text-white',
@@ -97,7 +97,6 @@ export default function Sidebar({
           </button>
         ))}
       </nav>
-
     </aside>
   );
 }
