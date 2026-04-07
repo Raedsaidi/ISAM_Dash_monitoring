@@ -29,6 +29,7 @@ import {
   FolderOpen,
   ChevronLeft,
   ChevronRight,
+  CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -99,6 +100,7 @@ interface TemplateProject {
   created_at: string;
   updated_at: string;
 }
+
 interface TemplateProjectListResponse {
   projects: TemplateProject[];
 }
@@ -166,6 +168,15 @@ interface SuccessfulApplySnapshot {
   effectivePort: string;
   variableValues: Record<string, string>;
   appliedAt: string;
+}
+
+interface TemplateStatus {
+  configured: boolean;
+  last_template_name?: string | null;
+  last_applied_by?: string | null;
+  last_project?: string | null;
+  last_applied_at?: string | null;
+  apply_count?: number;
 }
 
 function getReadableErrorMessage(error: unknown): string {
@@ -392,6 +403,21 @@ function analyzeRawOutput(rawOutput: string): {
     matches: [],
     message: null,
   };
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const now = new Date();
+  const date = new Date(dateStr);
+  const diffMs = now.getTime() - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffH = Math.floor(diffMin / 60);
+  const diffD = Math.floor(diffH / 24);
+
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffH < 24) return `${diffH}h ago`;
+  if (diffD < 30) return `${diffD}d ago`;
+  return date.toLocaleDateString();
 }
 
 /* ================= UI Primitives ================= */
@@ -656,6 +682,112 @@ function MetadataChip({ label, value }: { label: string; value: string }) {
   );
 }
 
+function PortTemplateStatusCard({
+  loading,
+  error,
+  status,
+  effectivePort,
+}: {
+  loading: boolean;
+  error: string | null;
+  status: TemplateStatus | null;
+  effectivePort: string;
+}) {
+  const isConfigured = status?.configured === true;
+
+  if (!effectivePort) {
+    return (
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+        Select or enter a port to view its configuration status.
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-2 text-[11px] text-slate-500">
+          <Loader2 size={12} className="animate-spin" />
+          Checking port configuration status...
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="mt-3">
+        <AlertBanner variant="error">{error}</AlertBanner>
+      </div>
+    );
+  }
+
+  if (!status) return null;
+
+  return (
+    <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+            Port Template Status
+          </div>
+          <div className="mt-1 font-mono text-xs text-slate-700">
+            {effectivePort}
+          </div>
+        </div>
+
+        {isConfigured ? (
+          <div className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded-full text-[10px] font-semibold text-emerald-700 shadow-sm">
+            <CheckCircle2 size={11} className="shrink-0" />
+            Configured
+          </div>
+        ) : (
+          <div className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-50 border border-slate-200 rounded-full text-[10px] font-semibold text-slate-500 shadow-sm">
+            Not configured
+          </div>
+        )}
+      </div>
+
+      {isConfigured && (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          {status.last_template_name && (
+            <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[10px] font-mono font-semibold text-slate-700">
+              {status.last_template_name}
+            </span>
+          )}
+
+          {status.last_project && (
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-violet-50 border border-violet-200 text-[10px] font-semibold text-violet-700">
+              {status.last_project}
+            </span>
+          )}
+
+          {status.last_applied_by && (
+            <span className="text-[10px] text-slate-400">
+              by{" "}
+              <span className="font-semibold text-slate-500">
+                {status.last_applied_by}
+              </span>
+            </span>
+          )}
+
+          {status.last_applied_at && (
+            <span className="text-[10px] text-slate-300">
+              · {formatRelativeTime(status.last_applied_at)}
+            </span>
+          )}
+
+          {(status.apply_count ?? 0) > 1 && (
+            <span className="text-[10px] text-slate-300">
+              · {status.apply_count}× applied
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ================= MAIN ================= */
 
 const PAGE_SIZE = 10;
@@ -743,6 +875,16 @@ export default function TemplateWorkspaceOverlay({
   const [lastSuccessfulApplySnapshot, setLastSuccessfulApplySnapshot] =
     useState<SuccessfulApplySnapshot | null>(null);
 
+  const [portTemplateStatus, setPortTemplateStatus] = useState<{
+    loading: boolean;
+    error: string | null;
+    data: TemplateStatus | null;
+  }>({
+    loading: false,
+    error: null,
+    data: null,
+  });
+
   const [confirmDialog, setConfirmDialog] = useState<{
     open: boolean;
     action: ConfirmActionType | null;
@@ -762,6 +904,7 @@ export default function TemplateWorkspaceOverlay({
   const previewRequestIdRef = useRef(0);
   const applyRequestIdRef = useRef(0);
   const projectsRequestIdRef = useRef(0);
+  const portTemplateStatusRequestIdRef = useRef(0);
 
   const selectedTemplate = useMemo(
     () => templates.find((t) => t.id === selectedTemplateId) ?? null,
@@ -802,6 +945,11 @@ export default function TemplateWorkspaceOverlay({
   const rawOutputAnalysis = useMemo(
     () => analyzeRawOutput(applyState.raw_output),
     [applyState.raw_output],
+  );
+
+  const effectivePort = useMemo(
+    () => getEffectivePort(selectedPort, manualPort).trim(),
+    [selectedPort, manualPort],
   );
 
   const [lastPreviewFingerprint, setLastPreviewFingerprint] = useState("");
@@ -1016,10 +1164,8 @@ export default function TemplateWorkspaceOverlay({
 
       if (ownerFilter === "MINE") {
         params.set("mine", "true");
-      } 
-      
-      else if (ownerFilter === "GLOBAL") {
-       params.set("scope", "GLOBAL");
+      } else if (ownerFilter === "GLOBAL") {
+        params.set("scope", "GLOBAL");
       }
 
       if (projectFilter !== "ALL") {
@@ -1133,6 +1279,50 @@ export default function TemplateWorkspaceOverlay({
     detectedWanModel,
   ]);
 
+  const loadPortTemplateStatus = useCallback(async () => {
+    const requestId = ++portTemplateStatusRequestIdRef.current;
+
+    if (!accessToken || !instance?.id || !effectivePort) {
+      setPortTemplateStatus({
+        loading: false,
+        error: null,
+        data: null,
+      });
+      return;
+    }
+
+    setPortTemplateStatus((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+    }));
+
+    try {
+      const encodedPortId = encodeURIComponent(effectivePort);
+
+      const res = await authFetchJson<TemplateStatus>(
+        `${ISAM_BASE_URL}/api/v1/isam/instances/${instance.id}/ports/${encodedPortId}/template-status`,
+        accessToken,
+      );
+
+      if (requestId !== portTemplateStatusRequestIdRef.current) return;
+
+      setPortTemplateStatus({
+        loading: false,
+        error: null,
+        data: res,
+      });
+    } catch (err) {
+      if (requestId !== portTemplateStatusRequestIdRef.current) return;
+
+      setPortTemplateStatus({
+        loading: false,
+        error: getReadableErrorMessage(err) || "Failed to load port status.",
+        data: null,
+      });
+    }
+  }, [accessToken, instance?.id, effectivePort]);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedSearch(templateSearch);
@@ -1165,6 +1355,11 @@ export default function TemplateWorkspaceOverlay({
     resetExecutionStates();
     setLastPreviewFingerprint("");
     clearSuccessfulApplySnapshot();
+    setPortTemplateStatus({
+      loading: false,
+      error: null,
+      data: null,
+    });
   }, [instance.id, resetExecutionStates, clearSuccessfulApplySnapshot]);
 
   useEffect(() => {
@@ -1186,6 +1381,10 @@ export default function TemplateWorkspaceOverlay({
   useEffect(() => {
     loadPorts();
   }, [loadPorts]);
+
+  useEffect(() => {
+    loadPortTemplateStatus();
+  }, [loadPortTemplateStatus]);
 
   useEffect(() => {
     if (templates.length === 0) {
@@ -1246,7 +1445,6 @@ export default function TemplateWorkspaceOverlay({
       selectedTemplate.name,
       user?.username,
     );
-    const effectivePort = getEffectivePort(selectedPort, manualPort);
 
     const autoName = buildUserTemplateName(
       user?.username,
@@ -1255,7 +1453,7 @@ export default function TemplateWorkspaceOverlay({
     );
 
     setName(autoName);
-  }, [selectedTemplate, isUser, user?.username, selectedPort, manualPort]);
+  }, [selectedTemplate, isUser, user?.username, effectivePort]);
 
   useEffect(() => {
     if (!selectedTemplate || isUser) return;
@@ -1482,6 +1680,8 @@ export default function TemplateWorkspaceOverlay({
         } else {
           toast.success(res.message || "Template applied.");
         }
+
+        loadPortTemplateStatus();
       } else {
         clearSuccessfulApplySnapshot();
         toast.error(
@@ -1507,132 +1707,168 @@ export default function TemplateWorkspaceOverlay({
     }
   }
 
-
   async function findExistingUserCopy(sourceTemplateId: number) {
-  try {
-    const copy = await authFetchJson<WanTemplate>(
-      `${ISAM_BASE_URL}/api/v1/isam/wan-templates/my-existing-copy?source_template_id=${sourceTemplateId}`,
-      accessToken,
-    );
-    return copy;
-  } catch (err: any) {
-    const msg = String(err?.message || "").toLowerCase();
-    if (msg.includes("404") || msg.includes("no existing copy found")) {
-      return null;
+    try {
+      const copy = await authFetchJson<WanTemplate>(
+        `${ISAM_BASE_URL}/api/v1/isam/wan-templates/my-existing-copy?source_template_id=${sourceTemplateId}`,
+        accessToken,
+      );
+      return copy;
+    } catch (err: any) {
+      const msg = String(err?.message || "").toLowerCase();
+      if (msg.includes("404") || msg.includes("no existing copy found")) {
+        return null;
+      }
+      throw err;
     }
-    throw err;
-  }
-}
-
-
-async function handleSave(mode: "update" | "copy" = "update") {
-  if (!selectedTemplate) return;
-
-  const isCopyAction = isUser || mode === "copy";
-
-  if (!isCopyAction && !editMode) {
-    toast.info('Click "Enable editing" first to modify.');
-    return;
   }
 
-  if (isCopyAction && !editMode && !lastSuccessfulApplySnapshot) {
-    toast.info(
-      'To save a copy, either use "Edit" mode or do a successful "Apply" first.',
-    );
-    return;
-  }
+  async function handleSave(mode: "update" | "copy" = "update") {
+    if (!selectedTemplate) return;
 
-  const validationError =
-    editMode || !lastSuccessfulApplySnapshot
-      ? validateWorkspace("save")
-      : null;
+    const isCopyAction = isUser || mode === "copy";
 
-  if (validationError) {
-    toast.error(validationError);
-    return;
-  }
+    if (!isCopyAction && !editMode) {
+      toast.info('Click "Enable editing" first to modify.');
+      return;
+    }
 
-  let saveSelectedPort = selectedPort;
-  let saveManualPort = manualPort;
-  let saveVariableValues = variableValues;
-  let saveOrigin: SaveOrigin = "manual-edit";
+    if (isCopyAction && !editMode && !lastSuccessfulApplySnapshot) {
+      toast.info(
+        'To save a copy, either use "Edit" mode or do a successful "Apply" first.',
+      );
+      return;
+    }
 
-  if (isCopyAction && !editMode && lastSuccessfulApplySnapshot) {
-    saveSelectedPort = lastSuccessfulApplySnapshot.selectedPort;
-    saveManualPort = lastSuccessfulApplySnapshot.manualPort;
-    saveVariableValues = lastSuccessfulApplySnapshot.variableValues;
-    saveOrigin = "apply-success";
-  }
+    const validationError =
+      editMode || !lastSuccessfulApplySnapshot
+        ? validateWorkspace("save")
+        : null;
 
-  const effectivePort = getEffectivePort(saveSelectedPort, saveManualPort);
+    if (validationError) {
+      toast.error(validationError);
+      return;
+    }
 
-  if (isUser && !effectivePort) {
-    toast.error(
-      "Please select a port or enter one manually; it will be included in the template name.",
-    );
-    return;
-  }
+    let saveSelectedPort = selectedPort;
+    let saveManualPort = manualPort;
+    let saveVariableValues = variableValues;
+    let saveOrigin: SaveOrigin = "manual-edit";
 
-  let finalName: string;
+    if (isCopyAction && !editMode && lastSuccessfulApplySnapshot) {
+      saveSelectedPort = lastSuccessfulApplySnapshot.selectedPort;
+      saveManualPort = lastSuccessfulApplySnapshot.manualPort;
+      saveVariableValues = lastSuccessfulApplySnapshot.variableValues;
+      saveOrigin = "apply-success";
+    }
 
-  if (isUser) {
-    const baseName = getBaseTemplateNameForUser(
-      selectedTemplate.name,
-      user?.username,
-    );
+    const effectivePort = getEffectivePort(saveSelectedPort, saveManualPort);
 
-    finalName = buildUserTemplateName(
-      user?.username,
-      baseName,
-      effectivePort,
-    );
-  } else {
-    finalName = name.trim();
-  }
+    if (isUser && !effectivePort) {
+      toast.error(
+        "Please select a port or enter one manually; it will be included in the template name.",
+      );
+      return;
+    }
 
-  if (!finalName) {
-    toast.error("Template name is required.");
-    return;
-  }
+    let finalName: string;
 
-  setSaving(true);
+    if (isUser) {
+      const baseName = getBaseTemplateNameForUser(
+        selectedTemplate.name,
+        user?.username,
+      );
 
-  try {
-    let saved: WanTemplate;
+      finalName = buildUserTemplateName(
+        user?.username,
+        baseName,
+        effectivePort,
+      );
+    } else {
+      finalName = name.trim();
+    }
 
-    if (isCopyAction) {
-      const scopeForNew: TemplateScope = isUser
-        ? "USER_INSTANCE"
-        : selectedTemplate.scope;
+    if (!finalName) {
+      toast.error("Template name is required.");
+      return;
+    }
 
-      const instanceIdForNew =
-        scopeForNew === "GLOBAL"
-          ? null
-          : selectedTemplate.isam_instance_id ?? instance.id;
+    setSaving(true);
 
-      const savedParametersPayload =
-        saveOrigin === "apply-success"
-          ? buildSavedParametersPayload(
-              "apply-success",
-              lastSuccessfulApplySnapshot,
-            )
-          : {
-              selected_port: saveSelectedPort || null,
-              manual_port: saveManualPort || null,
-              effective_port: effectivePort || null,
-              variables: saveVariableValues || {},
-              saved_from: "manual-edit" as const,
-              applied_at: null,
-            };
+    try {
+      let saved: WanTemplate;
 
-      const rootSourceTemplateId =
-        selectedTemplate.source_template_id ?? selectedTemplate.id;
+      if (isCopyAction) {
+        const scopeForNew: TemplateScope = isUser
+          ? "USER_INSTANCE"
+          : selectedTemplate.scope;
 
-      const existingUserCopy = await findExistingUserCopy(rootSourceTemplateId);
+        const instanceIdForNew =
+          scopeForNew === "GLOBAL"
+            ? null
+            : selectedTemplate.isam_instance_id ?? instance.id;
 
-      if (existingUserCopy) {
+        const savedParametersPayload =
+          saveOrigin === "apply-success"
+            ? buildSavedParametersPayload(
+                "apply-success",
+                lastSuccessfulApplySnapshot,
+              )
+            : {
+                selected_port: saveSelectedPort || null,
+                manual_port: saveManualPort || null,
+                effective_port: effectivePort || null,
+                variables: saveVariableValues || {},
+                saved_from: "manual-edit" as const,
+                applied_at: null,
+              };
+
+        const rootSourceTemplateId =
+          selectedTemplate.source_template_id ?? selectedTemplate.id;
+
+        const existingUserCopy = await findExistingUserCopy(rootSourceTemplateId);
+
+        if (existingUserCopy) {
+          saved = await authFetchJson<WanTemplate>(
+            `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${existingUserCopy.id}`,
+            accessToken,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                name: finalName,
+                commands_template: commands,
+                project: inheritedProject,
+                saved_parameters: savedParametersPayload,
+              }),
+            },
+          );
+
+          toast.success("Template copy updated.");
+        } else {
+          saved = await authFetchJson<WanTemplate>(
+            `${ISAM_BASE_URL}/api/v1/isam/wan-templates`,
+            accessToken,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                name: finalName,
+                commands_template: commands,
+                scope: scopeForNew,
+                isam_instance_id: instanceIdForNew,
+                source_template_id: rootSourceTemplateId,
+                project: inheritedProject,
+                saved_parameters: savedParametersPayload,
+              }),
+            },
+          );
+
+          toast.success("Template copy created with saved parameters.");
+        }
+      } else {
         saved = await authFetchJson<WanTemplate>(
-          `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${existingUserCopy.id}`,
+          `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${selectedTemplate.id}`,
           accessToken,
           {
             method: "PATCH",
@@ -1640,64 +1876,26 @@ async function handleSave(mode: "update" | "copy" = "update") {
             body: JSON.stringify({
               name: finalName,
               commands_template: commands,
-              project: inheritedProject,
-              saved_parameters: savedParametersPayload,
+              saved_parameters: buildSavedParametersPayload("manual-edit"),
             }),
           },
         );
 
-        toast.success("Template copy updated.");
-      } else {
-        saved = await authFetchJson<WanTemplate>(
-          `${ISAM_BASE_URL}/api/v1/isam/wan-templates`,
-          accessToken,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: finalName,
-              commands_template: commands,
-              scope: scopeForNew,
-              isam_instance_id: instanceIdForNew,
-              source_template_id: rootSourceTemplateId,
-              project: inheritedProject,
-              saved_parameters: savedParametersPayload,
-            }),
-          },
-        );
-
-        toast.success("Template copy created with saved parameters.");
+        toast.success("Template updated.");
       }
-    } else {
-      saved = await authFetchJson<WanTemplate>(
-        `${ISAM_BASE_URL}/api/v1/isam/wan-templates/${selectedTemplate.id}`,
-        accessToken,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: finalName,
-            commands_template: commands,
-            saved_parameters: buildSavedParametersPayload("manual-edit"),
-          }),
-        },
-      );
 
-      toast.success("Template updated.");
+      await loadTemplates();
+      setSelectedTemplateId(saved.id);
+      setEditMode(false);
+      resetExecutionStates();
+      setLastPreviewFingerprint("");
+      clearSuccessfulApplySnapshot();
+    } catch (err) {
+      toast.error(getReadableErrorMessage(err) || "Failed to save.");
+    } finally {
+      setSaving(false);
     }
-
-    await loadTemplates();
-    setSelectedTemplateId(saved.id);
-    setEditMode(false);
-    resetExecutionStates();
-    setLastPreviewFingerprint("");
-    clearSuccessfulApplySnapshot();
-  } catch (err) {
-    toast.error(getReadableErrorMessage(err) || "Failed to save.");
-  } finally {
-    setSaving(false);
   }
-}
 
   function handleClearContent() {
     if (!commands.trim()) return;
@@ -2259,6 +2457,13 @@ async function handleSave(mode: "update" | "copy" = "update") {
                               </AlertBanner>
                             </div>
                           )}
+
+                          <PortTemplateStatusCard
+                            loading={portTemplateStatus.loading}
+                            error={portTemplateStatus.error}
+                            status={portTemplateStatus.data}
+                            effectivePort={effectivePort}
+                          />
                         </div>
 
                         {customVariables.length > 0 && (

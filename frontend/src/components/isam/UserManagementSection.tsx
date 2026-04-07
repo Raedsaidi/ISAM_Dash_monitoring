@@ -19,11 +19,14 @@ import {
   Pencil,
   Eye,
   EyeOff,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 
 const AUTH_BASE_URL = import.meta.env.VITE_AUTH_BASE_URL;
 const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
+const PAGE_SIZE = 25;
 
 type UserRole = "SUPER_ADMIN" | "ADMIN" | "USER";
 type RoleFilter = "ALL" | UserRole;
@@ -50,6 +53,10 @@ interface UserAdminRead {
 
 interface UserListResponse {
   users: UserAdminRead[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
 
 interface WanModelRead {
@@ -521,6 +528,10 @@ export default function UserManagementSection() {
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleFilter>("ALL");
 
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalUsersCount, setTotalUsersCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [userModalMode, setUserModalMode] = useState<UserModalMode>("create");
   const [editTarget, setEditTarget] = useState<UserAdminRead | null>(null);
@@ -583,19 +594,29 @@ export default function UserManagementSection() {
   }
 
   const loadUsers = useCallback(
-    async (search?: string, role?: RoleFilter) => {
+    async (search?: string, role?: RoleFilter, page?: number) => {
       setLoading(true);
       setGlobalError(null);
       try {
         const params = new URLSearchParams();
         const q = (search ?? searchTerm).trim();
         if (q) params.set("search", q);
+
         const r = role ?? roleFilter;
         if (r !== "ALL") params.set("role", r);
+
+        const p = page ?? currentPage;
+        params.set("page", String(p));
+        params.set("page_size", String(PAGE_SIZE));
+
         const qs = params.toString();
         const url = `${AUTH_BASE_URL}/api/v1/auth/users${qs ? `?${qs}` : ""}`;
         const data = await authFetchJson<UserListResponse>(url);
-        setUsers(data.users);
+
+        setUsers(data.users || []);
+        setTotalUsersCount(data.total ?? 0);
+        setCurrentPage(data.page ?? p);
+        setTotalPages(data.total_pages ?? 1);
       } catch (err: any) {
         if (
           err.message !== "Session expired" &&
@@ -607,8 +628,7 @@ export default function UserManagementSection() {
         setLoading(false);
       }
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [authFetch, searchTerm, roleFilter],
+    [authFetch, searchTerm, roleFilter, currentPage],
   );
 
   const loadWanModels = useCallback(async () => {
@@ -626,7 +646,7 @@ export default function UserManagementSection() {
   }, []);
 
   useEffect(() => {
-    loadUsers("", "ALL");
+    loadUsers("", "ALL", 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -642,15 +662,18 @@ export default function UserManagementSection() {
 
   function handleSearchChange(value: string) {
     setSearchTerm(value);
+    setCurrentPage(1);
+
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     searchTimerRef.current = setTimeout(() => {
-      loadUsers(value, roleFilter);
+      loadUsers(value, roleFilter, 1);
     }, 400);
   }
 
   function handleRoleFilterChange(role: RoleFilter) {
     setRoleFilter(role);
-    loadUsers(searchTerm, role);
+    setCurrentPage(1);
+    loadUsers(searchTerm, role, 1);
   }
 
   function addPortRow() {
@@ -840,7 +863,7 @@ export default function UserManagementSection() {
 
       setUserModalOpen(false);
       setEditTarget(null);
-      await loadUsers(searchTerm, roleFilter);
+      await loadUsers(searchTerm, roleFilter, currentPage);
     } catch (err: any) {
       if (err instanceof ApiError) {
         if (err.fieldErrors && Object.keys(err.fieldErrors).length > 0)
@@ -882,7 +905,14 @@ export default function UserManagementSection() {
         await authFetchJson(`${AUTH_BASE_URL}/api/v1/auth/users/${target.id}`, {
           method: "DELETE",
         });
-        await loadUsers(searchTerm, roleFilter);
+
+        const remainingAfterDelete = users.length - 1;
+        const nextPage =
+          remainingAfterDelete <= 0 && currentPage > 1
+            ? currentPage - 1
+            : currentPage;
+
+        await loadUsers(searchTerm, roleFilter, nextPage);
         toast.success("User deleted successfully.", { id: toastId });
       } catch (err: any) {
         toast.error(err.message || "Failed to delete user.", { id: toastId });
@@ -894,13 +924,12 @@ export default function UserManagementSection() {
   }
 
   const stats = useMemo(() => {
-    const totalUsers = users.length;
     const totalAdmins = users.filter(
       (u) => u.role === "ADMIN" || u.role === "SUPER_ADMIN",
     ).length;
     const totalStandardUsers = users.filter((u) => u.role === "USER").length;
     const totalPorts = users.reduce((acc, u) => acc + getUserPorts(u).length, 0);
-    return { totalUsers, totalAdmins, totalStandardUsers, totalPorts };
+    return { totalAdmins, totalStandardUsers, totalPorts };
   }, [users]);
 
   const editingSelf =
@@ -916,6 +945,9 @@ export default function UserManagementSection() {
     confirmDialog.type === "delete-user"
       ? `Delete ${confirmDialog.target?.username ?? "user"}?`
       : "";
+
+  const pageStart = totalUsersCount === 0 ? 0 : (currentPage - 1) * PAGE_SIZE + 1;
+  const pageEnd = totalUsersCount === 0 ? 0 : pageStart + users.length - 1;
 
   return (
     <>
@@ -937,7 +969,7 @@ export default function UserManagementSection() {
             <div className="flex flex-wrap items-center gap-2">
               <Btn
                 variant="outline"
-                onClick={() => loadUsers(searchTerm, roleFilter)}
+                onClick={() => loadUsers(searchTerm, roleFilter, currentPage)}
                 disabled={loading}
               >
                 {loading ? (
@@ -971,7 +1003,8 @@ export default function UserManagementSection() {
                   <button
                     onClick={() => {
                       setSearchTerm("");
-                      loadUsers("", roleFilter);
+                      setCurrentPage(1);
+                      loadUsers("", roleFilter, 1);
                     }}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
                   >
@@ -997,26 +1030,26 @@ export default function UserManagementSection() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Total Users"
-            value={stats.totalUsers}
-            subtitle="All accounts"
+            value={totalUsersCount}
+            subtitle="All matching accounts"
             icon={<Users size={18} />}
           />
           <StatCard
             title="Admins"
             value={stats.totalAdmins}
-            subtitle="ADMIN + SUPER_ADMIN"
+            subtitle="On current page"
             icon={<ShieldCheck size={18} />}
           />
           <StatCard
             title="Standard Users"
             value={stats.totalStandardUsers}
-            subtitle="Role USER"
+            subtitle="On current page"
             icon={<UserCog size={18} />}
           />
           <StatCard
             title="Assigned Ports"
             value={stats.totalPorts}
-            subtitle="Sum of all user ports"
+            subtitle="On current page"
             icon={<Cable size={18} />}
           />
         </div>
@@ -1026,7 +1059,7 @@ export default function UserManagementSection() {
             <SectionTitle
               icon={Users}
               title="Users"
-              description={`${users.length} user(s) displayed`}
+              description={`${totalUsersCount} user(s) found`}
               badge={
                 isSuperAdmin ? (
                   <Badge variant="info">
@@ -1059,181 +1092,238 @@ export default function UserManagementSection() {
               </span>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-100">
-                    {[
-                      "User",
-                      "Contact",
-                      "Role",
-                      "Status",
-                      "Ports",
-                      "Actions",
-                    ].map((h, i) => (
-                      <th
-                        key={h}
-                        className={cn(
-                          "px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400",
-                          i === 5 ? "text-right" : "text-left",
-                        )}
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
+            <>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100">
+                      {[
+                        "User",
+                        "Contact",
+                        "Role",
+                        "Status",
+                        "Ports",
+                        "Actions",
+                      ].map((h, i) => (
+                        <th
+                          key={h}
+                          className={cn(
+                            "px-5 py-3 text-[11px] font-semibold uppercase tracking-wider text-slate-400",
+                            i === 5 ? "text-right" : "text-left",
+                          )}
+                        >
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
 
-                <tbody className="divide-y divide-slate-50">
-                  {users.map((u) => {
-                    const ports = getUserPorts(u);
-                    const isCurrentUser = user?.username === u.username;
-                    const isDeleting = deletingUserId === u.id;
-                    const canDelete =
-                      !isCurrentUser &&
-                      u.role !== "SUPER_ADMIN" &&
-                      !(isAdmin && u.role === "ADMIN");
-                    const canEdit = !(isAdmin && u.role !== "USER");
+                  <tbody className="divide-y divide-slate-50">
+                    {users.map((u) => {
+                      const ports = getUserPorts(u);
+                      const isCurrentUser = user?.username === u.username;
+                      const isDeleting = deletingUserId === u.id;
+                      const canDelete =
+                        !isCurrentUser &&
+                        u.role !== "SUPER_ADMIN" &&
+                        !(isAdmin && u.role === "ADMIN");
+                      const canEdit = !(isAdmin && u.role !== "USER");
 
-                    return (
-                      <tr
-                        key={u.id}
-                        className={cn(
-                          "transition-colors duration-100",
-                          isCurrentUser
-                            ? "bg-blue-50/30 hover:bg-blue-50/50"
-                            : "hover:bg-slate-50/60",
-                        )}
-                      >
-                        <td className="px-5 py-4 align-top">
-                          <div className="flex items-start gap-3">
-                            <AvatarCircle
-                              name={u.full_name}
-                              username={u.username}
-                            />
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-semibold text-slate-700 font-mono text-[13px]">
-                                  {u.username}
-                                </span>
-                                {isCurrentUser && (
-                                  <Badge variant="info">You</Badge>
-                                )}
-                              </div>
-                              <div className="mt-0.5 text-xs text-slate-400">
-                                {u.full_name}
+                      return (
+                        <tr
+                          key={u.id}
+                          className={cn(
+                            "transition-colors duration-100",
+                            isCurrentUser
+                              ? "bg-blue-50/30 hover:bg-blue-50/50"
+                              : "hover:bg-slate-50/60",
+                          )}
+                        >
+                          <td className="px-5 py-4 align-top">
+                            <div className="flex items-start gap-3">
+                              <AvatarCircle
+                                name={u.full_name}
+                                username={u.username}
+                              />
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-semibold text-slate-700 font-mono text-[13px]">
+                                    {u.username}
+                                  </span>
+                                  {isCurrentUser && (
+                                    <Badge variant="info">You</Badge>
+                                  )}
+                                </div>
+                                <div className="mt-0.5 text-xs text-slate-400">
+                                  {u.full_name}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </td>
+                          </td>
 
-                        <td className="px-5 py-4 align-top">
-                          <div className="flex items-start gap-2 text-slate-600">
-                            <Mail
-                              size={14}
-                              className="mt-0.5 text-slate-300 shrink-0"
-                            />
-                            <span className="break-all text-[13px]">
-                              {u.email}
-                            </span>
-                          </div>
-                        </td>
+                          <td className="px-5 py-4 align-top">
+                            <div className="flex items-start gap-2 text-slate-600">
+                              <Mail
+                                size={14}
+                                className="mt-0.5 text-slate-300 shrink-0"
+                              />
+                              <span className="break-all text-[13px]">
+                                {u.email}
+                              </span>
+                            </div>
+                          </td>
 
-                        <td className="px-5 py-4 align-top">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <RoleBadge role={u.role} />
-                            {u.role === "SUPER_ADMIN" && !isCurrentUser && (
-                              <span className="text-[10px] text-slate-300 italic">
-                                protected
+                          <td className="px-5 py-4 align-top">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <RoleBadge role={u.role} />
+                              {u.role === "SUPER_ADMIN" && !isCurrentUser && (
+                                <span className="text-[10px] text-slate-300 italic">
+                                  protected
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          <td className="px-5 py-4 align-top">
+                            <StatusBadge active={u.is_active} />
+                          </td>
+
+                          <td className="px-5 py-4 align-top">
+                            {ports.length > 0 ? (
+                              <div className="space-y-2">
+                                <div className="text-xs text-slate-400">
+                                  {ports.length} port(s)
+                                </div>
+                                <div className="flex flex-wrap gap-1.5 max-w-[420px]">
+                                  {ports.slice(0, 4).map((p, index) => (
+                                    <span
+                                      key={`${p.id}-${index}-${p.value}`}
+                                      className="inline-flex items-center gap-1 rounded-md border border-slate-100 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600"
+                                    >
+                                      {p.label ? (
+                                        <span className="text-slate-400">
+                                          {p.label}:
+                                        </span>
+                                      ) : null}
+                                      <span className="font-mono">{p.value}</span>
+                                    </span>
+                                  ))}
+                                  {ports.length > 4 && (
+                                    <Badge variant="info">
+                                      +{ports.length - 4} more
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-slate-300">
+                                No ports
                               </span>
                             )}
-                          </div>
-                        </td>
+                          </td>
 
-                        <td className="px-5 py-4 align-top">
-                          <StatusBadge active={u.is_active} />
-                        </td>
-
-                        <td className="px-5 py-4 align-top">
-                          {ports.length > 0 ? (
-                            <div className="space-y-2">
-                              <div className="text-xs text-slate-400">
-                                {ports.length} port(s)
-                              </div>
-                              <div className="flex flex-wrap gap-1.5 max-w-[420px]">
-                                {ports.slice(0, 4).map((p, index) => (
-                                  <span
-                                    key={`${p.id}-${index}-${p.value}`}
-                                    className="inline-flex items-center gap-1 rounded-md border border-slate-100 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600"
-                                  >
-                                    {p.label ? (
-                                      <span className="text-slate-400">
-                                        {p.label}:
-                                      </span>
-                                    ) : null}
-                                    <span className="font-mono">{p.value}</span>
-                                  </span>
-                                ))}
-                                {ports.length > 4 && (
-                                  <Badge variant="info">
-                                    +{ports.length - 4} more
-                                  </Badge>
+                          <td className="px-5 py-4 align-top text-right">
+                            <div className="inline-flex items-center gap-1.5">
+                              <Btn
+                                variant="outline"
+                                size="sm"
+                                onClick={() => openEditModal(u)}
+                                disabled={!canEdit}
+                                title={
+                                  !canEdit
+                                    ? "You do not have permission to edit this user."
+                                    : "Edit user"
+                                }
+                              >
+                                <Pencil size={14} />
+                                Edit
+                              </Btn>
+                              <Btn
+                                variant="danger"
+                                size="sm"
+                                onClick={() => handleDeleteUser(u)}
+                                disabled={!canDelete || isDeleting}
+                                title={
+                                  isCurrentUser
+                                    ? "You cannot delete your own account here."
+                                    : u.role === "SUPER_ADMIN"
+                                      ? "SUPER_ADMIN users cannot be deleted."
+                                      : isAdmin && u.role === "ADMIN"
+                                        ? "ADMIN users cannot delete other ADMINs."
+                                        : "Delete user"
+                                }
+                              >
+                                {isDeleting ? (
+                                  <Loader2 size={14} className="animate-spin" />
+                                ) : (
+                                  <Trash2 size={14} />
                                 )}
-                              </div>
+                                Delete
+                              </Btn>
                             </div>
-                          ) : (
-                            <span className="text-xs text-slate-300">
-                              No ports
-                            </span>
-                          )}
-                        </td>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
-                        <td className="px-5 py-4 align-top text-right">
-                          <div className="inline-flex items-center gap-1.5">
-                            <Btn
-                              variant="outline"
-                              size="sm"
-                              onClick={() => openEditModal(u)}
-                              disabled={!canEdit}
-                              title={
-                                !canEdit
-                                  ? "You do not have permission to edit this user."
-                                  : "Edit user"
-                              }
-                            >
-                              <Pencil size={14} />
-                              Edit
-                            </Btn>
-                            <Btn
-                              variant="danger"
-                              size="sm"
-                              onClick={() => handleDeleteUser(u)}
-                              disabled={!canDelete || isDeleting}
-                              title={
-                                isCurrentUser
-                                  ? "You cannot delete your own account here."
-                                  : u.role === "SUPER_ADMIN"
-                                    ? "SUPER_ADMIN users cannot be deleted."
-                                    : isAdmin && u.role === "ADMIN"
-                                      ? "ADMIN users cannot delete other ADMINs."
-                                      : "Delete user"
-                              }
-                            >
-                              {isDeleting ? (
-                                <Loader2 size={14} className="animate-spin" />
-                              ) : (
-                                <Trash2 size={14} />
-                              )}
-                              Delete
-                            </Btn>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+              <div className="flex flex-col gap-3 border-t border-slate-100 bg-slate-50/60 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-xs text-slate-500">
+                  Showing{" "}
+                  <span className="font-semibold text-slate-700">
+                    {pageStart}
+                  </span>{" "}
+                  to{" "}
+                  <span className="font-semibold text-slate-700">
+                    {pageEnd}
+                  </span>{" "}
+                  of{" "}
+                  <span className="font-semibold text-slate-700">
+                    {totalUsersCount}
+                  </span>{" "}
+                  users
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Btn
+                    variant="outline"
+                    size="sm"
+                    disabled={loading || currentPage <= 1}
+                    onClick={() =>
+                      loadUsers(searchTerm, roleFilter, currentPage - 1)
+                    }
+                  >
+                    <ChevronLeft size={14} />
+                    Previous
+                  </Btn>
+
+                  <div className="text-xs text-slate-500 px-2">
+                    Page{" "}
+                    <span className="font-semibold text-slate-700">
+                      {currentPage}
+                    </span>{" "}
+                    of{" "}
+                    <span className="font-semibold text-slate-700">
+                      {totalPages}
+                    </span>
+                  </div>
+
+                  <Btn
+                    variant="outline"
+                    size="sm"
+                    disabled={loading || currentPage >= totalPages}
+                    onClick={() =>
+                      loadUsers(searchTerm, roleFilter, currentPage + 1)
+                    }
+                  >
+                    Next
+                    <ChevronRight size={14} />
+                  </Btn>
+                </div>
+              </div>
+            </>
           )}
         </div>
 
