@@ -179,6 +179,12 @@ interface TemplateStatus {
   apply_count?: number;
 }
 
+interface ParsedTemplateErrorBlock {
+  command: string;
+  pointer?: string;
+  message: string;
+}
+
 function getReadableErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     const message = error.message?.trim();
@@ -369,32 +375,115 @@ function analyzeRawOutput(rawOutput: string): {
   level: "none" | "warning" | "error";
   matches: string[];
   message: string | null;
+  hasTemplateErrors: boolean;
+  errorBlocks: ParsedTemplateErrorBlock[];
+  invalidTokenCount: number;
+  explicitErrorCount: number;
 } {
   const text = rawOutput || "";
+  const lines = text.split(/\r?\n/);
 
-  const errorRegex =
-    /\b(error|erreur|failed|failure|timeout|timed out|unable to connect|connection refused|impossible|échoué|echec|échec)\b/gi;
+  const errorBlocks: ParsedTemplateErrorBlock[] = [];
+  const detectedMatches = new Set<string>();
 
-  const warningRegex = /\binvalid\s+token\b/gi;
+  let invalidTokenCount = 0;
+  let explicitErrorCount = 0;
 
-  const errorMatches = text.match(errorRegex) || [];
-  const warningMatches = text.match(warningRegex) || [];
+  const invalidTokenRegex = /\binvalid\s+token\b/i;
+  const infraErrorRegex =
+    /\b(failed|failure|timeout|timed out|unable to connect|connection refused|networkerror|load failed)\b/i;
 
-  if (errorMatches.length > 0) {
+  for (let i = 0; i < lines.length; i++) {
+    const currentLine = lines[i] || "";
+    const trimmedCurrent = currentLine.trim();
+
+    const nextLine = lines[i + 1] || "";
+    const nextNextLine = lines[i + 2] || "";
+    const trimmedNextNext = nextNextLine.trim();
+
+    const isPointerLine = /^\s*\^\s*$/.test(nextLine);
+    const isInvalidToken = invalidTokenRegex.test(trimmedNextNext);
+
+    if (isPointerLine && isInvalidToken) {
+      invalidTokenCount += 1;
+      detectedMatches.add("invalid token");
+      detectedMatches.add("^");
+
+      errorBlocks.push({
+        command: currentLine,
+        pointer: nextLine,
+        message: nextNextLine,
+      });
+
+      i += 2;
+      continue;
+    }
+
+    if (/^error\s*:/i.test(trimmedCurrent)) {
+      explicitErrorCount += 1;
+      detectedMatches.add("error");
+
+      let previousCommand = "Unknown command";
+      for (let j = i - 1; j >= 0; j--) {
+        const candidate = (lines[j] || "").trim();
+        if (candidate) {
+          previousCommand = lines[j];
+          break;
+        }
+      }
+
+      errorBlocks.push({
+        command: previousCommand,
+        message: currentLine,
+      });
+
+      continue;
+    }
+  }
+
+  const isAcceptableSingleInvalidToken =
+    invalidTokenCount === 1 && explicitErrorCount === 0;
+
+  if (isAcceptableSingleInvalidToken) {
     return {
-      level: "error",
-      matches: [...new Set(errorMatches.map((m) => m.toLowerCase()))],
-      message:
-        "Raw output contains execution error indicators. Please verify the template and device response.",
+      level: "none",
+      matches: [],
+      message: null,
+      hasTemplateErrors: false,
+      errorBlocks: [],
+      invalidTokenCount,
+      explicitErrorCount,
     };
   }
 
-  if (warningMatches.length > 0) {
+  if (errorBlocks.length > 0) {
     return {
       level: "warning",
-      matches: [...new Set(warningMatches.map((m) => m.toLowerCase()))],
+      matches: [...detectedMatches],
       message:
-        'Raw output contains "invalid token". Some commands may be malformed or unsupported by the device.',
+        "Template execution contains blocking command errors. Please review the highlighted command blocks below.",
+      hasTemplateErrors: true,
+      errorBlocks,
+      invalidTokenCount,
+      explicitErrorCount,
+    };
+  }
+
+  if (infraErrorRegex.test(text)) {
+    const infraMatches =
+      text.match(
+        /\b(failed|failure|timeout|timed out|unable to connect|connection refused|networkerror|load failed)\b/gi
+      ) || [];
+
+    return {
+      level: "error",
+      matches: [...new Set(infraMatches.map((m) => m.toLowerCase()))],
+      message:
+        "Raw output contains infrastructure or connection error indicators.",
+      hasTemplateErrors: false,
+      errorBlocks: [],
+      invalidTokenCount,
+      explicitErrorCount,
     };
   }
 
@@ -402,6 +491,10 @@ function analyzeRawOutput(rawOutput: string): {
     level: "none",
     matches: [],
     message: null,
+    hasTemplateErrors: false,
+    errorBlocks: [],
+    invalidTokenCount,
+    explicitErrorCount,
   };
 }
 
@@ -826,7 +919,10 @@ export default function TemplateWorkspaceOverlay({
   const [wanModels, setWanModels] = useState<WanModelRead[]>([]);
   const [loadingWanModels, setLoadingWanModels] = useState(false);
 
-  const [availablePorts, setAvailablePorts] = useState<string[]>([]);
+  const [availablePorts, setAvailablePorts] = useState<
+    Array<{ value: string; label?: string | null }>
+  >([]);
+
   const [loadingPorts, setLoadingPorts] = useState(false);
   const [portsError, setPortsError] = useState<string | null>(null);
 
@@ -858,16 +954,22 @@ export default function TemplateWorkspaceOverlay({
     loading: boolean;
     error: string | null;
     successMessage: string | null;
+    warningMessage: string | null;
     protocol_used: string | null;
     commands_executed: string[];
     raw_output: string;
+    executionHasTemplateErrors: boolean;
+    errorBlocks: ParsedTemplateErrorBlock[];
   }>({
     loading: false,
     error: null,
     successMessage: null,
+    warningMessage: null,
     protocol_used: null,
     commands_executed: [],
     raw_output: "",
+    executionHasTemplateErrors: false,
+    errorBlocks: [],
   });
 
   const [saving, setSaving] = useState(false);
@@ -980,6 +1082,11 @@ export default function TemplateWorkspaceOverlay({
     return editMode || !!lastSuccessfulApplySnapshot;
   }, [editMode, lastSuccessfulApplySnapshot]);
 
+  const hasBlockingTemplateExecutionError = useMemo(
+    () => applyState.executionHasTemplateErrors,
+    [applyState.executionHasTemplateErrors],
+  );
+
   const pageRange = useMemo(() => {
     if (!totalTemplates) return { start: 0, end: 0 };
     const start = (page - 1) * PAGE_SIZE + 1;
@@ -998,9 +1105,12 @@ export default function TemplateWorkspaceOverlay({
       loading: false,
       error: null,
       successMessage: null,
+      warningMessage: null,
       protocol_used: null,
       commands_executed: [],
       raw_output: "",
+      executionHasTemplateErrors: false,
+      errorBlocks: [],
     });
   }, []);
 
@@ -1024,12 +1134,12 @@ export default function TemplateWorkspaceOverlay({
         };
       }
 
-      const effectivePort = getEffectivePort(selectedPort, manualPort);
+      const effectivePortInner = getEffectivePort(selectedPort, manualPort);
 
       return {
         selected_port: selectedPort || null,
         manual_port: manualPort || null,
-        effective_port: effectivePort || null,
+        effective_port: effectivePortInner || null,
         variables: variableValues || {},
         saved_from: "manual-edit",
         applied_at: null,
@@ -1048,9 +1158,9 @@ export default function TemplateWorkspaceOverlay({
         return "Template content is required.";
       }
 
-      const effectivePort = getEffectivePort(selectedPort, manualPort);
+      const effectivePortInner = getEffectivePort(selectedPort, manualPort);
 
-      if (portIsRequired && !effectivePort) {
+      if (portIsRequired && !effectivePortInner) {
         return "Please select a port from the list or enter one manually.";
       }
 
@@ -1065,6 +1175,10 @@ export default function TemplateWorkspaceOverlay({
         return "Please preview the current template version before applying.";
       }
 
+      if (mode === "save" && hasBlockingTemplateExecutionError) {
+        return "Saving is disabled because the last execution detected invalid template commands.";
+      }
+
       return null;
     },
     [
@@ -1076,6 +1190,7 @@ export default function TemplateWorkspaceOverlay({
       missingRequiredVariables,
       lastPreviewFingerprint,
       currentPreviewFingerprint,
+      hasBlockingTemplateExecutionError,
     ],
   );
 
@@ -1231,17 +1346,26 @@ export default function TemplateWorkspaceOverlay({
         }
 
         const res = await authFetchJson<FilteredUserPortsResponse>(
-          `${AUTH_BASE_URL}/api/v1/auth/my-ports${params.toString() ? `?${params.toString()}` : ""}`,
+          `${AUTH_BASE_URL}/api/v1/auth/my-ports${
+            params.toString() ? `?${params.toString()}` : ""
+          }`,
           accessToken,
         );
 
         if (requestId !== portsRequestIdRef.current) return;
 
-        const ports = (res.ports || []).map((p) => p.value).filter(Boolean);
+        const ports = (res.ports || [])
+          .filter((p) => p.value)
+          .map((p) => ({
+            value: p.value,
+            label: p.label ?? null,
+          }));
 
         setAvailablePorts(ports);
         setSelectedPort((prev) =>
-          prev && ports.includes(prev) ? prev : ports[0] || "",
+          prev && ports.some((p) => p.value === prev)
+            ? prev
+            : ports[0]?.value || "",
         );
       } else {
         const res = await authFetchJson<CachedPortsResponse>(
@@ -1251,11 +1375,18 @@ export default function TemplateWorkspaceOverlay({
 
         if (requestId !== portsRequestIdRef.current) return;
 
-        const ports = (res.ports || []).map((p) => p.port_id).filter(Boolean);
+        const ports = (res.ports || [])
+          .filter((p) => p.port_id)
+          .map((p) => ({
+            value: p.port_id,
+            label: null,
+          }));
 
         setAvailablePorts(ports);
         setSelectedPort((prev) =>
-          prev && ports.includes(prev) ? prev : ports[0] || "",
+          prev && ports.some((p) => p.value === prev)
+            ? prev
+            : ports[0]?.value || "",
         );
       }
     } catch (err) {
@@ -1523,14 +1654,14 @@ export default function TemplateWorkspaceOverlay({
           setManualPort(restoredManualPort);
           setVariableValues(restoredVariables);
         } else {
-          const defaultPort = availablePorts[0] || "";
+          const defaultPort = availablePorts[0]?.value || "";
           setSelectedPort(defaultPort);
           setManualPort("");
           setVariableValues({});
         }
       } else {
         setCommands("");
-        setSelectedPort(availablePorts[0] || "");
+        setSelectedPort(availablePorts[0]?.value || "");
         setManualPort("");
         setVariableValues({});
       }
@@ -1562,7 +1693,7 @@ export default function TemplateWorkspaceOverlay({
       return;
     }
 
-    const effectivePort = getEffectivePort(selectedPort, manualPort);
+    const effectivePortInner = getEffectivePort(selectedPort, manualPort);
 
     setPreviewState((s) => ({ ...s, loading: true, error: null }));
 
@@ -1575,7 +1706,7 @@ export default function TemplateWorkspaceOverlay({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             commands_template: commands,
-            selected_port: effectivePort || null,
+            selected_port: effectivePortInner || null,
             variables: variableValues,
           }),
         },
@@ -1621,15 +1752,18 @@ export default function TemplateWorkspaceOverlay({
 
     if (!selectedTemplate) return;
 
-    const effectivePort = getEffectivePort(selectedPort, manualPort);
+    const effectivePortInner = getEffectivePort(selectedPort, manualPort);
 
     setApplyState({
       loading: true,
       error: null,
       successMessage: null,
+      warningMessage: null,
       protocol_used: null,
       commands_executed: [],
       raw_output: "",
+      executionHasTemplateErrors: false,
+      errorBlocks: [],
     });
 
     try {
@@ -1643,7 +1777,7 @@ export default function TemplateWorkspaceOverlay({
             instance_id: instance.id,
             template_id: selectedTemplate.id,
             commands_template: commands,
-            selected_port: effectivePort || null,
+            selected_port: effectivePortInner || null,
             variables: variableValues,
           }),
         },
@@ -1652,36 +1786,42 @@ export default function TemplateWorkspaceOverlay({
       if (requestId !== applyRequestIdRef.current) return;
 
       const outputAnalysis = analyzeRawOutput(res.raw_output || "");
+      const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
 
       setApplyState({
         loading: false,
         error: res.success ? null : res.message,
-        successMessage: res.success
-          ? res.message || "Applied successfully."
-          : null,
+        successMessage:
+          res.success && !hasTemplateErrors
+            ? res.message || "Applied successfully."
+            : null,
+        warningMessage:
+          res.success && hasTemplateErrors
+            ? "Template executed, but invalid or unsupported commands were detected in device output."
+            : null,
         protocol_used: res.protocol_used,
         commands_executed: res.commands_executed || [],
         raw_output: res.raw_output || "",
+        executionHasTemplateErrors: hasTemplateErrors,
+        errorBlocks: outputAnalysis.errorBlocks,
       });
 
-      if (res.success) {
+      if (res.success && !hasTemplateErrors) {
         setLastSuccessfulApplySnapshot({
           selectedPort,
           manualPort,
-          effectivePort,
+          effectivePort: effectivePortInner,
           variableValues: { ...variableValues },
           appliedAt: new Date().toISOString(),
         });
 
-        if (outputAnalysis.level === "error") {
-          toast.error("Template applied but execution errors were detected.");
-        } else if (outputAnalysis.level === "warning") {
-          toast('Template applied with warning: "invalid token" detected.');
-        } else {
-          toast.success(res.message || "Template applied.");
-        }
-
+        toast.success(res.message || "Template applied.");
         loadPortTemplateStatus();
+      } else if (res.success && hasTemplateErrors) {
+        clearSuccessfulApplySnapshot();
+        toast.warning(
+          "Template contains invalid or unsupported commands. Saving is disabled until the template is fixed.",
+        );
       } else {
         clearSuccessfulApplySnapshot();
         toast.error(
@@ -1698,9 +1838,12 @@ export default function TemplateWorkspaceOverlay({
         loading: false,
         error: message,
         successMessage: null,
+        warningMessage: null,
         protocol_used: null,
         commands_executed: [],
         raw_output: "",
+        executionHasTemplateErrors: false,
+        errorBlocks: [],
       });
       clearSuccessfulApplySnapshot();
       toast.error(message);
@@ -1740,6 +1883,13 @@ export default function TemplateWorkspaceOverlay({
       return;
     }
 
+    if (hasBlockingTemplateExecutionError) {
+      toast.warning(
+        "Saving is disabled because the last execution detected invalid template commands.",
+      );
+      return;
+    }
+
     const validationError =
       editMode || !lastSuccessfulApplySnapshot
         ? validateWorkspace("save")
@@ -1762,9 +1912,9 @@ export default function TemplateWorkspaceOverlay({
       saveOrigin = "apply-success";
     }
 
-    const effectivePort = getEffectivePort(saveSelectedPort, saveManualPort);
+    const effectivePortInner = getEffectivePort(saveSelectedPort, saveManualPort);
 
-    if (isUser && !effectivePort) {
+    if (isUser && !effectivePortInner) {
       toast.error(
         "Please select a port or enter one manually; it will be included in the template name.",
       );
@@ -1782,7 +1932,7 @@ export default function TemplateWorkspaceOverlay({
       finalName = buildUserTemplateName(
         user?.username,
         baseName,
-        effectivePort,
+        effectivePortInner,
       );
     } else {
       finalName = name.trim();
@@ -1817,7 +1967,7 @@ export default function TemplateWorkspaceOverlay({
             : {
                 selected_port: saveSelectedPort || null,
                 manual_port: saveManualPort || null,
-                effective_port: effectivePort || null,
+                effective_port: effectivePortInner || null,
                 variables: saveVariableValues || {},
                 saved_from: "manual-edit" as const,
                 applied_at: null,
@@ -2284,6 +2434,13 @@ export default function TemplateWorkspaceOverlay({
                           onChange={(e) => {
                             setCommands(e.target.value);
                             clearSuccessfulApplySnapshot();
+                            setApplyState((prev) => ({
+                              ...prev,
+                              warningMessage: null,
+                              executionHasTemplateErrors: false,
+                              errorBlocks: [],
+                              successMessage: null,
+                            }));
                           }}
                           disabled={!editMode}
                           rows={14}
@@ -2354,6 +2511,13 @@ export default function TemplateWorkspaceOverlay({
                                     setManualPort("");
                                   }
                                   clearSuccessfulApplySnapshot();
+                                  setApplyState((prev) => ({
+                                    ...prev,
+                                    warningMessage: null,
+                                    executionHasTemplateErrors: false,
+                                    errorBlocks: [],
+                                    successMessage: null,
+                                  }));
                                 }}
                                 disabled={
                                   loadingPorts ||
@@ -2367,8 +2531,8 @@ export default function TemplateWorkspaceOverlay({
                               >
                                 <option value="">— Select port —</option>
                                 {availablePorts.map((p) => (
-                                  <option key={p} value={p}>
-                                    {p}
+                                  <option key={p.value} value={p.value}>
+                                    {p.label ? `${p.value} (${p.label})` : p.value}
                                   </option>
                                 ))}
                               </Select>
@@ -2395,6 +2559,13 @@ export default function TemplateWorkspaceOverlay({
                                   setSelectedPort("");
                                 }
                                 clearSuccessfulApplySnapshot();
+                                setApplyState((prev) => ({
+                                  ...prev,
+                                  warningMessage: null,
+                                  executionHasTemplateErrors: false,
+                                  errorBlocks: [],
+                                  successMessage: null,
+                                }));
                               }}
                               placeholder="e.g. 1/1/5/3"
                               disabled={!isSuperAdmin && selectedPort.length > 0}
@@ -2483,6 +2654,13 @@ export default function TemplateWorkspaceOverlay({
                                         [v]: e.target.value,
                                       }));
                                       clearSuccessfulApplySnapshot();
+                                      setApplyState((prev) => ({
+                                        ...prev,
+                                        warningMessage: null,
+                                        executionHasTemplateErrors: false,
+                                        errorBlocks: [],
+                                        successMessage: null,
+                                      }));
                                     }}
                                     className={cn(
                                       "py-1.5 text-xs",
@@ -2533,7 +2711,11 @@ export default function TemplateWorkspaceOverlay({
                             <>
                               <Btn
                                 onClick={() => handleSave("update")}
-                                disabled={saving || !editMode}
+                                disabled={
+                                  saving ||
+                                  !editMode ||
+                                  hasBlockingTemplateExecutionError
+                                }
                               >
                                 {saving ? (
                                   <Loader2 size={14} className="animate-spin" />
@@ -2545,7 +2727,11 @@ export default function TemplateWorkspaceOverlay({
 
                               <Btn
                                 onClick={() => handleSave("copy")}
-                                disabled={saving || !canSaveCopy}
+                                disabled={
+                                  saving ||
+                                  !canSaveCopy ||
+                                  hasBlockingTemplateExecutionError
+                                }
                                 variant="subtle"
                                 size="sm"
                               >
@@ -2560,7 +2746,11 @@ export default function TemplateWorkspaceOverlay({
                           ) : (
                             <Btn
                               onClick={() => handleSave("copy")}
-                              disabled={saving || !canSaveCopy}
+                              disabled={
+                                saving ||
+                                !canSaveCopy ||
+                                hasBlockingTemplateExecutionError
+                              }
                             >
                               {saving ? (
                                 <Loader2 size={14} className="animate-spin" />
@@ -2583,7 +2773,14 @@ export default function TemplateWorkspaceOverlay({
                           </Btn>
                         </div>
 
-                        {!editMode && !lastSuccessfulApplySnapshot && (
+                        {hasBlockingTemplateExecutionError && (
+                          <div className="text-[11px] text-amber-600">
+                            Saving is disabled because the last execution
+                            detected invalid template commands.
+                          </div>
+                        )}
+
+                        {!editMode && !lastSuccessfulApplySnapshot && !hasBlockingTemplateExecutionError && (
                           <div className="text-[11px] text-slate-500">
                             Save Copy becomes available after either entering
                             Edit mode or completing a successful Apply.
@@ -2655,10 +2852,16 @@ export default function TemplateWorkspaceOverlay({
                             </AlertBanner>
                           )}
 
+                          {applyState.warningMessage && (
+                            <AlertBanner variant="warning">
+                              {applyState.warningMessage}
+                            </AlertBanner>
+                          )}
+
                           {!applyState.error &&
-                            rawOutputAnalysis.level === "error" &&
+                            rawOutputAnalysis.level === "warning" &&
                             rawOutputAnalysis.message && (
-                              <AlertBanner variant="error">
+                              <AlertBanner variant="warning">
                                 <div>
                                   <div>{rawOutputAnalysis.message}</div>
                                   {rawOutputAnalysis.matches.length > 0 && (
@@ -2678,9 +2881,9 @@ export default function TemplateWorkspaceOverlay({
                             )}
 
                           {!applyState.error &&
-                            rawOutputAnalysis.level === "warning" &&
+                            rawOutputAnalysis.level === "error" &&
                             rawOutputAnalysis.message && (
-                              <AlertBanner variant="warning">
+                              <AlertBanner variant="error">
                                 <div>
                                   <div>{rawOutputAnalysis.message}</div>
                                   {rawOutputAnalysis.matches.length > 0 && (
@@ -2719,6 +2922,35 @@ export default function TemplateWorkspaceOverlay({
                             </div>
                           )}
 
+                          {applyState.errorBlocks.length > 0 && (
+                            <div>
+                              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                                Detected Template Issues
+                              </div>
+
+                              <div className="space-y-2">
+                                {applyState.errorBlocks.map((block, idx) => (
+                                  <div
+                                    key={`${block.command}-${idx}`}
+                                    className="rounded-lg border border-amber-200 bg-amber-50 p-3"
+                                  >
+                                    <div className="mb-1 text-[11px] font-semibold text-amber-800">
+                                      Command with issue
+                                    </div>
+                                    <CodeViewer
+                                      maxHeight="140px"
+                                      className="border-amber-200 bg-white"
+                                    >
+                                      {block.command}
+                                      {block.pointer ? `\n${block.pointer}` : ""}
+                                      {`\n${block.message}`}
+                                    </CodeViewer>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
                           {applyState.raw_output ? (
                             <div>
                               <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
@@ -2730,7 +2962,8 @@ export default function TemplateWorkspaceOverlay({
                             </div>
                           ) : (
                             !applyState.error &&
-                            !applyState.successMessage && (
+                            !applyState.successMessage &&
+                            !applyState.warningMessage && (
                               <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white py-10 text-center">
                                 <Terminal
                                   size={24}
