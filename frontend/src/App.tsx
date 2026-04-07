@@ -25,6 +25,7 @@ import CiscoUserManagementSection from "./components/cisco/CiscoUserManagementSe
 import CiscoSwitchManagementSection from "./components/cisco/CiscoSwitchManagementSection";
 import CiscoPortManagementSection from "./components/cisco/CiscoPortManagementSection";
 import CiscoVlanManagementSection from "./components/cisco/CiscoVlanManagementSection";
+import MyTemplatesSection from "./components/isam/MyTemplatesSection";
 
 import ProductSelection from "./components/ProductSelection";
 import LoginForm from "./components/auth/LoginForm";
@@ -55,6 +56,10 @@ const isamSectionMeta: Record<NavSection, { title: string; subtitle: string }> =
     "wan-templates": {
       title: "WAN Templates",
       subtitle: "Configure WAN connection templates",
+    },
+    "my-templates": {
+      title: "My Templates",
+      subtitle: "Manage your personal WAN templates",
     },
     "switch-management": {
       title: "Switch Management",
@@ -187,6 +192,7 @@ function IsamLayout() {
     "audit-logs": "audit-logs",
     "user-management": "user-management",
     "wan-templates": "wan-templates",
+    "my-templates": "my-templates",
   };
 
   const activeSection: NavSection = pathToSection[sub] || "overview";
@@ -209,6 +215,9 @@ function IsamLayout() {
         break;
       case "wan-templates":
         subPath = "wan-templates";
+        break;
+      case "my-templates":
+        subPath = "my-templates";
         break;
       default:
         subPath = "overview";
@@ -238,6 +247,7 @@ function IsamLayout() {
             <Route path="audit-logs" element={<AuditLogsSection />} />
             <Route path="user-management" element={<UserManagementSection />} />
             <Route path="wan-templates" element={<WanTemplatesSection />} />
+            <Route path="my-templates" element={<MyTemplatesSection />} />
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>
