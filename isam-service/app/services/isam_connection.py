@@ -1,8 +1,10 @@
 import logging
+import shutil
 import socket
-import time
 import subprocess
-from typing import Tuple, Literal, Optional
+import time
+import select
+from typing import Literal, Optional, Tuple
 
 import paramiko
 import telnetlib
@@ -18,52 +20,223 @@ class ISAMConnectionService:
     """
     Service pour tester une connexion et exécuter une commande
     sur un ISAM donné (infos venant de ISAMInstance).
+
+    Stratégie:
+      1) SSH standard (Paramiko + shell interactif)
+      2) SSH legacy (OpenSSH + sshpass + shell interactif)
+      3) Telnet
     """
 
     def __init__(self, instance: ISAMInstance):
         self.instance = instance
 
-    # ----------- TESTS DE CONNEXION -----------
+    # =========================================================
+    # OUTILS INTERNES
+    # =========================================================
 
-    def test_ssh_connection(self, timeout: int = 10) -> Tuple[bool, str]:
-        """Test SSH standard (avec algorithmes modernes)"""
+    def _build_ssh_client(self) -> paramiko.SSHClient:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        return client
+
+    def _connect_ssh(
+        self,
+        timeout: int = 10,
+        legacy_algorithms: bool = False,
+    ) -> paramiko.SSHClient:
+        """
+        Ouvre une connexion SSH Paramiko.
+        Si legacy_algorithms=True, on autorise des algorithmes plus anciens.
+        """
+        client = self._build_ssh_client()
+
+        connect_kwargs = {
+            "hostname": self.instance.host,
+            "port": self.instance.ssh_port,
+            "username": self.instance.username,
+            "password": self.instance.password,
+            "look_for_keys": False,
+            "allow_agent": False,
+            "timeout": timeout,
+            "banner_timeout": timeout,
+            "auth_timeout": timeout,
+        }
+
+        if legacy_algorithms:
+            # À ajuster selon les équipements si besoin.
+            connect_kwargs["disabled_algorithms"] = {}
+
+        client.connect(**connect_kwargs)
+        return client
+
+    def _open_ssh_shell(
+        self,
+        client: paramiko.SSHClient,
+        timeout: int = 10,
+        read_delay: float = 1.0,
+    ) -> paramiko.Channel:
+        """
+        Ouvre un shell interactif SSH avec PTY explicite.
+        Plus robuste sur des équipements réseau anciens.
+        """
+        transport = client.get_transport()
+        if transport is None or not transport.is_active():
+            raise paramiko.SSHException("SSH transport not active")
+
+        chan = transport.open_session(timeout=timeout)
+        chan.get_pty(term="vt100", width=200, height=100)
+        chan.invoke_shell()
+        chan.settimeout(timeout)
+
+        time.sleep(read_delay)
+
+        try:
+            if chan.recv_ready():
+                banner = chan.recv(65535).decode("utf-8", errors="ignore")
+                logger.debug(
+                    "[SSH] Bannière/prompt initial reçu depuis %s:%s : %r",
+                    self.instance.host,
+                    self.instance.ssh_port,
+                    banner[-500:],
+                )
+        except Exception:
+            logger.debug(
+                "[SSH] Aucun flux initial lisible après ouverture du shell sur %s:%s.",
+                self.instance.host,
+                self.instance.ssh_port,
+            )
+
+        if chan.closed:
+            raise paramiko.SSHException("SSH shell channel closed immediately by server")
+
+        return chan
+
+    def _read_shell_output(
+        self,
+        chan: paramiko.Channel,
+        timeout: int = 20,
+        idle_timeout: float = 1.5,
+    ) -> str:
+        """
+        Lit la sortie du shell jusqu’à :
+        - absence de nouvelles données pendant idle_timeout
+        - ou timeout global
+        - ou fermeture du channel
+        """
+        end_time = time.time() + timeout
+        last_data_time = time.time()
+        chunks: list[str] = []
+
+        while time.time() < end_time:
+            if chan.closed:
+                break
+
+            try:
+                if chan.recv_ready():
+                    data = chan.recv(65535)
+                    if not data:
+                        break
+                    decoded = data.decode("utf-8", errors="ignore")
+                    chunks.append(decoded)
+                    last_data_time = time.time()
+                else:
+                    if chunks and (time.time() - last_data_time) > idle_timeout:
+                        break
+                    time.sleep(0.2)
+
+            except socket.timeout:
+                if chunks and (time.time() - last_data_time) > idle_timeout:
+                    break
+
+            except Exception as e:
+                logger.debug(
+                    "[SSH] Lecture shell interrompue sur %s:%s : %s",
+                    self.instance.host,
+                    self.instance.ssh_port,
+                    e,
+                )
+                break
+
+        return "".join(chunks)
+
+    def _sanitize_command_output(self, output: str, command: str) -> str:
+        """
+        Nettoyage léger de la sortie brute.
+        """
+        if not output:
+            return ""
+
+        cleaned = output.replace("\r", "")
+        return cleaned.strip()
+
+    def _sshpass_available(self) -> bool:
+        return shutil.which("sshpass") is not None
+
+    def _openssh_available(self) -> bool:
+        return shutil.which("ssh") is not None
+
+    # =========================================================
+    # TESTS DE CONNEXION
+    # =========================================================
+
+    def test_ssh_connection(self, timeout: int = 10) -> Tuple[bool, str]:
+        """
+        Test SSH standard :
+        - connexion SSH
+        - ouverture d’un shell interactif
+        """
         started_at = time.perf_counter()
+        client: Optional[paramiko.SSHClient] = None
+        chan: Optional[paramiko.Channel] = None
 
         try:
             logger.info(
-                "[SSH] Test connexion démarré vers %s:%s (timeout=%ss).",
+                "[SSH] Test de connexion démarré vers %s:%s (timeout=%ss).",
                 self.instance.host,
                 self.instance.ssh_port,
                 timeout,
             )
 
-            client.connect(
-                hostname=self.instance.host,
-                port=self.instance.ssh_port,
-                username=self.instance.username,
-                password=self.instance.password,
-                look_for_keys=False,
-                allow_agent=False,
-                timeout=timeout,
-            )
+            client = self._connect_ssh(timeout=timeout, legacy_algorithms=False)
+            chan = self._open_ssh_shell(client, timeout=timeout, read_delay=1.0)
 
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = "[SSH] Connexion réussie."
+            msg = "[SSH] Connexion et ouverture du shell réussies."
             logger.info(
-                "[SSH] Test connexion réussi vers %s:%s en %ss.",
+                "[SSH] Test de connexion réussi vers %s:%s en %ss.",
                 self.instance.host,
                 self.instance.ssh_port,
                 elapsed,
             )
             return True, msg
 
-        except (socket.timeout, paramiko.ssh_exception.NoValidConnectionsError) as e:
+        except paramiko.AuthenticationException:
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = f"[SSH] Impossible de se connecter : {e}"
+            msg = "[SSH] Authentification échouée."
+            logger.warning(
+                "[SSH] Authentification refusée sur %s:%s après %ss.",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+            )
+            return False, msg
+
+        except (socket.timeout, TimeoutError):
+            elapsed = round(time.perf_counter() - started_at, 2)
+            msg = "[SSH] Timeout lors de la connexion ou de l’ouverture du shell."
             logger.error(
-                "[SSH] Test connexion échoué vers %s:%s après %ss : %s",
+                "[SSH] Timeout sur %s:%s après %ss.",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+            )
+            return False, msg
+
+        except paramiko.ssh_exception.NoValidConnectionsError as e:
+            elapsed = round(time.perf_counter() - started_at, 2)
+            msg = f"[SSH] Connexion impossible : {e}"
+            logger.error(
+                "[SSH] Connexion impossible vers %s:%s après %ss : %s",
                 self.instance.host,
                 self.instance.ssh_port,
                 elapsed,
@@ -71,14 +244,15 @@ class ISAMConnectionService:
             )
             return False, msg
 
-        except paramiko.AuthenticationException:
+        except paramiko.SSHException as e:
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = "[SSH] Erreur d'authentification."
+            msg = f"[SSH] Le serveur a refusé ou fermé le shell SSH : {e}"
             logger.error(
-                "[SSH] Authentification échouée vers %s:%s après %ss.",
+                "[SSH] Ouverture de shell refusée/fermée sur %s:%s après %ss : %s",
                 self.instance.host,
                 self.instance.ssh_port,
                 elapsed,
+                e,
             )
             return False, msg
 
@@ -95,68 +269,130 @@ class ISAMConnectionService:
             return False, msg
 
         finally:
-            client.close()
+            try:
+                if chan and not chan.closed:
+                    chan.close()
+            except Exception:
+                pass
+            if client:
+                client.close()
 
     def test_ssh_connection_legacy(self, timeout: int = 10) -> Tuple[bool, str]:
-        """Test SSH avec algorithmes legacy (ssh-rsa)"""
+        """
+        Test SSH legacy via openssh + sshpass en mode interactif.
+        Nécessite :
+        - sshpass
+        - ssh
+        """
         started_at = time.perf_counter()
+
+        if not self._openssh_available():
+            msg = "[SSH-LEGACY] Le binaire 'ssh' est introuvable."
+            logger.error(msg)
+            return False, msg
+
+        if not self._sshpass_available():
+            msg = "[SSH-LEGACY] Le binaire 'sshpass' est introuvable."
+            logger.error(msg)
+            return False, msg
+
+        proc: Optional[subprocess.Popen] = None
 
         try:
             logger.info(
-                "[SSH-LEGACY] Test connexion démarré vers %s:%s (timeout=%ss).",
+                "[SSH-LEGACY] Test de connexion démarré vers %s:%s (timeout=%ss).",
                 self.instance.host,
                 self.instance.ssh_port,
                 timeout,
             )
 
             cmd = [
+                "sshpass",
+                "-p",
+                self.instance.password,
                 "ssh",
-                "-o", "HostKeyAlgorithms=+ssh-rsa",
-                "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", f"ConnectTimeout={timeout}",
+                "-tt",
+                "-o",
+                "HostKeyAlgorithms=+ssh-rsa",
+                "-o",
+                "PubkeyAcceptedAlgorithms=+ssh-rsa",
+                "-o",
+                "KexAlgorithms=+diffie-hellman-group14-sha1",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "PreferredAuthentications=password",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                f"ConnectTimeout={timeout}",
+                "-p",
+                str(self.instance.ssh_port),
                 f"{self.instance.username}@{self.instance.host}",
-                "-p", str(self.instance.ssh_port),
-                "echo 'SSH Legacy connection successful'"
             ]
 
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=f"{self.instance.password}\n".encode(),
-                capture_output=True,
-                timeout=timeout + 5,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
 
-            elapsed = round(time.perf_counter() - started_at, 2)
-            if result.returncode == 0:
-                msg = "[SSH-LEGACY] Connexion réussie avec algorithmes legacy."
-                logger.info(
-                    "[SSH-LEGACY] Test connexion réussi vers %s:%s en %ss.",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    elapsed,
-                )
-                return True, msg
-            else:
-                stderr = result.stderr.decode("utf-8", errors="ignore")
-                msg = f"[SSH-LEGACY] Connexion échouée: {stderr}"
-                logger.warning(
-                    "[SSH-LEGACY] Test connexion échoué vers %s:%s après %ss : %s",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    elapsed,
-                    stderr,
-                )
-                return False, msg
+            if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+                raise RuntimeError("Impossible d'ouvrir le process SSH legacy")
 
-        except subprocess.TimeoutExpired:
+            time.sleep(2.0)
+
+            proc.stdin.write("echo SSH_LEGACY_OK\n")
+            proc.stdin.flush()
+
+            end_time = time.time() + timeout
+            collected_out = ""
+            collected_err = ""
+
+            while time.time() < end_time:
+                ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.5)
+                for stream in ready:
+                    chunk = stream.read()
+                    if not chunk:
+                        continue
+                    if stream is proc.stdout:
+                        collected_out += chunk
+                    else:
+                        collected_err += chunk
+
+                if "SSH_LEGACY_OK" in collected_out:
+                    elapsed = round(time.perf_counter() - started_at, 2)
+                    logger.info(
+                        "[SSH-LEGACY] Test de connexion réussi vers %s:%s en %ss.",
+                        self.instance.host,
+                        self.instance.ssh_port,
+                        elapsed,
+                    )
+                    try:
+                        proc.stdin.write("exit\n")
+                        proc.stdin.flush()
+                    except Exception:
+                        pass
+                    proc.terminate()
+                    return True, "[SSH-LEGACY] Connexion legacy réussie."
+
+                if proc.poll() is not None:
+                    break
+
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = "[SSH-LEGACY] Timeout lors de la connexion."
-            logger.error(
-                "[SSH-LEGACY] Timeout connexion vers %s:%s après %ss.",
+            msg = "[SSH-LEGACY] Échec de connexion interactive legacy."
+            logger.warning(
+                "[SSH-LEGACY] Test échoué vers %s:%s après %ss. stdout=%r stderr=%r",
                 self.instance.host,
                 self.instance.ssh_port,
                 elapsed,
+                collected_out[-500:],
+                collected_err[-500:],
             )
             return False, msg
 
@@ -172,12 +408,19 @@ class ISAMConnectionService:
             )
             return False, msg
 
+        finally:
+            if proc:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
     def test_telnet_connection(self, timeout: int = 10) -> Tuple[bool, str]:
         started_at = time.perf_counter()
 
         try:
             logger.info(
-                "[TELNET] Test connexion démarré vers %s:%s (timeout=%ss).",
+                "[TELNET] Test de connexion démarré vers %s:%s (timeout=%ss).",
                 self.instance.host,
                 self.instance.telnet_port,
                 timeout,
@@ -202,28 +445,40 @@ class ISAMConnectionService:
                 if "#" in output or ">" in output:
                     msg = "[TELNET] Connexion réussie, prompt détecté."
                     logger.info(
-                        "[TELNET] Test connexion réussi vers %s:%s en %ss.",
+                        "[TELNET] Test de connexion réussi vers %s:%s en %ss.",
                         self.instance.host,
                         self.instance.telnet_port,
                         elapsed,
                     )
                     return True, msg
-                else:
-                    msg = "[TELNET] Connexion établie mais prompt non reconnu."
-                    logger.warning(
-                        "[TELNET] Connexion partielle vers %s:%s en %ss. Prompt non reconnu. Output=%r",
-                        self.instance.host,
-                        self.instance.telnet_port,
-                        elapsed,
-                        output,
-                    )
-                    return False, msg
+
+                msg = "[TELNET] Connexion établie mais prompt non reconnu."
+                logger.warning(
+                    "[TELNET] Connexion partielle vers %s:%s en %ss. Output=%r",
+                    self.instance.host,
+                    self.instance.telnet_port,
+                    elapsed,
+                    output[-500:],
+                )
+                return False, msg
 
         except (socket.timeout, ConnectionRefusedError) as e:
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = f"[TELNET] Impossible de se connecter (timeout/refus) : {e}"
+            msg = f"[TELNET] Connexion impossible : {e}"
             logger.error(
-                "[TELNET] Test connexion échoué vers %s:%s après %ss : %s",
+                "[TELNET] Échec de connexion vers %s:%s après %ss : %s",
+                self.instance.host,
+                self.instance.telnet_port,
+                elapsed,
+                e,
+            )
+            return False, msg
+
+        except EOFError as e:
+            elapsed = round(time.perf_counter() - started_at, 2)
+            msg = f"[TELNET] La connexion a été fermée par le serveur : {e}"
+            logger.error(
+                "[TELNET] Fermeture distante sur %s:%s après %ss : %s",
                 self.instance.host,
                 self.instance.telnet_port,
                 elapsed,
@@ -243,67 +498,151 @@ class ISAMConnectionService:
             )
             return False, msg
 
-    # ----------- EXÉCUTION DE COMMANDES -----------
+    # =========================================================
+    # EXÉCUTION DE COMMANDES
+    # =========================================================
 
     def execute_ssh_command(
         self,
         command: str,
         timeout: int = 20,
+        idle_timeout: float = 1.5,
+        post_send_delay: float = 1.0,
+        init_command: Optional[str] = None,
     ) -> Tuple[bool, str, str]:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        """
+        Exécute une commande via SSH avec shell interactif (Paramiko).
+        """
         started_at = time.perf_counter()
+        client: Optional[paramiko.SSHClient] = None
+        chan: Optional[paramiko.Channel] = None
 
         try:
             logger.info(
-                "[SSH] Exécution commande démarrée vers %s:%s (timeout=%ss): %r",
+                "[SSH] Exécution commande démarrée vers %s:%s (timeout=%ss, idle_timeout=%ss): %r",
                 self.instance.host,
                 self.instance.ssh_port,
                 timeout,
+                idle_timeout,
                 command,
             )
 
-            client.connect(
-                hostname=self.instance.host,
-                port=self.instance.ssh_port,
-                username=self.instance.username,
-                password=self.instance.password,
-                look_for_keys=False,
-                allow_agent=False,
+            client = self._connect_ssh(timeout=timeout, legacy_algorithms=False)
+            chan = self._open_ssh_shell(client, timeout=timeout, read_delay=1.2)
+
+            try:
+                initial = self._read_shell_output(chan, timeout=2, idle_timeout=0.8)
+                if initial:
+                    logger.debug(
+                        "[SSH] Flux initial avant commande depuis %s:%s : %r",
+                        self.instance.host,
+                        self.instance.ssh_port,
+                        initial[-500:],
+                    )
+            except Exception:
+                pass
+
+            if chan.closed:
+                raise paramiko.SSHException("SSH shell channel closed before sending command")
+
+            if init_command:
+                logger.debug(
+                    "[SSH] Envoi commande d'initialisation vers %s:%s : %r",
+                    self.instance.host,
+                    self.instance.ssh_port,
+                    init_command,
+                )
+                chan.send(init_command + "\n")
+                time.sleep(0.7)
+                _ = self._read_shell_output(chan, timeout=3, idle_timeout=1.0)
+
+            for line in command.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+
+                if chan.closed:
+                    raise paramiko.SSHException("SSH shell channel closed during command send")
+
+                logger.debug(
+                    "[SSH] Envoi ligne vers %s:%s : %r",
+                    self.instance.host,
+                    self.instance.ssh_port,
+                    line,
+                )
+                chan.send(line + "\n")
+                time.sleep(0.35)
+
+            time.sleep(post_send_delay)
+
+            if chan.closed:
+                raise paramiko.SSHException("SSH shell channel closed after sending command")
+
+            output = self._read_shell_output(
+                chan,
                 timeout=timeout,
+                idle_timeout=idle_timeout,
             )
 
-            stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
-            out = stdout.read().decode("utf-8", errors="ignore")
-            err = stderr.read().decode("utf-8", errors="ignore")
-            exit_status = stdout.channel.recv_exit_status()
-
+            cleaned_output = self._sanitize_command_output(output, command)
             elapsed = round(time.perf_counter() - started_at, 2)
 
-            if exit_status == 0:
+            if cleaned_output:
                 logger.info(
-                    "[SSH] Commande exécutée avec succès vers %s:%s en %ss (stdout=%d chars, stderr=%d chars).",
+                    "[SSH] Commande terminée avec succès vers %s:%s en %ss (output=%d chars).",
                     self.instance.host,
                     self.instance.ssh_port,
                     elapsed,
-                    len(out),
-                    len(err),
+                    len(cleaned_output),
                 )
-                return True, out, err
-            else:
-                msg = f"Commande SSH retournée avec code {exit_status}"
-                logger.warning(
-                    "[SSH] Commande échouée vers %s:%s en %ss (exit_status=%s).",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    elapsed,
-                    exit_status,
-                )
-                return False, out, err or msg
+                return True, cleaned_output, ""
+
+            msg = "[SSH] Aucune sortie reçue après exécution de la commande."
+            logger.warning(
+                "[SSH] Commande terminée sans sortie vers %s:%s en %ss.",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+            )
+            return True, "", msg
+
+        except paramiko.AuthenticationException:
+            elapsed = round(time.perf_counter() - started_at, 2)
+            msg = "[SSH] Authentification échouée lors de l'exécution."
+            logger.warning(
+                "[SSH] Authentification refusée pendant exécution vers %s:%s après %ss.",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+            )
+            return False, "", msg
+
+        except paramiko.SSHException as e:
+            elapsed = round(time.perf_counter() - started_at, 2)
+            msg = f"[SSH] Le serveur SSH a refusé ou fermé le shell/canal : {e}"
+            logger.error(
+                "[SSH] Shell/canal fermé par le serveur sur %s:%s après %ss : %s",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+                e,
+            )
+            return False, "", msg
+
+        except socket.timeout:
+            elapsed = round(time.perf_counter() - started_at, 2)
+            msg = "[SSH] Timeout lors de l’exécution de la commande."
+            logger.error(
+                "[SSH] Timeout commande vers %s:%s après %ss.",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+            )
+            return False, "", msg
 
         except Exception as e:
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = f"[SSH] Erreur lors de l'exécution de la commande : {e}"
+            msg = f"[SSH] Erreur inattendue lors de l'exécution : {e}"
             logger.exception(
                 "[SSH] Erreur exécution commande vers %s:%s après %ss : %s",
                 self.instance.host,
@@ -314,15 +653,37 @@ class ISAMConnectionService:
             return False, "", msg
 
         finally:
-            client.close()
+            try:
+                if chan and not chan.closed:
+                    chan.close()
+            except Exception:
+                pass
+            if client:
+                client.close()
 
     def execute_ssh_command_legacy(
         self,
         command: str,
         timeout: int = 20,
+        idle_timeout: float = 1.5,
+        post_send_delay: float = 1.0,
     ) -> Tuple[bool, str, str]:
-        """Exécute une commande SSH avec algorithmes legacy"""
+        """
+        Exécute une commande SSH legacy via openssh + sshpass en mode interactif.
+        """
         started_at = time.perf_counter()
+
+        if not self._openssh_available():
+            msg = "[SSH-LEGACY] Le binaire 'ssh' est introuvable."
+            logger.error(msg)
+            return False, "", msg
+
+        if not self._sshpass_available():
+            msg = "[SSH-LEGACY] Le binaire 'sshpass' est introuvable."
+            logger.error(msg)
+            return False, "", msg
+
+        proc: Optional[subprocess.Popen] = None
 
         try:
             logger.info(
@@ -334,46 +695,134 @@ class ISAMConnectionService:
             )
 
             cmd = [
+                "sshpass",
+                "-p",
+                self.instance.password,
                 "ssh",
-                "-o", "HostKeyAlgorithms=+ssh-rsa",
-                "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", f"ConnectTimeout={timeout}",
+                "-tt",
+                "-o",
+                "HostKeyAlgorithms=+ssh-rsa",
+                "-o",
+                "PubkeyAcceptedAlgorithms=+ssh-rsa",
+                "-o",
+                "KexAlgorithms=+diffie-hellman-group14-sha1",
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "UserKnownHostsFile=/dev/null",
+                "-o",
+                "PreferredAuthentications=password",
+                "-o",
+                "PubkeyAuthentication=no",
+                "-o",
+                f"ConnectTimeout={timeout}",
+                "-p",
+                str(self.instance.ssh_port),
                 f"{self.instance.username}@{self.instance.host}",
-                "-p", str(self.instance.ssh_port),
-                command,
             ]
 
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                input=f"{self.instance.password}\n".encode(),
-                capture_output=True,
-                timeout=timeout + 5,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
 
-            out = result.stdout.decode("utf-8", errors="ignore")
-            err = result.stderr.decode("utf-8", errors="ignore")
+            if proc.stdin is None or proc.stdout is None or proc.stderr is None:
+                raise RuntimeError("Impossible d'ouvrir le process SSH legacy")
+
+            time.sleep(2.0)
+
+            try:
+                # vide le flux initial
+                ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.5)
+                for stream in ready:
+                    _ = stream.read()
+            except Exception:
+                pass
+
+            for line in command.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                logger.debug(
+                    "[SSH-LEGACY] Envoi ligne vers %s:%s : %r",
+                    self.instance.host,
+                    self.instance.ssh_port,
+                    line,
+                )
+                proc.stdin.write(line + "\n")
+                proc.stdin.flush()
+                time.sleep(0.35)
+
+            time.sleep(post_send_delay)
+
+            end_time = time.time() + timeout
+            last_data_time = time.time()
+            collected_out = ""
+            collected_err = ""
+
+            while time.time() < end_time:
+                if proc.poll() is not None:
+                    try:
+                        out_rest, err_rest = proc.communicate(timeout=1)
+                    except Exception:
+                        out_rest, err_rest = "", ""
+                    collected_out += out_rest or ""
+                    collected_err += err_rest or ""
+                    break
+
+                ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.2)
+
+                got_data = False
+                for stream in ready:
+                    chunk = stream.read()
+                    if not chunk:
+                        continue
+                    got_data = True
+                    if stream is proc.stdout:
+                        collected_out += chunk
+                    else:
+                        collected_err += chunk
+
+                if got_data:
+                    last_data_time = time.time()
+                else:
+                    if (collected_out or collected_err) and (time.time() - last_data_time) > idle_timeout:
+                        break
+
+            try:
+                proc.stdin.write("exit\n")
+                proc.stdin.flush()
+            except Exception:
+                pass
+
+            cleaned_out = self._sanitize_command_output(collected_out, command)
+            cleaned_err = self._sanitize_command_output(collected_err, command)
             elapsed = round(time.perf_counter() - started_at, 2)
 
-            if result.returncode == 0:
+            if cleaned_out:
                 logger.info(
                     "[SSH-LEGACY] Commande exécutée avec succès vers %s:%s en %ss (stdout=%d chars, stderr=%d chars).",
                     self.instance.host,
                     self.instance.ssh_port,
                     elapsed,
-                    len(out),
-                    len(err),
+                    len(cleaned_out),
+                    len(cleaned_err),
                 )
-                return True, out, err
-            else:
-                logger.warning(
-                    "[SSH-LEGACY] Commande échouée vers %s:%s en %ss (returncode=%s).",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    elapsed,
-                    result.returncode,
-                )
-                return False, out, err
+                return True, cleaned_out, cleaned_err
+
+            msg = cleaned_err or "[SSH-LEGACY] Aucune sortie reçue après exécution."
+            logger.warning(
+                "[SSH-LEGACY] Commande sans sortie utile vers %s:%s en %ss (stderr=%r).",
+                self.instance.host,
+                self.instance.ssh_port,
+                elapsed,
+                cleaned_err[-500:],
+            )
+            return False, cleaned_out, msg
 
         except subprocess.TimeoutExpired:
             elapsed = round(time.perf_counter() - started_at, 2)
@@ -388,7 +837,7 @@ class ISAMConnectionService:
 
         except Exception as e:
             elapsed = round(time.perf_counter() - started_at, 2)
-            msg = f"[SSH-LEGACY] Erreur lors de l'exécution de la commande : {e}"
+            msg = f"[SSH-LEGACY] Erreur inattendue lors de l'exécution : {e}"
             logger.exception(
                 "[SSH-LEGACY] Erreur exécution commande vers %s:%s après %ss : %s",
                 self.instance.host,
@@ -398,6 +847,13 @@ class ISAMConnectionService:
             )
             return False, "", msg
 
+        finally:
+            if proc:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
     def execute_telnet_command(
         self,
         command: str,
@@ -405,9 +861,8 @@ class ISAMConnectionService:
         idle_timeout: float = 1.0,
     ) -> Tuple[bool, str, str]:
         """
-        Exécute une commande via Telnet en lisant la sortie jusqu'à ce qu'il
-        n'y ait plus de données pendant idle_timeout secondes, ou qu'on dépasse
-        timeout au total.
+        Exécute une commande via Telnet.
+        Telnet reste le dernier fallback.
         """
         started_at = time.perf_counter()
 
@@ -433,7 +888,10 @@ class ISAMConnectionService:
                 tn.write(self.instance.password.encode("ascii") + b"\n")
 
                 time.sleep(1)
-                tn.read_very_eager()
+                try:
+                    tn.read_very_eager()
+                except Exception:
+                    pass
 
                 for line in command.split("\n"):
                     line = line.strip()
@@ -456,7 +914,7 @@ class ISAMConnectionService:
                             break
                         time.sleep(0.2)
 
-                output = buffer.decode("ascii", errors="ignore")
+                output = buffer.decode("ascii", errors="ignore").strip()
                 elapsed = round(time.perf_counter() - started_at, 2)
 
                 logger.info(
@@ -480,7 +938,9 @@ class ISAMConnectionService:
             )
             return False, "", msg
 
-    # ----------- TESTS AVEC STRATÉGIES -----------
+    # =========================================================
+    # STRATÉGIES DE FALLBACK
+    # =========================================================
 
     def test_connection_preference(
         self,
@@ -492,7 +952,7 @@ class ISAMConnectionService:
             ok, msg = self.test_telnet_connection(timeout=timeout)
             elapsed = round(time.perf_counter() - started_at, 2)
             logger.info(
-                "[STRATEGY] Test connexion terminé pour %s via préférence TELNET en %ss -> ok=%s",
+                "[STRATEGY] Test terminé pour %s via préférence TELNET en %ss -> ok=%s",
                 self.instance.host,
                 elapsed,
                 ok,
@@ -503,19 +963,22 @@ class ISAMConnectionService:
         if ssh_ok:
             elapsed = round(time.perf_counter() - started_at, 2)
             logger.info(
-                "[STRATEGY] Test connexion terminé pour %s via SSH standard en %ss -> ok=True",
+                "[STRATEGY] Test terminé pour %s via SSH standard en %ss -> ok=True",
                 self.instance.host,
                 elapsed,
             )
             return True, "ssh", ssh_msg
 
-        logger.info("[STRATEGY] SSH standard échoué, tentative SSH legacy...")
+        logger.info(
+            "[STRATEGY] SSH standard indisponible pour %s. Tentative SSH legacy...",
+            self.instance.host,
+        )
 
         ssh_legacy_ok, ssh_legacy_msg = self.test_ssh_connection_legacy(timeout=timeout)
         if ssh_legacy_ok:
             elapsed = round(time.perf_counter() - started_at, 2)
             logger.info(
-                "[STRATEGY] Test connexion terminé pour %s via SSH legacy en %ss -> ok=True",
+                "[STRATEGY] Test terminé pour %s via SSH legacy en %ss -> ok=True",
                 self.instance.host,
                 elapsed,
             )
@@ -524,27 +987,30 @@ class ISAMConnectionService:
         if self.instance.protocol_preference == "ssh":
             elapsed = round(time.perf_counter() - started_at, 2)
             logger.warning(
-                "[STRATEGY] Test connexion terminé pour %s après %ss -> SSH et SSH legacy ont échoué.",
+                "[STRATEGY] Test terminé pour %s après %ss -> SSH standard et legacy ont échoué.",
                 self.instance.host,
                 elapsed,
             )
             return False, None, f"SSH: {ssh_msg} ; SSH-LEGACY: {ssh_legacy_msg}"
 
-        logger.info("[STRATEGY] SSH échoué, tentative Telnet...")
+        logger.info(
+            "[STRATEGY] SSH indisponible pour %s. Tentative Telnet...",
+            self.instance.host,
+        )
 
         telnet_ok, telnet_msg = self.test_telnet_connection(timeout=timeout)
         elapsed = round(time.perf_counter() - started_at, 2)
 
         if telnet_ok:
             logger.info(
-                "[STRATEGY] Test connexion terminé pour %s via TELNET fallback en %ss -> ok=True",
+                "[STRATEGY] Test terminé pour %s via TELNET fallback en %ss -> ok=True",
                 self.instance.host,
                 elapsed,
             )
             return True, "telnet", telnet_msg
 
         logger.warning(
-            "[STRATEGY] Test connexion terminé pour %s après %ss -> tous les protocoles ont échoué.",
+            "[STRATEGY] Test terminé pour %s après %ss -> tous les protocoles ont échoué.",
             self.instance.host,
             elapsed,
         )
@@ -578,7 +1044,10 @@ class ISAMConnectionService:
             )
             return True, "ssh", out, err
 
-        logger.info("[STRATEGY] SSH standard échoué, tentative SSH legacy...")
+        logger.info(
+            "[STRATEGY] SSH standard indisponible pour %s. Tentative SSH legacy...",
+            self.instance.host,
+        )
 
         ok_legacy, out_legacy, err_legacy = self.execute_ssh_command_legacy(
             command,
@@ -596,13 +1065,16 @@ class ISAMConnectionService:
         if self.instance.protocol_preference == "ssh":
             elapsed = round(time.perf_counter() - started_at, 2)
             logger.warning(
-                "[STRATEGY] Commande terminée pour %s après %ss -> SSH et SSH legacy ont échoué.",
+                "[STRATEGY] Commande terminée pour %s après %ss -> SSH standard et legacy ont échoué.",
                 self.instance.host,
                 elapsed,
             )
             return False, None, out, f"SSH: {err} ; SSH-LEGACY: {err_legacy}"
 
-        logger.info("[STRATEGY] SSH échoué, tentative Telnet...")
+        logger.info(
+            "[STRATEGY] SSH indisponible pour %s. Tentative Telnet...",
+            self.instance.host,
+        )
 
         ok_tel, out_tel, msg_tel = self.execute_telnet_command(
             command,
@@ -626,10 +1098,9 @@ class ISAMConnectionService:
         return False, None, "", f"SSH: {err} ; SSH-LEGACY: {err_legacy} ; TELNET: {msg_tel}"
 
 
-# ─────────────────────────────────────────────────────────────────────
-#  SESSION TELNET PERSISTANTE (multi-commandes sur une seule connexion)
-# ─────────────────────────────────────────────────────────────────────
-
+# =========================================================
+# SESSION TELNET PERSISTANTE
+# =========================================================
 
 class ISAMPersistentTelnet:
     """
@@ -647,7 +1118,6 @@ class ISAMPersistentTelnet:
         return self._connected
 
     def connect(self) -> Tuple[bool, str]:
-        """Ouvre la connexion Telnet et effectue le login UNE SEULE FOIS."""
         started_at = time.perf_counter()
 
         try:
@@ -720,7 +1190,7 @@ class ISAMPersistentTelnet:
             elapsed = round(time.perf_counter() - started_at, 2)
             msg = f"[TELNET-PERSIST] Échec connexion : {e}"
             logger.exception(
-                "[TELNET-PERSIST] Echec ouverture session vers %s:%s après %ss : %s",
+                "[TELNET-PERSIST] Échec ouverture session vers %s:%s après %ss : %s",
                 self.instance.host,
                 self.instance.telnet_port,
                 elapsed,
@@ -730,7 +1200,11 @@ class ISAMPersistentTelnet:
 
     def close(self):
         self._cleanup()
-        logger.info("[TELNET-PERSIST] Session fermée pour %s:%s.", self.instance.host, self.instance.telnet_port)
+        logger.info(
+            "[TELNET-PERSIST] Session fermée pour %s:%s.",
+            self.instance.host,
+            self.instance.telnet_port,
+        )
 
     def _cleanup(self):
         if self._tn:
@@ -747,9 +1221,6 @@ class ISAMPersistentTelnet:
         idle_timeout: float = 3.0,
         post_send_delay: float = 1.0,
     ) -> Tuple[bool, str, str]:
-        """
-        Exécute une commande sur la session déjà ouverte.
-        """
         if not self._connected or not self._tn:
             return False, "", "[TELNET-PERSIST] Session non connectée."
 
@@ -802,7 +1273,7 @@ class ISAMPersistentTelnet:
                         break
                     time.sleep(0.2)
 
-            output = buf.decode("ascii", errors="ignore")
+            output = buf.decode("ascii", errors="ignore").strip()
             elapsed = round(time.perf_counter() - started_at, 2)
 
             logger.info(

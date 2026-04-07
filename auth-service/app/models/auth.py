@@ -420,6 +420,10 @@ class UserAdminRead(ORMReadModel):
 
 class UserList(BaseModel):
     users: list[UserAdminRead]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class ChangeRoleRequest(StrictInputModel):
