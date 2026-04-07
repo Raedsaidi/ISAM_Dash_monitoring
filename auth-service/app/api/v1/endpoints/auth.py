@@ -49,20 +49,20 @@ def port_label_matches_wan_model(
     port_label: str | None,
     wan_model: str | None,
 ) -> bool:
-    """
-    Règles:
-    - si wan_model absent => aucun filtrage, on retourne tous les ports
-    - si wan_model == XDSL => accepte XDSL, VDSL, ADSL, DSL
-    - sinon égalité stricte sur le label
-    """
     normalized_model = normalize_wan_model(wan_model)
     if not normalized_model:
         return True
 
     normalized_label = normalize_port_label(port_label)
 
-    if normalized_model == "XDSL":
-        return normalized_label in {"XDSL", "VDSL", "ADSL", "DSL"}
+    WAN_MODEL_EQUIVALENTS = {
+        "XDSL": {"XDSL", "VDSL", "ADSL", "DSL"},
+        "ETHERNET": {"ETHERNET", "FIBRE"},
+    }
+
+    allowed_labels = WAN_MODEL_EQUIVALENTS.get(normalized_model)
+    if allowed_labels is not None:
+        return normalized_label in allowed_labels
 
     return normalized_label == normalized_model
 
@@ -360,24 +360,26 @@ def create_user_admin(
 def list_users(
     search: str | None = Query(None, min_length=1, max_length=200),
     role: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_admin),
 ):
     """
-    Liste tous les users (ADMIN et SUPER_ADMIN).
-    Supports server-side search by username, email, full_name
-    and optional role filtering.
+    Liste paginée de tous les users (ADMIN et SUPER_ADMIN).
+    Supports:
+    - server-side search by username, email, full_name
+    - optional role filtering
+    - backend pagination
     """
     q = db.query(User).options(
         selectinload(User.refresh_tokens),
         selectinload(User.ports),
     )
 
-    # --- role filter ---
     if role and role != "ALL":
         q = q.filter(User.role == role)
 
-    # --- server-side search ---
     if search:
         pattern = f"%{search}%"
         q = q.filter(
@@ -388,7 +390,17 @@ def list_users(
             )
         )
 
-    users = q.order_by(User.id.asc()).all()
+    total = q.count()
+    total_pages = max((total + page_size - 1) // page_size, 1)
+
+    offset = (page - 1) * page_size
+
+    users = (
+        q.order_by(User.id.asc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
 
     admin_reads: list[UserAdminRead] = []
     for u in users:
@@ -407,8 +419,13 @@ def list_users(
             )
         )
 
-    return UserList(users=admin_reads)
-
+    return UserList(
+        users=admin_reads,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 @router.patch("/users/{user_id}", response_model=UserRead)
 def update_user_admin(

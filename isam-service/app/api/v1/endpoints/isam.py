@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime ,date
 import logging
 import math
 from typing import List, Dict, Optional
@@ -81,6 +81,17 @@ logger = logging.getLogger(__name__)
 
 
 # -------- Helpers --------
+
+def make_json_safe(value):
+    if isinstance(value, dict):
+        return {k: make_json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [make_json_safe(v) for v in value]
+    if isinstance(value, tuple):
+        return [make_json_safe(v) for v in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
 
 def get_instance_or_404(db: Session, instance_id: int) -> ISAMInstance:
     inst = db.query(ISAMInstance).filter(ISAMInstance.id == instance_id).first()
@@ -937,7 +948,7 @@ def create_wan_template(
         created_by=current_user.username,
         scope=body.scope,
         source_template_id=source_template.id if source_template else None,
-        saved_parameters=body.saved_parameters.model_dump() if body.saved_parameters else None,
+        saved_parameters=body.saved_parameters.model_dump(mode="json") if body.saved_parameters else None,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )
@@ -1140,7 +1151,7 @@ def update_wan_template(
     data = body.model_dump(exclude_unset=True)
 
     if "saved_parameters" in data and body.saved_parameters is not None:
-        data["saved_parameters"] = body.saved_parameters.model_dump()
+        data["saved_parameters"] = make_json_safe(body.saved_parameters.model_dump())
 
     for field, value in data.items():
         setattr(tpl, field, value)
@@ -1948,7 +1959,7 @@ def get_cached_ports(
 def get_lt_slots(
     instance_id: int,
     db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(require_admin),
+    current_user: TokenUser = Depends(get_current_user),
 ):
     _ = get_instance_or_404(db, instance_id)
 
@@ -1979,7 +1990,7 @@ def get_lt_slot_ports(
     port_type: Optional[str] = Query(None, description="Filtrer par type"),
     state: Optional[str] = Query(None, description="Filtrer par état"),
     db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(require_admin),
+    current_user: TokenUser = Depends(get_current_user),
 ):
     slot_id = unquote(slot_id)
     inst = get_instance_or_404(db, instance_id)
