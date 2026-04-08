@@ -1737,26 +1737,123 @@ export default function TemplateWorkspaceOverlay({
   }
 
   async function handleApply() {
-    const requestId = ++applyRequestIdRef.current;
+  const requestId = ++applyRequestIdRef.current;
 
-    const validationError = validateWorkspace("apply");
-    if (validationError) {
-      setApplyState((s) => ({
-        ...s,
-        loading: false,
-        error: validationError,
-      }));
-      toast.error(validationError);
+  const validationError = validateWorkspace("apply");
+  if (validationError) {
+    setApplyState((s) => ({
+      ...s,
+      loading: false,
+      error: validationError,
+    }));
+    toast.error(validationError);
+    return;
+  }
+
+  if (!selectedTemplate) return;
+
+  const effectivePortInner = getEffectivePort(selectedPort, manualPort);
+
+  // 🔹 Nouveau : toast loader pendant l'opération
+  const applyToastId = toast.loading("Applying template...");
+
+  setApplyState({
+    loading: true,
+    error: null,
+    successMessage: null,
+    warningMessage: null,
+    protocol_used: null,
+    commands_executed: [],
+    raw_output: "",
+    executionHasTemplateErrors: false,
+    errorBlocks: [],
+  });
+
+  try {
+    const res = await authFetchJson<ApplyWanTemplateResponse>(
+      `${ISAM_BASE_URL}/api/v1/isam/wan-templates/apply-live`,
+      accessToken,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instance_id: instance.id,
+          template_id: selectedTemplate.id,
+          commands_template: commands,
+          selected_port: effectivePortInner || null,
+          variables: variableValues,
+        }),
+      },
+    );
+
+    if (requestId !== applyRequestIdRef.current) {
+      // Requête obsolète → on supprime juste le loader
+      toast.dismiss(applyToastId);
       return;
     }
 
-    if (!selectedTemplate) return;
-
-    const effectivePortInner = getEffectivePort(selectedPort, manualPort);
+    const outputAnalysis = analyzeRawOutput(res.raw_output || "");
+    const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
 
     setApplyState({
-      loading: true,
-      error: null,
+      loading: false,
+      error: res.success ? null : res.message,
+      successMessage:
+        res.success && !hasTemplateErrors
+          ? res.message || "Applied successfully."
+          : null,
+      warningMessage:
+        res.success && hasTemplateErrors
+          ? "Template executed, but invalid or unsupported commands were detected in device output."
+          : null,
+      protocol_used: res.protocol_used,
+      commands_executed: res.commands_executed || [],
+      raw_output: res.raw_output || "",
+      executionHasTemplateErrors: hasTemplateErrors,
+      errorBlocks: outputAnalysis.errorBlocks,
+    });
+
+    if (res.success && !hasTemplateErrors) {
+      setLastSuccessfulApplySnapshot({
+        selectedPort,
+        manualPort,
+        effectivePort: effectivePortInner,
+        variableValues: { ...variableValues },
+        appliedAt: new Date().toISOString(),
+      });
+
+      toast.success(/*res.message || */ "Template applied.", {
+        id: applyToastId,
+      });
+
+      loadPortTemplateStatus();
+    } else if (res.success && hasTemplateErrors) {
+      clearSuccessfulApplySnapshot();
+
+      toast.warning(
+        "Template contains invalid or unsupported commands. Saving is disabled until the template is fixed.",
+        { id: applyToastId },
+      );
+    } else {
+      clearSuccessfulApplySnapshot();
+
+      toast.error(
+        "Failed to connect to the ISAM instance or apply the template.",
+        { id: applyToastId },
+      );
+      return;
+    }
+  } catch (err) {
+    if (requestId !== applyRequestIdRef.current) {
+      toast.dismiss(applyToastId);
+      return;
+    }
+
+    const message =
+      getReadableErrorMessage(err) || "Failed to apply template.";
+    setApplyState({
+      loading: false,
+      error: message,
       successMessage: null,
       warningMessage: null,
       protocol_used: null,
@@ -1765,90 +1862,12 @@ export default function TemplateWorkspaceOverlay({
       executionHasTemplateErrors: false,
       errorBlocks: [],
     });
+    clearSuccessfulApplySnapshot();
 
-    try {
-      const res = await authFetchJson<ApplyWanTemplateResponse>(
-        `${ISAM_BASE_URL}/api/v1/isam/wan-templates/apply-live`,
-        accessToken,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            instance_id: instance.id,
-            template_id: selectedTemplate.id,
-            commands_template: commands,
-            selected_port: effectivePortInner || null,
-            variables: variableValues,
-          }),
-        },
-      );
-
-      if (requestId !== applyRequestIdRef.current) return;
-
-      const outputAnalysis = analyzeRawOutput(res.raw_output || "");
-      const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
-
-      setApplyState({
-        loading: false,
-        error: res.success ? null : res.message,
-        successMessage:
-          res.success && !hasTemplateErrors
-            ? res.message || "Applied successfully."
-            : null,
-        warningMessage:
-          res.success && hasTemplateErrors
-            ? "Template executed, but invalid or unsupported commands were detected in device output."
-            : null,
-        protocol_used: res.protocol_used,
-        commands_executed: res.commands_executed || [],
-        raw_output: res.raw_output || "",
-        executionHasTemplateErrors: hasTemplateErrors,
-        errorBlocks: outputAnalysis.errorBlocks,
-      });
-
-      if (res.success && !hasTemplateErrors) {
-        setLastSuccessfulApplySnapshot({
-          selectedPort,
-          manualPort,
-          effectivePort: effectivePortInner,
-          variableValues: { ...variableValues },
-          appliedAt: new Date().toISOString(),
-        });
-
-        toast.success(res.message || "Template applied.");
-        loadPortTemplateStatus();
-      } else if (res.success && hasTemplateErrors) {
-        clearSuccessfulApplySnapshot();
-        toast.warning(
-          "Template contains invalid or unsupported commands. Saving is disabled until the template is fixed.",
-        );
-      } else {
-        clearSuccessfulApplySnapshot();
-        toast.error(
-          "Failed to connect to the ISAM instance or apply the template.",
-        );
-        return;
-      }
-    } catch (err) {
-      if (requestId !== applyRequestIdRef.current) return;
-
-      const message =
-        getReadableErrorMessage(err) || "Failed to apply template.";
-      setApplyState({
-        loading: false,
-        error: message,
-        successMessage: null,
-        warningMessage: null,
-        protocol_used: null,
-        commands_executed: [],
-        raw_output: "",
-        executionHasTemplateErrors: false,
-        errorBlocks: [],
-      });
-      clearSuccessfulApplySnapshot();
-      toast.error(message);
-    }
+    // 🔹 On transforme le loader en toast d’erreur
+    toast.error(message, { id: applyToastId });
   }
+}
 
   async function findExistingUserCopy(sourceTemplateId: number) {
     try {
@@ -1912,36 +1931,70 @@ export default function TemplateWorkspaceOverlay({
       saveOrigin = "apply-success";
     }
 
-    const effectivePortInner = getEffectivePort(saveSelectedPort, saveManualPort);
+const effectivePortInner = getEffectivePort(saveSelectedPort, saveManualPort);
 
-    if (isUser && !effectivePortInner) {
-      toast.error(
-        "Please select a port or enter one manually; it will be included in the template name.",
-      );
-      return;
-    }
+if (isUser && !effectivePortInner) {
+  toast.error(
+    "Please select a port or enter one manually; it will be included in the template name.",
+  );
+  return;
+}
 
-    let finalName: string;
+const username = (user?.username || "").trim();
+const originalTemplateName = (selectedTemplate.name || "").trim();
+let finalName: string;
 
-    if (isUser) {
-      const baseName = getBaseTemplateNameForUser(
-        selectedTemplate.name,
-        user?.username,
-      );
+if (isCopyAction) {
+  // ====== CAS SAVE COPY ======
+  if (isUser) {
+    // Comportement existant pour USER : baseName + port
+    const baseName = getBaseTemplateNameForUser(
+      selectedTemplate.name,
+      user?.username,
+    );
 
-      finalName = buildUserTemplateName(
-        user?.username,
-        baseName,
-        effectivePortInner,
-      );
+    finalName = buildUserTemplateName(
+      user?.username,
+      baseName,
+      effectivePortInner,
+    );
+  } else {
+
+    const baseOriginalName =
+      originalTemplateName || name.trim() || "template";
+
+    if (username && effectivePortInner) {
+      finalName = `${username}_${baseOriginalName}_${effectivePortInner}`;
+    } else if (username) {
+      finalName = `${username}_${baseOriginalName}`;
+    } else if (effectivePortInner) {
+      finalName = `${baseOriginalName}_${effectivePortInner}`;
     } else {
-      finalName = name.trim();
+      finalName = baseOriginalName;
     }
+  }
+} else {
+  // ====== CAS SAVE (update simple) – on NE change rien ======
+  if (isUser) {
+    const baseName = getBaseTemplateNameForUser(
+      selectedTemplate.name,
+      user?.username,
+    );
 
-    if (!finalName) {
-      toast.error("Template name is required.");
-      return;
-    }
+    finalName = buildUserTemplateName(
+      user?.username,
+      baseName,
+      effectivePortInner,
+    );
+  } else {
+    finalName = name.trim();
+  }
+}
+
+  if (!finalName) {
+    toast.error("Template name is required.");
+    return;
+  }
 
     setSaving(true);
 
