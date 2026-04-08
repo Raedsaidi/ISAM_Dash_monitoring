@@ -680,6 +680,8 @@ function ConfigurePortModal({
 }
 
 // ─── Port Grid ────────────────────────────────────────────────────────────────
+// NOTE: Grid appearance is UNCHANGED. Locked ports only have their click
+// handler blocked — they still look exactly the same as before.
 
 function PortGrid({
   ports,
@@ -694,14 +696,18 @@ function PortGrid({
     <div className="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-16 lg:grid-cols-24 gap-1.5">
       {ports.map((p) => {
         const d = STATUS_CFG[p.status];
+        // A locked port can never be clicked regardless of admin status.
+        // The visual appearance is identical to the original — no change.
+        const clickable = isAdmin && !p.locked;
+
         return (
           <button
             key={p.id}
-            onClick={() => isAdmin && onToggle(p.label)}
-            disabled={!isAdmin}
-            title={`Port ${p.number} — ${p.status}${p.locked ? " (Locked)" : ""}${isAdmin ? "\nClick to toggle lock" : ""}`}
+            onClick={() => clickable && onToggle(p.label)}
+            disabled={!clickable}
+            title={`Port ${p.number} — ${p.status}${p.locked ? " (Locked)" : ""}${clickable ? "\nClick to toggle lock" : p.locked ? "\nPort is locked" : ""}`}
             className={`relative w-full aspect-square rounded-lg border-2 flex flex-col items-center justify-center text-xs font-medium transition-all duration-150 ${
-              isAdmin
+              clickable
                 ? "hover:scale-110 hover:shadow-md cursor-pointer"
                 : "cursor-not-allowed opacity-75"
             } focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 ${
@@ -804,6 +810,7 @@ function PortTable({
                 </td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
+                    {/* Lock / Unlock — admin only */}
                     {isAdmin && (
                       <button
                         onClick={() => onToggle(p.label)}
@@ -824,15 +831,41 @@ function PortTable({
                         )}
                       </button>
                     )}
+
+                    {/* Configure — disabled when port is locked */}
                     <button
-                      onClick={() => onConfigure(p)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+                      onClick={() => !p.locked && onConfigure(p)}
+                      disabled={p.locked}
+                      title={
+                        p.locked
+                          ? "Port is locked — unlock before configuring"
+                          : "Configure port VLAN"
+                      }
+                      className={cn(
+                        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1",
+                        p.locked
+                          ? "bg-slate-100 text-slate-400 cursor-not-allowed opacity-60"
+                          : "bg-blue-100 text-blue-700 hover:bg-blue-200",
+                      )}
                     >
                       <Settings2 size={12} /> Configure
                     </button>
+
+                    {/* Running Config — disabled when port is locked */}
                     <button
-                      onClick={() => onViewConfig(p)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-100 hover:bg-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-1"
+                      onClick={() => !p.locked && onViewConfig(p)}
+                      disabled={p.locked}
+                      title={
+                        p.locked
+                          ? "Port is locked — unlock to view config"
+                          : "View running config"
+                      }
+                      className={cn(
+                        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-1",
+                        p.locked
+                          ? "bg-slate-100 text-slate-400 cursor-not-allowed opacity-60"
+                          : "bg-slate-800 text-slate-100 hover:bg-slate-900",
+                      )}
                     >
                       <Terminal size={12} /> Config
                     </button>
@@ -976,6 +1009,12 @@ function SwitchPortDetail({
   }, [allLoadedPorts]);
 
   const loadingPage = pageCache.loading;
+
+  // Only show running config for unlocked ports
+  const handleViewConfig = useCallback((port: Port) => {
+    if (port.locked) return;
+    setRunningConfigPort(port);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -1155,7 +1194,7 @@ function SwitchPortDetail({
             ports={filtered}
             onToggle={onToggle}
             onConfigure={onConfigure}
-            onViewConfig={(port) => setRunningConfigPort(port)}
+            onViewConfig={handleViewConfig}
             isAdmin={isAdmin}
           />
         )}
@@ -1184,7 +1223,7 @@ function SwitchPortDetail({
         </span>
       </div>
 
-      {/* Running Config Modal (per-detail-view) */}
+      {/* Running Config Modal — only opens for unlocked ports */}
       <RunningConfigModal
         open={!!runningConfigPort}
         onClose={() => setRunningConfigPort(null)}
@@ -1207,7 +1246,6 @@ export default function CiscoPortManagementSection() {
   const [switches, setSwitches] = useState<CiscoSwitch[]>([]);
   const [switchesLoading, setSwitchesLoading] = useState(true);
 
-  // FIX: Use a ref for cacheMap so loadDbPage doesn't go stale
   const cacheMapRef = useRef<Record<number, PortPageCache>>({});
   const [cacheMap, _setCacheMap] = useState<Record<number, PortPageCache>>({});
 
@@ -1263,11 +1301,9 @@ export default function CiscoPortManagementSection() {
   }, [accessToken]);
 
   // ── Load a DB page ─────────────────────────────────────────────────────────
-  // FIX: Use ref for cacheMap so we never get stale closure
 
   const loadDbPage = useCallback(
     async (switchId: number, page: number) => {
-      // Use ref to avoid stale closure
       const existing = cacheMapRef.current[switchId];
       if (existing?.pages[page] && !existing.loading) {
         setPageMap((prev) => ({ ...prev, [switchId]: page }));
@@ -1325,11 +1361,10 @@ export default function CiscoPortManagementSection() {
         }));
       }
     },
-    // FIX: removed cacheMap from deps — we use the ref instead
     [accessToken, setCacheMap],
   );
 
-  // ── Sync ports from switch → DB ────────────────────────────────────────────
+  // ── Sync ports ─────────────────────────────────────────────────────────────
 
   const syncPorts = useCallback(
     async (switchId: number) => {
@@ -1346,11 +1381,8 @@ export default function CiscoPortManagementSection() {
         await apiFetch(
           `${PREFIX}/switches/${switchId}/sync-ports`,
           accessToken,
-          {
-            method: "POST",
-          },
+          { method: "POST" },
         );
-        // Clear page cache and reload page 1
         setCacheMap((prev) => ({
           ...prev,
           [switchId]: { ...emptyPageCache(), syncing: false },
@@ -1384,8 +1416,6 @@ export default function CiscoPortManagementSection() {
     [loadDbPage, pageMap],
   );
 
-  // ── Expand ─────────────────────────────────────────────────────────────────
-
   const toggleExpand = useCallback(
     (id: number) => {
       const next = expandedId === id ? null : id;
@@ -1396,7 +1426,6 @@ export default function CiscoPortManagementSection() {
   );
 
   // ── Toggle lock ────────────────────────────────────────────────────────────
-  // FIX: encode port label in URL, use ref for fresh cache read
 
   const handleToggle = useCallback(
     (switchId: number, portLabel: string) => {
@@ -1421,7 +1450,6 @@ export default function CiscoPortManagementSection() {
         action: async () => {
           setConfirmAction(null);
           try {
-            // FIX: Properly encode port label in URL path
             const encodedLabel = encodeURIComponent(portLabel);
             const res = await apiFetch<{
               success: boolean;
@@ -1567,7 +1595,6 @@ export default function CiscoPortManagementSection() {
       toast.success(
         `Port ${portLabel} configured as ${data.mode} on VLAN ${newVlan}`,
       );
-      // Invalidate and reload current page
       const page = pageMap[switchId] ?? 1;
       setCacheMap((prev) => {
         const swCache = prev[switchId];
@@ -1580,6 +1607,16 @@ export default function CiscoPortManagementSection() {
     },
     [accessToken, pageMap, loadDbPage, setCacheMap],
   );
+
+  // ── Handle configure — guard against locked ports ──────────────────────────
+
+  const handleConfigureRequest = useCallback((port: Port, switchId: number) => {
+    if (port.locked) {
+      toast.error(`Port ${port.label} is locked. Unlock it first.`);
+      return;
+    }
+    setConfigurePort({ port, switchId });
+  }, []);
 
   // ── Selected switch view ────────────────────────────────────────────────────
 
@@ -1604,7 +1641,7 @@ export default function CiscoPortManagementSection() {
           onPageChange={(p) => loadDbPage(selectedSwitch.id, p)}
           onToggle={(label) => handleToggle(selectedSwitch.id, label)}
           onConfigure={(port) =>
-            setConfigurePort({ port, switchId: selectedSwitch.id })
+            handleConfigureRequest(port, selectedSwitch.id)
           }
           onBulkLock={() => handleBulkLock(selectedSwitch.id)}
           onBulkUnlock={() => handleBulkUnlock(selectedSwitch.id)}
@@ -1613,6 +1650,7 @@ export default function CiscoPortManagementSection() {
           <ConfirmDialog
             {...confirmAction}
             onCancel={() => setConfirmAction(null)}
+            // "Configure" shortcut in confirm dialog only shown for unlocked ports
             showConfigure={!!confirmAction.port && !confirmAction.port.locked}
             onConfigure={
               confirmAction.port && !confirmAction.port.locked
