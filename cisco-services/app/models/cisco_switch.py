@@ -93,3 +93,59 @@ class CiscoPortAssignment(Base):
     updated_at = Column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+
+
+class CiscoPortSnapshot(Base):
+    """Persisted port data fetched from the live switch."""
+    __tablename__ = "cisco_port_snapshots"
+    __table_args__ = (
+        UniqueConstraint("switch_id", "port_label", name="uq_snapshot_switch_port"),
+    )
+ 
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    switch_id    = Column(Integer, nullable=False, index=True)
+    port_label   = Column(String(100), nullable=False)
+    port_number  = Column(Integer, nullable=False, default=0)
+    description  = Column(String(255), nullable=True, default="")
+    status       = Column(String(50), nullable=False, default="inactive")
+    vlan         = Column(String(100), nullable=True, default="")
+    duplex       = Column(String(50), nullable=True, default="")
+    speed        = Column(String(50), nullable=True, default="")
+    port_type    = Column(String(100), nullable=True, default="")
+    mac_address  = Column(String(50), nullable=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class CiscoInterfaceSnapshot(Base):
+    """Persisted interface data from 'show ip interface brief'."""
+    __tablename__ = "cisco_interface_snapshots"
+    __table_args__ = (
+        UniqueConstraint("switch_id", "name", name="uq_iface_switch_name"),
+    )
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    switch_id = Column(Integer, nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    status = Column(String(50), nullable=False)
+    protocol = Column(String(50), nullable=False)
+    ip_address = Column(String(50), nullable=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CiscoVlanSnapshot(Base):
+    """Persisted VLAN data from 'show vlan brief'."""
+    __tablename__ = "cisco_vlan_snapshots"
+    __table_args__ = (
+        UniqueConstraint("switch_id", "vlan_id", name="uq_vlan_switch_id"),
+    )
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    switch_id = Column(Integer, nullable=False, index=True)
+    vlan_id = Column(Integer, nullable=False)
+    name = Column(String(255), nullable=False)
+    status = Column(String(50), nullable=False)
+    ports = Column(Text, nullable=True)  # JSON array of port names
+    last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)

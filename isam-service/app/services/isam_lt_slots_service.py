@@ -468,10 +468,6 @@ class ISAMLTSlotsService:
         self.instance = instance
         self.conn_service = ISAMConnectionService(instance)
 
-    # ================================================================
-    # ===============  MÉTHODES UTILITAIRES  ==========================
-    # ================================================================
-
     @staticmethod
     def _port_belongs_to_slot(port_id: str, slot_short_id: str) -> bool:
         expected_prefix = slot_short_id + "/"
@@ -484,10 +480,6 @@ class ISAMLTSlotsService:
             if port_id.startswith(slot_short + "/"):
                 return slot_short
         return None
-
-    # ================================================================
-    # =========  1) Récupérer les slots LT (connexion individuelle)  ==
-    # ================================================================
 
     def get_lt_slots(
         self,
@@ -540,7 +532,7 @@ class ISAMLTSlotsService:
         logger.info("[LT_SLOTS] Démarrage parsing des slots LT (on ignore vlt:)")
 
         for line_orig in raw_output.splitlines():
-            line = line_orig.strip()
+            line = line_orig.replace("\r", "").strip()
             if not line:
                 continue
 
@@ -582,10 +574,6 @@ class ISAMLTSlotsService:
 
         logger.info("[LT_SLOTS] Fin parsing slots LT : %d slots parsés", len(slots))
         return slots
-
-    # ================================================================
-    # ===  2) Récupérer les ports d'un slot (connexion individuelle) ==
-    # ================================================================
 
     def get_slot_ports(
         self,
@@ -635,11 +623,16 @@ class ISAMLTSlotsService:
         skipped_wrong_type = 0
 
         for line_orig in raw_output.splitlines():
-            stripped = line_orig.strip()
+            clean_line = line_orig.replace("\r", "")
+            clean_line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean_line)
+            stripped = clean_line.strip()
             if not stripped:
                 continue
 
-            m = re.match(r"^(\S+):(\S+)\s+(\S+)(?:\s+(\S+))?", stripped)
+            m = re.search(
+                r"(xdsl-line|ethernet-line|pon|ont):(\d+/\d+/\d+/\d+)\s+(\S+)(?:\s+(\S+))?",
+                 stripped
+    )
             if not m:
                 continue
 
@@ -691,10 +684,6 @@ class ISAMLTSlotsService:
 
         return ports
 
-    # ================================================================
-    # ===  3) PARSING GLOBAL — UNE SEULE PASSE SUR TOUT LE BUFFER  ===
-    # ================================================================
-
     @staticmethod
     def _parse_all_ports_from_buffer(
         raw_buffer: str,
@@ -710,7 +699,9 @@ class ISAMLTSlotsService:
         total_parsed_lines = 0
 
         for line_orig in raw_buffer.splitlines():
-            stripped = line_orig.strip()
+            clean_line = line_orig.replace("\r", "")
+            clean_line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean_line)
+            stripped = clean_line.strip()
             if not stripped:
                 continue
 
@@ -790,10 +781,6 @@ class ISAMLTSlotsService:
 
         return ports_by_slot
 
-    # ================================================================
-    # ===  4) SESSION PERSISTANTE AVEC FALLBACK COMPLET ==============
-    # ================================================================
-
     def _open_best_persistent_session(
         self,
         timeout: int,
@@ -851,16 +838,12 @@ class ISAMLTSlotsService:
 
         return False, None, None, f"SSH: {msg_ssh} ; SSH-LEGACY: {msg_legacy} ; TELNET: {msg_tel}"
 
-    # ================================================================
-    # ===  5) Refresh complet — UNE SEULE SESSION, 2 COMMANDES  ======
-    # ================================================================
-
     def refresh_all_single_session(
         self,
         timeout: int = 30,
         idle_timeout: float = 3.0,
         post_send_delay: float = 1.0,
-        inter_command_delay: float = 1.0,
+        inter_command_delay: float = 1.5,
     ) -> Tuple[
         bool,
         str,
@@ -898,8 +881,8 @@ class ISAMLTSlotsService:
 
             ok_s, raw_slots, err_s = session.execute(
                 cmd_slots,
-                idle_timeout=idle_timeout,
-                post_send_delay=post_send_delay,
+                idle_timeout=max(idle_timeout, 4.0),
+                post_send_delay=max(post_send_delay, 1.2),
             )
 
             if not ok_s:
@@ -919,23 +902,19 @@ class ISAMLTSlotsService:
             if not slots:
                 return False, raw_slots, [], "Aucun slot LT parsé"
 
-            non_empty_slots = [
-                s for s in slots
-                if s.get("board", "").lower() != "empty"
-            ]
             known_slot_short_ids = [
-                s["slot_short_id"] for s in non_empty_slots
+                s["slot_short_id"] for s in slots
                 if s.get("slot_short_id")
             ]
 
             logger.info(
-                "[LT_SINGLE] %d slots non-vides : %s",
-                len(non_empty_slots),
+                "[LT_SINGLE] %d slots candidats pour le mapping des ports : %s",
+                len(known_slot_short_ids),
                 ", ".join(known_slot_short_ids),
             )
 
             if not known_slot_short_ids:
-                logger.info("[LT_SINGLE] Aucun slot non-vide, pas de ports à récupérer")
+                logger.info("[LT_SINGLE] Aucun slot trouvé, pas de ports à récupérer")
                 for s in slots:
                     s["ports"] = []
                 return True, raw_slots, slots, "OK"
@@ -947,8 +926,8 @@ class ISAMLTSlotsService:
 
             ok_p, raw_all_ports, err_p = session.execute(
                 cmd_all_ports,
-                idle_timeout=max(idle_timeout, 5.0),
-                post_send_delay=post_send_delay,
+                idle_timeout=8.0,
+                post_send_delay=1.5,
             )
 
             if not ok_p:
@@ -959,8 +938,10 @@ class ISAMLTSlotsService:
                 return True, raw_slots, slots, f"Slots OK mais ports KO : {err_p}"
 
             logger.info(
-                "[LT_SINGLE] Sortie ports globale : %d octets",
+                "[LT_SINGLE] Sortie ports globale (%d octets, %d lignes):\n%s",
                 len(raw_all_ports),
+                len(raw_all_ports.splitlines()),
+                raw_all_ports[:4000],
             )
 
             ports_by_slot_short = self._parse_all_ports_from_buffer(

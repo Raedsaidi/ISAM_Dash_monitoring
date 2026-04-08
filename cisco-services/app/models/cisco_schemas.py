@@ -300,3 +300,55 @@ class VlanMgmtStatsResponse(BaseModel):
     active_vlans: int = 0
     access_ports: int = 0
     trunk_ports: int = 0
+class PortStatusPageResponse(BaseModel):
+    """Paginated port list loaded from the DB snapshot table."""
+    success: bool
+    switch_id: int = 0
+    port_count: int = 0
+    ports: List[CiscoPortInfo] = []
+    protocol_used: Optional[str] = None
+    error: Optional[str] = None
+    page: int = 1
+    page_size: int = 48
+    total_pages: int = 1
+# Add these to the existing file (app/models/cisco_schemas.py)
+
+class InterfacesPageResponse(BaseModel):
+    """Paginated interfaces list loaded from DB."""
+    success: bool
+    switch_id: int = 0
+    interfaces: List[InterfaceInfo] = []
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1
+    protocol_used: Optional[str] = None
+    error: Optional[str] = None
+    cached_at: Optional[datetime] = None
+
+
+class VlansPageResponse(BaseModel):
+    """Paginated VLANs list loaded from DB."""
+    success: bool
+    switch_id: int = 0
+    vlans: List[VlanInfo] = []
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    total_pages: int = 1
+    protocol_used: Optional[str] = None
+    error: Optional[str] = None
+    cached_at: Optional[datetime] = None
+
+
+class PortStatusPageResponse(BaseModel):
+    """Paginated port list loaded from the DB snapshot table."""
+    success: bool
+    switch_id: int = 0
+    port_count: int = 0
+    ports: List[CiscoPortInfo] = []
+    protocol_used: Optional[str] = None
+    error: Optional[str] = None
+    page: int = 1
+    page_size: int = 48
+    total_pages: int = 1

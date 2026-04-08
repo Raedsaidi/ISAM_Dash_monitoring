@@ -1,5 +1,3 @@
-// WanTemplatesSection.tsx
-
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { cn } from "../../utils/cn";
@@ -97,6 +95,12 @@ interface TemplateTestResponse {
   protocol_used: string | null;
   rendered_commands: string[];
   raw_output: string;
+  message: string;
+}
+
+interface ParsedTemplateErrorBlock {
+  command: string;
+  pointer?: string;
   message: string;
 }
 
@@ -225,17 +229,171 @@ function isValidTemplateName(name: string, models: WanModel[]) {
 }
 
 function getSimpleErrorMessage(err: any, fallback = "Something went wrong.") {
-  const msg = String(err?.message || fallback);
-  const lowered = msg.toLowerCase();
+  const raw = String(err?.message || fallback).trim();
+  const lowered = raw.toLowerCase();
+
+  if (!raw) return fallback;
 
   if (lowered.includes("404")) return "Resource not found.";
   if (lowered.includes("401")) return "Unauthorized.";
   if (lowered.includes("403")) return "Access denied.";
   if (lowered.includes("409")) return "Already exists.";
-  if (lowered.includes("failed to fetch")) return "Server unreachable.";
-  if (lowered.includes("network")) return "Network error.";
+
+  if (
+    lowered.includes("failed to fetch") ||
+    lowered.includes("networkerror") ||
+    lowered.includes("load failed")
+  ) {
+    return "Unable to reach the server. Please check network connection or backend availability.";
+  }
+
+  if (
+    lowered.includes("connection refused") ||
+    lowered.includes("errno 111") ||
+    lowered.includes("unable to connect") ||
+    lowered.includes("[telnet]") ||
+    lowered.includes("[ssh]") ||
+    lowered.includes("isam_connection")
+  ) {
+    return "Unable to connect to the ISAM instance. Please verify host, port, protocol, or device availability.";
+  }
+
+  if (lowered.includes("timed out") || lowered.includes("timeout")) {
+    return "The connection to the ISAM instance timed out. Please try again.";
+  }
+
+  if (lowered.includes("not authenticated") || lowered.includes("token")) {
+    return "Authentication failed. Please sign in again.";
+  }
 
   return fallback;
+}
+
+function analyzeRawOutput(rawOutput: string): {
+  level: "none" | "warning" | "error";
+  matches: string[];
+  message: string | null;
+  hasTemplateErrors: boolean;
+  errorBlocks: ParsedTemplateErrorBlock[];
+  invalidTokenCount: number;
+  explicitErrorCount: number;
+} {
+  const text = rawOutput || "";
+  const lines = text.split(/\r?\n/);
+
+  const errorBlocks: ParsedTemplateErrorBlock[] = [];
+  const detectedMatches = new Set<string>();
+
+  let invalidTokenCount = 0;
+  let explicitErrorCount = 0;
+
+  const invalidTokenRegex = /\binvalid\s+token\b/i;
+  const infraErrorRegex =
+    /\b(failed|failure|timeout|timed out|unable to connect|connection refused|networkerror|load failed)\b/i;
+
+  for (let i = 0; i < lines.length; i++) {
+    const currentLine = lines[i] || "";
+    const trimmedCurrent = currentLine.trim();
+
+    const nextLine = lines[i + 1] || "";
+    const nextNextLine = lines[i + 2] || "";
+    const trimmedNextNext = nextNextLine.trim();
+
+    const isPointerLine = /^\s*\^\s*$/.test(nextLine);
+    const isInvalidToken = invalidTokenRegex.test(trimmedNextNext);
+
+    if (isPointerLine && isInvalidToken) {
+      invalidTokenCount += 1;
+      detectedMatches.add("invalid token");
+      detectedMatches.add("^");
+
+      errorBlocks.push({
+        command: currentLine,
+        pointer: nextLine,
+        message: nextNextLine,
+      });
+
+      i += 2;
+      continue;
+    }
+
+    if (/^error\s*:/i.test(trimmedCurrent)) {
+      explicitErrorCount += 1;
+      detectedMatches.add("error");
+
+      let previousCommand = "Unknown command";
+      for (let j = i - 1; j >= 0; j--) {
+        const candidate = (lines[j] || "").trim();
+        if (candidate) {
+          previousCommand = lines[j];
+          break;
+        }
+      }
+
+      errorBlocks.push({
+        command: previousCommand,
+        message: currentLine,
+      });
+
+      continue;
+    }
+  }
+
+  const isAcceptableSingleInvalidToken =
+    invalidTokenCount === 1 && explicitErrorCount === 0;
+
+  if (isAcceptableSingleInvalidToken) {
+    return {
+      level: "none",
+      matches: [],
+      message: null,
+      hasTemplateErrors: false,
+      errorBlocks: [],
+      invalidTokenCount,
+      explicitErrorCount,
+    };
+  }
+
+  if (errorBlocks.length > 0) {
+    return {
+      level: "warning",
+      matches: [...detectedMatches],
+      message:
+        "Template test contains blocking command errors. Please review the highlighted command blocks below.",
+      hasTemplateErrors: true,
+      errorBlocks,
+      invalidTokenCount,
+      explicitErrorCount,
+    };
+  }
+
+  if (infraErrorRegex.test(text)) {
+    const infraMatches =
+      text.match(
+        /\b(failed|failure|timeout|timed out|unable to connect|connection refused|networkerror|load failed)\b/gi
+      ) || [];
+
+    return {
+      level: "error",
+      matches: [...new Set(infraMatches.map((m) => m.toLowerCase()))],
+      message:
+        "Raw output contains infrastructure or connection error indicators.",
+      hasTemplateErrors: false,
+      errorBlocks: [],
+      invalidTokenCount,
+      explicitErrorCount,
+    };
+  }
+
+  return {
+    level: "none",
+    matches: [],
+    message: null,
+    hasTemplateErrors: false,
+    errorBlocks: [],
+    invalidTokenCount,
+    explicitErrorCount,
+  };
 }
 
 // ── UI Primitives ──
@@ -486,8 +644,6 @@ function ScopeBadge({ scope }: { scope: TemplateScope }) {
   );
 }
 
-// ── Scope Switch ──
-
 function ScopeSwitch({
   value,
   onChange,
@@ -527,8 +683,6 @@ function ScopeSwitch({
   );
 }
 
-// ── Template Name Hint ──
-
 function TemplateNameHint() {
   return (
     <div className="mt-1.5 rounded-md border border-sky-200 bg-sky-50 px-3 py-2">
@@ -545,8 +699,6 @@ function TemplateNameHint() {
     </div>
   );
 }
-
-// ── Final Name Preview ──
 
 function FinalNamePreview({
   baseName,
@@ -577,10 +729,6 @@ function FinalNamePreview({
     </div>
   );
 }
-
-// ================================================================
-// ======== PROJECT SELECTOR =====================================
-// ================================================================
 
 function ProjectSelector({
   projects,
@@ -746,10 +894,6 @@ function ProjectSelector({
     </div>
   );
 }
-
-// ================================================================
-// ======== WAN MODES MODAL ======================================
-// ================================================================
 
 function WanModelsModal({
   open,
@@ -1046,10 +1190,6 @@ function WanModelsModal({
   );
 }
 
-// ================================================================
-// ======== MAIN COMPONENT =======================================
-// ================================================================
-
 export default function WanTemplatesSection() {
   const { accessToken } = useAuth();
 
@@ -1095,10 +1235,13 @@ export default function WanTemplatesSection() {
     loading: false,
     success: false,
     error: null as string | null,
+    warningMessage: null as string | null,
     protocol_used: null as string | null,
     raw_output: "",
     rendered_commands: [] as string[],
     message: null as string | null,
+    executionHasTemplateErrors: false,
+    errorBlocks: [] as ParsedTemplateErrorBlock[],
   });
 
   const [submitting, setSubmitting] = useState(false);
@@ -1110,6 +1253,11 @@ export default function WanTemplatesSection() {
   const matchedWanModel = useMemo(
     () => extractMatchedWanModel(name, wanModels),
     [name, wanModels]
+  );
+
+  const rawOutputAnalysis = useMemo(
+    () => analyzeRawOutput(testState.raw_output),
+    [testState.raw_output]
   );
 
   useEffect(() => {
@@ -1155,10 +1303,16 @@ export default function WanTemplatesSection() {
     });
   }, [templates, search, instances]);
 
+  const hasBlockingTemplateTestError = useMemo(
+    () => testState.executionHasTemplateErrors,
+    [testState.executionHasTemplateErrors]
+  );
+
   const canSave = Boolean(
     name.trim() &&
       commandsTemplate.trim() &&
-      isValidTemplateName(name, wanModels)
+      isValidTemplateName(name, wanModels) &&
+      !hasBlockingTemplateTestError
   );
 
   const trimmedName = name.trim();
@@ -1242,6 +1396,9 @@ export default function WanTemplatesSection() {
     if (!trimmedCommands) return "Template content is required.";
     if (trimmedNameLocal.length > 100) return "Template name is too long.";
     if (project.trim().length > 100) return "Project name is too long.";
+    if (hasBlockingTemplateTestError) {
+      return "Saving is disabled because the last test detected invalid template commands.";
+    }
 
     return null;
   }
@@ -1258,10 +1415,13 @@ export default function WanTemplatesSection() {
       loading: false,
       success: false,
       error: null,
+      warningMessage: null,
       protocol_used: null,
       raw_output: "",
       rendered_commands: [],
       message: null,
+      executionHasTemplateErrors: false,
+      errorBlocks: [],
     });
   }
 
@@ -1275,6 +1435,21 @@ export default function WanTemplatesSection() {
     setTestPort("");
     setFormError(null);
     resetStatesOnly();
+  }
+
+  function resetTestErrorState() {
+    setTestState((prev) => ({
+      ...prev,
+      success: false,
+      error: null,
+      warningMessage: null,
+      protocol_used: null,
+      raw_output: "",
+      rendered_commands: [],
+      message: null,
+      executionHasTemplateErrors: false,
+      errorBlocks: [],
+    }));
   }
 
   function closeConfirmDialog() {
@@ -1370,9 +1545,12 @@ export default function WanTemplatesSection() {
     setTestState((s) => ({
       ...s,
       loading: true,
-      error: null,
       success: false,
+      error: null,
+      warningMessage: null,
       message: null,
+      executionHasTemplateErrors: false,
+      errorBlocks: [],
     }));
 
     const tid = toast.loading("Testing template...");
@@ -1395,29 +1573,48 @@ export default function WanTemplatesSection() {
         }
       );
 
+      const outputAnalysis = analyzeRawOutput(res.raw_output || "");
+      const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
+
       setTestState({
         loading: false,
-        success: res.success,
+        success: res.success && !hasTemplateErrors,
         error: res.success ? null : res.message || "Test failed.",
+        warningMessage:
+          res.success && hasTemplateErrors
+            ? "Template tested, but invalid or unsupported commands were detected in device output."
+            : null,
         protocol_used: res.protocol_used,
         raw_output: res.raw_output,
         rendered_commands: res.rendered_commands,
-        message: res.message,
+        message: res.success && !hasTemplateErrors ? res.message : null,
+        executionHasTemplateErrors: hasTemplateErrors,
+        errorBlocks: outputAnalysis.errorBlocks,
       });
 
-      if (res.success)
+      if (res.success && !hasTemplateErrors) {
         toast.success(res.message || "Test successful.", { id: tid });
-      else toast.error(res.message || "Test failed.", { id: tid });
+      } else if (res.success && hasTemplateErrors) {
+        toast.warning(
+          "Template contains invalid or unsupported commands. Saving is disabled until the template is fixed.",
+          { id: tid }
+        );
+      } else {
+        toast.error(res.message || "Test failed.", { id: tid });
+      }
     } catch (err: any) {
       const simpleMsg = getSimpleErrorMessage(err, "Unable to test template.");
       setTestState({
         loading: false,
         success: false,
         error: simpleMsg,
+        warningMessage: null,
         protocol_used: null,
         raw_output: "",
         rendered_commands: [],
         message: null,
+        executionHasTemplateErrors: false,
+        errorBlocks: [],
       });
       toast.error(simpleMsg, { id: tid });
     }
@@ -1788,7 +1985,10 @@ export default function WanTemplatesSection() {
                         <FieldLabel required>Template Name</FieldLabel>
                         <Input
                           value={name}
-                          onChange={(e) => setName(e.target.value)}
+                          onChange={(e) => {
+                            setName(e.target.value);
+                            resetTestErrorState();
+                          }}
                           placeholder="Examples: GPON, GPON-DHCP, USERNAME_GPON-DHCP_Generic"
                           list="wan-models-list"
                           className={cn(
@@ -1839,7 +2039,10 @@ export default function WanTemplatesSection() {
                         <ProjectSelector
                           projects={projects}
                           value={project}
-                          onChange={setProject}
+                          onChange={(value) => {
+                            setProject(value);
+                            resetTestErrorState();
+                          }}
                           onProjectCreated={loadProjects}
                           accessToken={accessToken}
                           loading={loadingProjects}
@@ -1880,7 +2083,10 @@ export default function WanTemplatesSection() {
 
                         <Textarea
                           value={commandsTemplate}
-                          onChange={(e) => setCommandsTemplate(e.target.value)}
+                          onChange={(e) => {
+                            setCommandsTemplate(e.target.value);
+                            resetTestErrorState();
+                          }}
                           rows={14}
                           placeholder={`configure equipment ont interface [[$port]] admin-state down
 configure equipment ont no interface [[$port]]
@@ -1941,11 +2147,12 @@ configure equipment ont interface [[$port]] admin-state up`}
                           <FieldLabel>Test ISAM</FieldLabel>
                           <Select
                             value={testInstanceId}
-                            onChange={(e) =>
+                            onChange={(e) => {
                               setTestInstanceId(
                                 e.target.value ? Number(e.target.value) : ""
-                              )
-                            }
+                              );
+                              resetTestErrorState();
+                            }}
                           >
                             <option value="">— Choose ISAM —</option>
                             {instances.map((inst) => (
@@ -1962,7 +2169,10 @@ configure equipment ont interface [[$port]] admin-state up`}
                           </FieldLabel>
                           <Input
                             value={testPort}
-                            onChange={(e) => setTestPort(e.target.value)}
+                            onChange={(e) => {
+                              setTestPort(e.target.value);
+                              resetTestErrorState();
+                            }}
                             placeholder="1/1/7/3/95"
                             className="font-mono"
                           />
@@ -1981,12 +2191,13 @@ configure equipment ont interface [[$port]] admin-state up`}
                                 <FieldLabel>{v}</FieldLabel>
                                 <Input
                                   value={variableValues[v] ?? ""}
-                                  onChange={(e) =>
+                                  onChange={(e) => {
                                     setVariableValues((p) => ({
                                       ...p,
                                       [v]: e.target.value,
-                                    }))
-                                  }
+                                    }));
+                                    resetTestErrorState();
+                                  }}
                                 />
                               </div>
                             ))}
@@ -2041,13 +2252,45 @@ configure equipment ont interface [[$port]] admin-state up`}
                         </div>
                       )}
 
-                      {(testState.error || testState.message) && (
-                        <AlertBanner
-                          variant={testState.success ? "success" : "error"}
-                        >
-                          {testState.error || testState.message}
+                      {testState.error && (
+                        <AlertBanner variant="error">
+                          {testState.error}
                         </AlertBanner>
                       )}
+
+                      {testState.message && testState.success && (
+                        <AlertBanner variant="success">
+                          {testState.message}
+                        </AlertBanner>
+                      )}
+
+                      {testState.warningMessage && (
+                        <AlertBanner variant="warning">
+                          {testState.warningMessage}
+                        </AlertBanner>
+                      )}
+
+                      {!testState.error &&
+                        rawOutputAnalysis.level === "warning" &&
+                        rawOutputAnalysis.message && (
+                          <AlertBanner variant="warning">
+                            <div>
+                              <div>{rawOutputAnalysis.message}</div>
+                              {rawOutputAnalysis.matches.length > 0 && (
+                                <div className="mt-1 text-[11px] opacity-80">
+                                  Detected keyword
+                                  {rawOutputAnalysis.matches.length > 1
+                                    ? "s"
+                                    : ""}
+                                  :{" "}
+                                  <strong>
+                                    {rawOutputAnalysis.matches.join(", ")}
+                                  </strong>
+                                </div>
+                              )}
+                            </div>
+                          </AlertBanner>
+                        )}
 
                       {testState.rendered_commands.length > 0 && (
                         <div className="space-y-2">
@@ -2070,6 +2313,35 @@ configure equipment ont interface [[$port]] admin-state up`}
                         </div>
                       )}
 
+                      {testState.errorBlocks.length > 0 && (
+                        <div>
+                          <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                            Detected Template Issues
+                          </div>
+
+                          <div className="space-y-2">
+                            {testState.errorBlocks.map((block, idx) => (
+                              <div
+                                key={`${block.command}-${idx}`}
+                                className="rounded-lg border border-amber-200 bg-amber-50 p-3"
+                              >
+                                <div className="mb-1 text-[11px] font-semibold text-amber-800">
+                                  Command with issue
+                                </div>
+                                <CodeViewer
+                                  maxHeight="140px"
+                                  className="border-amber-200 bg-white"
+                                >
+                                  {block.command}
+                                  {block.pointer ? `\n${block.pointer}` : ""}
+                                  {`\n${block.message}`}
+                                </CodeViewer>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       {testState.raw_output && (
                         <div className="space-y-2">
                           <Badge variant="default">
@@ -2081,10 +2353,18 @@ configure equipment ont interface [[$port]] admin-state up`}
                         </div>
                       )}
 
+                      {hasBlockingTemplateTestError && (
+                        <div className="text-[11px] text-amber-600">
+                          Saving is disabled because the last test detected
+                          invalid template commands.
+                        </div>
+                      )}
+
                       {!testState.loading &&
                         !testState.success &&
                         !testState.error &&
-                        !testState.message && (
+                        !testState.message &&
+                        !testState.warningMessage && (
                           <AlertBanner variant="warning">
                             Template not tested yet.
                           </AlertBanner>
@@ -2217,8 +2497,6 @@ configure equipment ont interface [[$port]] admin-state up`}
     </>
   );
 }
-
-// ── Confirm Dialog ──
 
 function ConfirmDialog({
   open,
