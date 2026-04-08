@@ -23,12 +23,12 @@ import {
   RefreshCw,
   ChevronLeft,
   ChevronRight as ChevronRightIcon,
-  Plus,
   Settings2,
   Monitor,
   ArrowRightLeft,
   X,
   AlertCircle,
+  Terminal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../context/AuthContext";
@@ -40,7 +40,7 @@ import {
   type CiscoSwitch,
   type CiscoPortInfo,
 } from "../../services/ciscoApi";
-import { fetchVlans, fetchSwitches } from "../../services/ciscoVlanApi";
+import { fetchVlans } from "../../services/ciscoVlanApi";
 import { cn } from "../../utils/cn";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ interface Port {
 }
 
 interface PortPageCache {
-  pages: Record<number, Port[]>; // page → ports
+  pages: Record<number, Port[]>;
   totalPages: number;
   totalCount: number;
   loading: boolean;
@@ -213,7 +213,138 @@ function LockBadge({ locked }: { locked: boolean }) {
   );
 }
 
-// ─── Confirm Dialog with Configure Button ────────────────────────────────────
+// ─── Running Config Modal ─────────────────────────────────────────────────────
+
+function RunningConfigModal({
+  open,
+  onClose,
+  port,
+  switchId,
+  switchName,
+  token,
+}: {
+  open: boolean;
+  onClose: () => void;
+  port: Port | null;
+  switchId: number;
+  switchName: string;
+  token: string | null;
+}) {
+  const [config, setConfig] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !port) return;
+    setConfig(null);
+    setError(null);
+    setLoading(true);
+
+    const encodedLabel = encodeURIComponent(port.label);
+    apiFetch<{ success: boolean; config?: string; error?: string }>(
+      `${PREFIX}/switches/${switchId}/port-config?port_label=${encodedLabel}`,
+      token,
+    )
+      .then((data) => {
+        if (data.success && data.config) {
+          setConfig(data.config);
+        } else {
+          setError(data.error || "No config returned");
+        }
+      })
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [open, port, switchId, token]);
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [onClose]);
+
+  if (!open || !port) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden max-h-[85vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-900 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+              <Terminal size={16} className="text-green-400" />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold text-white">
+                Running Config
+              </h3>
+              <p className="text-xs text-slate-400">
+                {switchName} — {port.label}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-slate-700 transition-colors"
+          >
+            <X size={18} className="text-slate-400" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto bg-slate-950 p-6">
+          {loading && (
+            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+              <Loader2 size={28} className="animate-spin mb-3 text-green-400" />
+              <p className="text-sm">Fetching running config from switch…</p>
+            </div>
+          )}
+
+          {error && !loading && (
+            <div className="flex items-start gap-3 p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
+              <AlertCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-red-300">
+                  Failed to fetch config
+                </p>
+                <p className="text-xs text-red-400 mt-1">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {config && !loading && (
+            <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
+              {config}
+            </pre>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50 shrink-0">
+          <p className="text-xs text-slate-400">
+            Live data from switch — not cached
+          </p>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Confirm Dialog ────────────────────────────────────────────────────────────
 
 function ConfirmDialog({
   title,
@@ -291,7 +422,7 @@ function ConfirmDialog({
   );
 }
 
-// ─── Configure Port Modal ────────────────────────────────────────────────────
+// ─── Configure Port Modal ─────────────────────────────────────────────────────
 
 function ConfigurePortModal({
   open,
@@ -413,7 +544,6 @@ function ConfigurePortModal({
             </div>
           )}
 
-          {/* Description */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Description
@@ -427,7 +557,6 @@ function ConfigurePortModal({
             />
           </div>
 
-          {/* Mode */}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
               Port Mode
@@ -474,9 +603,6 @@ function ConfigurePortModal({
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-slate-400 mt-1">
-                The port will carry only this VLAN's untagged traffic.
-              </p>
             </div>
           )}
 
@@ -568,14 +694,17 @@ function PortGrid({
     <div className="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-16 lg:grid-cols-24 gap-1.5">
       {ports.map((p) => {
         const d = STATUS_CFG[p.status];
-        const canToggle = isAdmin;
         return (
           <button
             key={p.id}
-            onClick={() => canToggle && onToggle(p.label)}
-            disabled={!canToggle}
-            title={`Port ${p.number} — ${p.status}${p.locked ? " (Locked)" : ""}${canToggle ? "\nClick to toggle lock" : ""}`}
-            className={`relative w-full aspect-square rounded-lg border-2 flex flex-col items-center justify-center text-xs font-medium transition-all duration-150 ${canToggle ? "hover:scale-110 hover:shadow-md cursor-pointer" : "cursor-not-allowed opacity-75"} focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 ${
+            onClick={() => isAdmin && onToggle(p.label)}
+            disabled={!isAdmin}
+            title={`Port ${p.number} — ${p.status}${p.locked ? " (Locked)" : ""}${isAdmin ? "\nClick to toggle lock" : ""}`}
+            className={`relative w-full aspect-square rounded-lg border-2 flex flex-col items-center justify-center text-xs font-medium transition-all duration-150 ${
+              isAdmin
+                ? "hover:scale-110 hover:shadow-md cursor-pointer"
+                : "cursor-not-allowed opacity-75"
+            } focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 ${
               p.locked
                 ? "border-red-300 bg-red-50"
                 : p.status === "active"
@@ -606,11 +735,13 @@ function PortTable({
   ports,
   onToggle,
   onConfigure,
+  onViewConfig,
   isAdmin,
 }: {
   ports: Port[];
   onToggle: (label: string) => void;
   onConfigure: (port: Port) => void;
+  onViewConfig: (port: Port) => void;
   isAdmin: boolean;
 }) {
   return (
@@ -699,6 +830,12 @@ function PortTable({
                     >
                       <Settings2 size={12} /> Configure
                     </button>
+                    <button
+                      onClick={() => onViewConfig(p)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 text-slate-100 hover:bg-slate-900 transition-colors focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-1"
+                    >
+                      <Terminal size={12} /> Config
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -775,6 +912,7 @@ function SwitchPortDetail({
   currentPage,
   isAdmin,
   vlans,
+  token,
   onBack,
   onSync,
   onPageChange,
@@ -788,6 +926,7 @@ function SwitchPortDetail({
   currentPage: number;
   isAdmin: boolean;
   vlans: VlanOption[];
+  token: string | null;
   onBack: () => void;
   onSync: () => void;
   onPageChange: (p: number) => void;
@@ -799,6 +938,7 @@ function SwitchPortDetail({
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PortFilter>("all");
   const [view, setView] = useState<"grid" | "table">("table");
+  const [runningConfigPort, setRunningConfigPort] = useState<Port | null>(null);
 
   const currentPorts = pageCache.pages[currentPage] ?? [];
 
@@ -821,21 +961,13 @@ function SwitchPortDetail({
     return r;
   }, [currentPorts, filter, search]);
 
-  // Stats across all loaded pages
   const allLoadedPorts = useMemo(
     () => Object.values(pageCache.pages).flat(),
     [pageCache.pages],
   );
+
   const stats = useMemo(() => {
-    const s = {
-      active: 0,
-      inactive: 0,
-      error: 0,
-      locked: 0,
-      unlocked: 0,
-      trunk: 0,
-      access: 0,
-    };
+    const s = { active: 0, inactive: 0, error: 0, locked: 0, unlocked: 0 };
     for (const p of allLoadedPorts) {
       s[p.status]++;
       p.locked ? s.locked++ : s.unlocked++;
@@ -940,7 +1072,6 @@ function SwitchPortDetail({
         ))}
       </div>
 
-      {/* Sync progress bar */}
       {pageCache.syncing && (
         <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-3 text-sm text-blue-700">
           <Loader2 size={16} className="animate-spin shrink-0" />
@@ -948,7 +1079,6 @@ function SwitchPortDetail({
         </div>
       )}
 
-      {/* Error */}
       {pageCache.error && (
         <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center gap-2">
           <AlertTriangle size={16} />
@@ -1025,6 +1155,7 @@ function SwitchPortDetail({
             ports={filtered}
             onToggle={onToggle}
             onConfigure={onConfigure}
+            onViewConfig={(port) => setRunningConfigPort(port)}
             isAdmin={isAdmin}
           />
         )}
@@ -1052,6 +1183,16 @@ function SwitchPortDetail({
           <Lock size={10} className="text-red-500" /> Locked
         </span>
       </div>
+
+      {/* Running Config Modal (per-detail-view) */}
+      <RunningConfigModal
+        open={!!runningConfigPort}
+        onClose={() => setRunningConfigPort(null)}
+        port={runningConfigPort}
+        switchId={sw.id}
+        switchName={sw.name}
+        token={token}
+      />
     </div>
   );
 }
@@ -1066,11 +1207,24 @@ export default function CiscoPortManagementSection() {
   const [switches, setSwitches] = useState<CiscoSwitch[]>([]);
   const [switchesLoading, setSwitchesLoading] = useState(true);
 
-  // Per-switch page cache: switchId → PortPageCache
-  const [cacheMap, setCacheMap] = useState<Record<number, PortPageCache>>({});
-  // Per-switch current page
-  const [pageMap, setPageMap] = useState<Record<number, number>>({});
+  // FIX: Use a ref for cacheMap so loadDbPage doesn't go stale
+  const cacheMapRef = useRef<Record<number, PortPageCache>>({});
+  const [cacheMap, _setCacheMap] = useState<Record<number, PortPageCache>>({});
 
+  const setCacheMap = useCallback(
+    (
+      updater: (
+        prev: Record<number, PortPageCache>,
+      ) => Record<number, PortPageCache>,
+    ) => {
+      const next = updater(cacheMapRef.current);
+      cacheMapRef.current = next;
+      _setCacheMap(next);
+    },
+    [],
+  );
+
+  const [pageMap, setPageMap] = useState<Record<number, number>>({});
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
@@ -1099,7 +1253,7 @@ export default function CiscoPortManagementSection() {
       .finally(() => setSwitchesLoading(false));
   }, [accessToken]);
 
-  // ── Load VLANs for configure modal ─────────────────────────────────────────
+  // ── Load VLANs ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!accessToken) return;
@@ -1108,13 +1262,14 @@ export default function CiscoPortManagementSection() {
       .catch(() => {});
   }, [accessToken]);
 
-  // ── Load a DB page for a switch ────────────────────────────────────────────
+  // ── Load a DB page ─────────────────────────────────────────────────────────
+  // FIX: Use ref for cacheMap so we never get stale closure
 
   const loadDbPage = useCallback(
     async (switchId: number, page: number) => {
-      // Already have this page loaded?
-      const existing = cacheMap[switchId];
-      if (existing?.pages[page]) {
+      // Use ref to avoid stale closure
+      const existing = cacheMapRef.current[switchId];
+      if (existing?.pages[page] && !existing.loading) {
         setPageMap((prev) => ({ ...prev, [switchId]: page }));
         return;
       }
@@ -1170,10 +1325,11 @@ export default function CiscoPortManagementSection() {
         }));
       }
     },
-    [accessToken, cacheMap],
+    // FIX: removed cacheMap from deps — we use the ref instead
+    [accessToken, setCacheMap],
   );
 
-  // ── Sync ports from switch → DB, then reload page 1 ───────────────────────
+  // ── Sync ports from switch → DB ────────────────────────────────────────────
 
   const syncPorts = useCallback(
     async (switchId: number) => {
@@ -1190,15 +1346,16 @@ export default function CiscoPortManagementSection() {
         await apiFetch(
           `${PREFIX}/switches/${switchId}/sync-ports`,
           accessToken,
-          { method: "POST" },
+          {
+            method: "POST",
+          },
         );
-        // Clear page cache for this switch and reload page 1
+        // Clear page cache and reload page 1
         setCacheMap((prev) => ({
           ...prev,
           [switchId]: { ...emptyPageCache(), syncing: false },
         }));
         setPageMap((prev) => ({ ...prev, [switchId]: 1 }));
-        // Now load page 1 fresh
         setTimeout(() => loadDbPage(switchId, 1), 0);
         toast.success("Ports synced and saved to database.");
       } catch (err: any) {
@@ -1213,10 +1370,10 @@ export default function CiscoPortManagementSection() {
         toast.error(err.message || "Sync failed");
       }
     },
-    [accessToken, loadDbPage],
+    [accessToken, loadDbPage, setCacheMap],
   );
 
-  // ── Select switch → load page 1 from DB ───────────────────────────────────
+  // ── Select switch ──────────────────────────────────────────────────────────
 
   const selectSwitch = useCallback(
     (id: number) => {
@@ -1227,7 +1384,7 @@ export default function CiscoPortManagementSection() {
     [loadDbPage, pageMap],
   );
 
-  // ── Expand (preview) → load page 1 from DB ────────────────────────────────
+  // ── Expand ─────────────────────────────────────────────────────────────────
 
   const toggleExpand = useCallback(
     (id: number) => {
@@ -1238,7 +1395,8 @@ export default function CiscoPortManagementSection() {
     [expandedId, loadDbPage, pageMap],
   );
 
-  // ── Toggle lock (admin only) ────────────────────────────────────────────────
+  // ── Toggle lock ────────────────────────────────────────────────────────────
+  // FIX: encode port label in URL, use ref for fresh cache read
 
   const handleToggle = useCallback(
     (switchId: number, portLabel: string) => {
@@ -1247,7 +1405,7 @@ export default function CiscoPortManagementSection() {
         return;
       }
 
-      const cache = cacheMap[switchId];
+      const cache = cacheMapRef.current[switchId];
       const page = pageMap[switchId] ?? 1;
       const port = cache?.pages[page]?.find((p) => p.label === portLabel);
       if (!port) return;
@@ -1263,18 +1421,31 @@ export default function CiscoPortManagementSection() {
         action: async () => {
           setConfirmAction(null);
           try {
-            const res = await togglePortLock(switchId, portLabel, accessToken);
+            // FIX: Properly encode port label in URL path
+            const encodedLabel = encodeURIComponent(portLabel);
+            const res = await apiFetch<{
+              success: boolean;
+              locked: boolean;
+              message: string;
+            }>(
+              `${PREFIX}/switches/${switchId}/ports/${encodedLabel}/toggle-lock`,
+              accessToken,
+              { method: "POST" },
+            );
             if (res.success) {
               setCacheMap((prev) => {
-                const sw = prev[switchId];
-                if (!sw) return prev;
-                const updatedPages = { ...sw.pages };
+                const swCache = prev[switchId];
+                if (!swCache) return prev;
+                const updatedPages = { ...swCache.pages };
                 for (const pg in updatedPages) {
                   updatedPages[pg] = updatedPages[pg].map((p) =>
                     p.label === portLabel ? { ...p, locked: res.locked } : p,
                   );
                 }
-                return { ...prev, [switchId]: { ...sw, pages: updatedPages } };
+                return {
+                  ...prev,
+                  [switchId]: { ...swCache, pages: updatedPages },
+                };
               });
               toast.success(res.message);
             } else {
@@ -1286,10 +1457,10 @@ export default function CiscoPortManagementSection() {
         },
       });
     },
-    [cacheMap, pageMap, switches, accessToken, isAdmin],
+    [pageMap, switches, accessToken, isAdmin, setCacheMap],
   );
 
-  // ── Bulk lock / unlock (admin only) ─────────────────────────────────────────
+  // ── Bulk lock / unlock ─────────────────────────────────────────────────────
 
   const handleBulkLock = useCallback(
     (switchId: number) => {
@@ -1297,7 +1468,6 @@ export default function CiscoPortManagementSection() {
         toast.error("Only administrators can lock/unlock ports.");
         return;
       }
-
       const sw = switches.find((s) => s.id === switchId);
       setConfirmAction({
         title: "Lock All Ports",
@@ -1307,10 +1477,16 @@ export default function CiscoPortManagementSection() {
           setConfirmAction(null);
           const tid = toast.loading("Locking all ports…");
           try {
-            const res = await bulkLockPorts(switchId, accessToken);
+            const res = await apiFetch<{ success: boolean; message: string }>(
+              `${PREFIX}/switches/${switchId}/bulk-lock`,
+              accessToken,
+              { method: "POST" },
+            );
             toast.success(res.message, { id: tid });
-            // Invalidate cache and reload current page
-            setCacheMap((prev) => ({ ...prev, [switchId]: emptyPageCache() }));
+            setCacheMap((prev) => ({
+              ...prev,
+              [switchId]: emptyPageCache(),
+            }));
             loadDbPage(switchId, 1);
           } catch (err: any) {
             toast.error(err.message, { id: tid });
@@ -1318,7 +1494,7 @@ export default function CiscoPortManagementSection() {
         },
       });
     },
-    [switches, accessToken, loadDbPage, isAdmin],
+    [switches, accessToken, loadDbPage, isAdmin, setCacheMap],
   );
 
   const handleBulkUnlock = useCallback(
@@ -1327,7 +1503,6 @@ export default function CiscoPortManagementSection() {
         toast.error("Only administrators can lock/unlock ports.");
         return;
       }
-
       const sw = switches.find((s) => s.id === switchId);
       setConfirmAction({
         title: "Unlock All Ports",
@@ -1337,9 +1512,16 @@ export default function CiscoPortManagementSection() {
           setConfirmAction(null);
           const tid = toast.loading("Unlocking all ports…");
           try {
-            const res = await bulkUnlockPorts(switchId, accessToken);
+            const res = await apiFetch<{ success: boolean; message: string }>(
+              `${PREFIX}/switches/${switchId}/bulk-unlock`,
+              accessToken,
+              { method: "POST" },
+            );
             toast.success(res.message, { id: tid });
-            setCacheMap((prev) => ({ ...prev, [switchId]: emptyPageCache() }));
+            setCacheMap((prev) => ({
+              ...prev,
+              [switchId]: emptyPageCache(),
+            }));
             loadDbPage(switchId, 1);
           } catch (err: any) {
             toast.error(err.message, { id: tid });
@@ -1347,10 +1529,10 @@ export default function CiscoPortManagementSection() {
         },
       });
     },
-    [switches, accessToken, loadDbPage, isAdmin],
+    [switches, accessToken, loadDbPage, isAdmin, setCacheMap],
   );
 
-  // ── Configure port ──────────────────────────────────────────────────────────
+  // ── Configure port ─────────────────────────────────────────────────────────
 
   const handleConfigure = useCallback(
     async (
@@ -1385,18 +1567,18 @@ export default function CiscoPortManagementSection() {
       toast.success(
         `Port ${portLabel} configured as ${data.mode} on VLAN ${newVlan}`,
       );
-      // Reload current page to reflect changes
+      // Invalidate and reload current page
       const page = pageMap[switchId] ?? 1;
       setCacheMap((prev) => {
-        const sw = prev[switchId];
-        if (!sw) return prev;
-        const updatedPages = { ...sw.pages };
+        const swCache = prev[switchId];
+        if (!swCache) return prev;
+        const updatedPages = { ...swCache.pages };
         delete updatedPages[page];
-        return { ...prev, [switchId]: { ...sw, pages: updatedPages } };
+        return { ...prev, [switchId]: { ...swCache, pages: updatedPages } };
       });
       loadDbPage(switchId, page);
     },
-    [accessToken, pageMap, loadDbPage],
+    [accessToken, pageMap, loadDbPage, setCacheMap],
   );
 
   // ── Selected switch view ────────────────────────────────────────────────────
@@ -1416,6 +1598,7 @@ export default function CiscoPortManagementSection() {
           currentPage={selectedPage}
           isAdmin={isAdmin}
           vlans={vlans}
+          token={accessToken}
           onBack={() => setSelectedId(null)}
           onSync={() => syncPorts(selectedSwitch.id)}
           onPageChange={(p) => loadDbPage(selectedSwitch.id, p)}
@@ -1461,7 +1644,6 @@ export default function CiscoPortManagementSection() {
 
   // ── List view ───────────────────────────────────────────────────────────────
 
-  // Aggregate stats across all cached switches
   const allPorts = Object.values(cacheMap).flatMap((c) =>
     Object.values(c.pages).flat(),
   );
@@ -1478,7 +1660,8 @@ export default function CiscoPortManagementSection() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-3">
-          <Cable className="text-red-700" size={28} /> Port Management
+          <Cable className="text-red-700" size={28} />
+          Port Management
         </h1>
         <p className="text-slate-500 mt-1">
           View and control individual switch ports — sync from device,
@@ -1520,7 +1703,6 @@ export default function CiscoPortManagementSection() {
         </div>
       </div>
 
-      {/* Loading */}
       {switchesLoading && (
         <div className="flex items-center justify-center py-12 text-slate-400">
           <Loader2 size={28} className="animate-spin mr-2" /> Loading switches…
@@ -1584,12 +1766,11 @@ export default function CiscoPortManagementSection() {
                 </div>
               </div>
 
-              {/* Expanded preview (page 1 grid) */}
               {isExp && (
                 <div className="border-t border-slate-100 p-4 bg-slate-50/50">
                   {cache?.loading ? (
                     <div className="flex items-center justify-center py-6 text-slate-400">
-                      <Loader2 size={20} className="animate-spin mr-2" />{" "}
+                      <Loader2 size={20} className="animate-spin mr-2" />
                       Loading page 1…
                     </div>
                   ) : cache?.error ? (
