@@ -15,20 +15,12 @@ import {
   Lock,
   Unlock,
   Settings2,
-  Cable,
-  Layers,
   HardDrive,
   Clock,
   AlertCircle,
-  Server,
   Cpu,
-  Wifi,
-  WifiOff,
   Monitor,
-  Hash,
-  Globe,
   Shield,
-  Terminal,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../context/AuthContext";
@@ -37,14 +29,8 @@ import {
   createCiscoSwitch,
   deleteCiscoSwitch,
   testCiscoConnection,
-  getCiscoDeviceInfo,
-  getCiscoInterfaces,
-  getCiscoVlans,
   type CiscoSwitch,
   type CreateSwitchPayload,
-  type TestConnectionResponse,
-  type InterfaceInfo,
-  type VlanInfo,
 } from "../../services/ciscoApi";
 
 // ─── Types ──────────────────────────────────────────────
@@ -899,82 +885,6 @@ function SwitchDetailsPanel({
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  // Interfaces state
-  const [interfaces, setInterfaces] = useState<{
-    loading: boolean;
-    error: string | null;
-    data: InterfaceInfo[];
-    protocol_used: string | null;
-    cached_at: string | null;
-  }>({
-    loading: false,
-    error: null,
-    data: [],
-    protocol_used: null,
-    cached_at: null,
-  });
-
-  // VLANs state
-  const [vlans, setVlans] = useState<{
-    loading: boolean;
-    error: string | null;
-    data: VlanInfo[];
-    protocol_used: string | null;
-    cached_at: string | null;
-  }>({
-    loading: false,
-    error: null,
-    data: [],
-    protocol_used: null,
-    cached_at: null,
-  });
-
-  useEffect(() => {
-    loadInterfaces();
-    loadVlans();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sw.id]);
-
-  async function loadInterfaces() {
-    setInterfaces((s) => ({ ...s, loading: true, error: null }));
-    try {
-      const res = await getCiscoInterfaces(sw.id, accessToken);
-      setInterfaces({
-        loading: false,
-        error: res.success ? null : res.error || "Failed to load interfaces.",
-        data: res.interfaces || [],
-        protocol_used: res.protocol_used,
-        cached_at: res.cached_at,
-      });
-    } catch (err: any) {
-      setInterfaces((s) => ({
-        ...s,
-        loading: false,
-        error: err.message || "Failed to load interfaces.",
-      }));
-    }
-  }
-
-  async function loadVlans() {
-    setVlans((s) => ({ ...s, loading: true, error: null }));
-    try {
-      const res = await getCiscoVlans(sw.id, accessToken);
-      setVlans({
-        loading: false,
-        error: res.success ? null : res.error || "Failed to load VLANs.",
-        data: res.vlans || [],
-        protocol_used: res.protocol_used,
-        cached_at: res.cached_at,
-      });
-    } catch (err: any) {
-      setVlans((s) => ({
-        ...s,
-        loading: false,
-        error: err.message || "Failed to load VLANs.",
-      }));
-    }
-  }
-
   async function handleDelete() {
     setDeleting(true);
     const deleted = await onDeleteSwitch(sw.id);
@@ -986,15 +896,17 @@ function SwitchDetailsPanel({
 
   return (
     <>
-      <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-6">
+      <div className="bg-white rounded-xl border border-slate-200 p-5">
         {/* Header */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h3 className="font-semibold text-slate-900 text-lg flex items-center gap-2">
               <HardDrive size={20} className="text-red-600" />
-              Interfaces & VLANs
+              Switch Management
             </h3>
-            <p className="text-sm text-slate-500">Live data from the switch.</p>
+            <p className="text-sm text-slate-500">
+              Administrative actions for this switch.
+            </p>
           </div>
           <button
             onClick={() => setShowDeleteDialog(true)}
@@ -1003,207 +915,6 @@ function SwitchDetailsPanel({
             <Trash2 size={16} />
             Delete Switch
           </button>
-        </div>
-
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {/* ── Interfaces Card ── */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-            <div className="bg-white p-4 border-b border-slate-200 flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <div className="bg-blue-100 p-2 rounded-lg">
-                  <Cable size={18} className="text-blue-600" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-slate-800">Interfaces</h4>
-                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                    <Clock size={12} />
-                    {interfaces.cached_at
-                      ? new Date(interfaces.cached_at).toLocaleString()
-                      : "N/A"}
-                    {interfaces.protocol_used && (
-                      <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">
-                        {interfaces.protocol_used}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="text-right">
-                <span className="text-2xl font-bold text-slate-700">
-                  {interfaces.data.length}
-                </span>
-                <span className="text-xs text-slate-500 block uppercase tracking-wider">
-                  Total
-                </span>
-              </div>
-            </div>
-
-            <div className="p-4 flex-1 overflow-y-auto max-h-[400px]">
-              {interfaces.loading ? (
-                <div className="flex flex-col items-center justify-center py-8 text-slate-400">
-                  <Loader2 size={24} className="animate-spin mb-2" />
-                  <span className="text-sm">Fetching interfaces...</span>
-                </div>
-              ) : interfaces.error ? (
-                <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">
-                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
-                  <p>{interfaces.error}</p>
-                </div>
-              ) : interfaces.data.length > 0 ? (
-                <div className="space-y-2">
-                  {interfaces.data.map((iface, idx) => {
-                    const isUp =
-                      iface.status.toLowerCase().includes("up") &&
-                      iface.protocol.toLowerCase().includes("up");
-                    return (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between p-3 bg-white rounded-lg border border-slate-100"
-                      >
-                        <div className="flex items-center gap-3">
-                          {isUp ? (
-                            <Wifi size={16} className="text-green-500" />
-                          ) : (
-                            <WifiOff size={16} className="text-slate-400" />
-                          )}
-                          <div>
-                            <span className="font-mono text-sm font-medium text-slate-800">
-                              {iface.name}
-                            </span>
-                            {iface.ip_address && (
-                              <span className="ml-2 text-xs text-slate-500">
-                                {iface.ip_address}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              "text-[10px] font-medium px-2 py-0.5 rounded-full uppercase",
-                              isUp
-                                ? "bg-green-100 text-green-700"
-                                : "bg-slate-100 text-slate-500",
-                            )}
-                          >
-                            {iface.status}
-                          </span>
-                          <span
-                            className={cn(
-                              "text-[10px] font-medium px-2 py-0.5 rounded-full uppercase",
-                              iface.protocol.toLowerCase() === "up"
-                                ? "bg-green-100 text-green-700"
-                                : "bg-slate-100 text-slate-500",
-                            )}
-                          >
-                            {iface.protocol}
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-sm text-slate-500">
-                  No interface data available. Test connection first.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* ── VLANs Card ── */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex flex-col">
-            <div className="bg-white p-4 border-b border-slate-200 flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <div className="bg-purple-100 p-2 rounded-lg">
-                  <Layers size={18} className="text-purple-600" />
-                </div>
-                <div>
-                  <h4 className="font-semibold text-slate-800">VLANs</h4>
-                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
-                    <Clock size={12} />
-                    {vlans.cached_at
-                      ? new Date(vlans.cached_at).toLocaleString()
-                      : "N/A"}
-                    {vlans.protocol_used && (
-                      <span className="ml-1 px-1.5 py-0.5 bg-slate-100 rounded text-[10px] uppercase font-mono">
-                        {vlans.protocol_used}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-              <div className="text-right">
-                <span className="text-2xl font-bold text-slate-700">
-                  {vlans.data.length}
-                </span>
-                <span className="text-xs text-slate-500 block uppercase tracking-wider">
-                  VLANs
-                </span>
-              </div>
-            </div>
-
-            <div className="p-4 flex-1 overflow-y-auto max-h-[400px]">
-              {vlans.loading ? (
-                <div className="flex flex-col items-center justify-center py-8 text-slate-400">
-                  <Loader2 size={24} className="animate-spin mb-2" />
-                  <span className="text-sm">Fetching VLANs...</span>
-                </div>
-              ) : vlans.error ? (
-                <div className="flex items-start gap-2 text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">
-                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
-                  <p>{vlans.error}</p>
-                </div>
-              ) : vlans.data.length > 0 ? (
-                <div className="space-y-3">
-                  {vlans.data.map((vlan) => (
-                    <div
-                      key={vlan.id}
-                      className="p-3 bg-white rounded-lg border border-slate-100"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Hash size={14} className="text-purple-500" />
-                          <span className="font-mono font-semibold text-slate-800 text-sm">
-                            VLAN {vlan.id}
-                          </span>
-                          <span className="text-slate-600 text-sm">
-                            — {vlan.name}
-                          </span>
-                        </div>
-                        <span
-                          className={cn(
-                            "text-[10px] font-medium px-2 py-0.5 rounded-full uppercase",
-                            vlan.status === "active"
-                              ? "bg-green-100 text-green-700"
-                              : "bg-amber-100 text-amber-700",
-                          )}
-                        >
-                          {vlan.status}
-                        </span>
-                      </div>
-                      {vlan.ports.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
-                          {vlan.ports.map((port, idx) => (
-                            <span
-                              key={idx}
-                              className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-mono"
-                            >
-                              {port}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-sm text-slate-500">
-                  No VLAN data available. Test connection first.
-                </div>
-              )}
-            </div>
-          </div>
         </div>
       </div>
 
