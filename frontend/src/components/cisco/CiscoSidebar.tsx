@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import CiscoLogo from "../../assets/cisco-logo.svg";
+import { useAuth } from "../../context/AuthContext";
 
 interface CiscoSidebarProps {
   activeSection: NavSection;
@@ -26,10 +27,14 @@ export default function CiscoSidebar({
   collapsed,
   onToggle,
 }: CiscoSidebarProps) {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
+
   const navItems: {
     section: NavSection;
     label: string;
     icon: React.ReactNode;
+    adminOnly?: boolean;
   }[] = [
     {
       section: "overview",
@@ -40,6 +45,7 @@ export default function CiscoSidebar({
       section: "user-management",
       label: "User Management",
       icon: <Users size={20} />,
+      adminOnly: true,
     },
     {
       section: "switch-management",
@@ -57,6 +63,9 @@ export default function CiscoSidebar({
       icon: <Layers size={20} />,
     },
   ];
+
+  // Filter out admin-only items if user is not admin
+  const visibleNavItems = navItems.filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <aside
@@ -83,7 +92,7 @@ export default function CiscoSidebar({
       </div>
 
       <nav className="flex-1 py-4 space-y-1 px-2 overflow-y-auto">
-        {navItems.map((item) => (
+        {visibleNavItems.map((item) => (
           <button
             key={item.section}
             onClick={() => onNavigate(item.section)}

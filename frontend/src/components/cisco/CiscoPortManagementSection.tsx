@@ -1,3 +1,4 @@
+// src/components/cisco/CiscoPortManagementSection.tsx
 import React, {
   useState,
   useEffect,
@@ -20,20 +21,36 @@ import {
   Network,
   Loader2,
   RefreshCw,
+  ChevronLeft,
+  ChevronRight as ChevronRightIcon,
+  Plus,
+  Settings2,
+  Monitor,
+  ArrowRightLeft,
+  X,
+  AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../context/AuthContext";
 import {
   fetchCiscoSwitches,
-  fetchPortStatus,
   togglePortLock,
   bulkLockPorts,
   bulkUnlockPorts,
   type CiscoSwitch,
   type CiscoPortInfo,
 } from "../../services/ciscoApi";
+import { fetchVlans, fetchSwitches } from "../../services/ciscoVlanApi";
+import { cn } from "../../utils/cn";
 
-// ─── Types ──────────────────────────────────────────────
+// ─── Constants ──────────────────────────────────────────────────────────────
+
+const BASE =
+  (import.meta as any).env?.VITE_CISCO_BASE_URL ?? "http://localhost:8002";
+const PREFIX = `${BASE}/api/v1/cisco`;
+const PAGE_SIZE = 48;
+
+// ─── Types ──────────────────────────────────────────────────────────────────
 
 type PortStatus = "active" | "inactive" | "error";
 type PortFilter = "all" | "locked" | "unlocked" | "active" | "inactive";
@@ -50,13 +67,47 @@ interface Port {
   description: string;
 }
 
-interface PortCache {
-  ports: Port[];
+interface PortPageCache {
+  pages: Record<number, Port[]>; // page → ports
+  totalPages: number;
+  totalCount: number;
   loading: boolean;
   error: string | null;
+  syncing: boolean;
 }
 
-// ─── Helpers ────────────────────────────────────────────
+interface VlanOption {
+  id: number;
+  vlan_id: number;
+  name: string;
+  status: string;
+}
+
+// ─── API helpers ─────────────────────────────────────────────────────────────
+
+function authHeaders(token: string | null): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+async function apiFetch<T>(
+  url: string,
+  token: string | null,
+  opts: RequestInit = {},
+): Promise<T> {
+  const res = await fetch(url, {
+    ...opts,
+    headers: { ...authHeaders(token), ...(opts.headers ?? {}) },
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    throw new Error(b?.detail || b?.message || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function mapCiscoStatus(raw: string): PortStatus {
   const s = raw.toLowerCase();
@@ -91,7 +142,18 @@ function parseJwt(token: string | null): any | null {
   }
 }
 
-// ─── Constants ──────────────────────────────────────────
+function emptyPageCache(): PortPageCache {
+  return {
+    pages: {},
+    totalPages: 1,
+    totalCount: 0,
+    loading: false,
+    error: null,
+    syncing: false,
+  };
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_CFG: Record<
   PortStatus,
@@ -125,7 +187,7 @@ const FILTERS: { value: PortFilter; label: string }[] = [
   { value: "inactive", label: "Inactive" },
 ];
 
-// ─── Small Sub-components ───────────────────────────────
+// ─── Sub-components ───────────────────────────────────────────────────────────
 
 function PortStatusBadge({ status }: { status: PortStatus }) {
   const c = STATUS_CFG[status];
@@ -142,18 +204,16 @@ function PortStatusBadge({ status }: { status: PortStatus }) {
 function LockBadge({ locked }: { locked: boolean }) {
   return locked ? (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200">
-      <Lock size={11} />
-      Locked
+      <Lock size={11} /> Locked
     </span>
   ) : (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-50 text-green-700 border border-green-200">
-      <Unlock size={11} />
-      Open
+      <Unlock size={11} /> Open
     </span>
   );
 }
 
-// ─── Confirm Dialog ─────────────────────────────────────
+// ─── Confirm Dialog with Configure Button ────────────────────────────────────
 
 function ConfirmDialog({
   title,
@@ -161,12 +221,16 @@ function ConfirmDialog({
   confirmLabel,
   onConfirm,
   onCancel,
+  onConfigure,
+  showConfigure = false,
 }: {
   title: string;
   message: string;
   confirmLabel: string;
   onConfirm: () => void;
   onCancel: () => void;
+  onConfigure?: () => void;
+  showConfigure?: boolean;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -206,6 +270,15 @@ function ConfirmDialog({
           >
             Cancel
           </button>
+          {showConfigure && onConfigure && (
+            <button
+              onClick={onConfigure}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg flex items-center gap-1.5"
+            >
+              <Settings2 size={14} />
+              Configure
+            </button>
+          )}
           <button
             onClick={onConfirm}
             className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-sm font-medium rounded-lg"
@@ -218,25 +291,291 @@ function ConfirmDialog({
   );
 }
 
-// ─── Port Grid ──────────────────────────────────────────
+// ─── Configure Port Modal ────────────────────────────────────────────────────
+
+function ConfigurePortModal({
+  open,
+  onClose,
+  port,
+  switchId,
+  switchName,
+  vlans,
+  onSave,
+}: {
+  open: boolean;
+  onClose: () => void;
+  port: Port | null;
+  switchId: number;
+  switchName: string;
+  vlans: VlanOption[];
+  onSave: (
+    portLabel: string,
+    data: {
+      mode: "access" | "trunk";
+      access_vlan?: number;
+      trunk_allowed_vlans?: number[];
+      trunk_native_vlan?: number;
+      description?: string;
+    },
+  ) => Promise<void>;
+}) {
+  const [mode, setMode] = useState<"access" | "trunk">("access");
+  const [accessVlan, setAccessVlan] = useState(1);
+  const [trunkNative, setTrunkNative] = useState(1);
+  const [trunkAllowed, setTrunkAllowed] = useState<Set<number>>(new Set());
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open && port) {
+      setMode("access");
+      setAccessVlan(1);
+      setTrunkNative(1);
+      setTrunkAllowed(new Set());
+      setDescription(port.description || "");
+      setError("");
+    }
+  }, [open, port]);
+
+  if (!open || !port) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (mode === "trunk" && trunkAllowed.size === 0) {
+      setError("Select at least one VLAN for the trunk.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onSave(port.label, {
+        mode,
+        access_vlan: mode === "access" ? accessVlan : undefined,
+        trunk_allowed_vlans:
+          mode === "trunk"
+            ? Array.from(trunkAllowed).sort((a, b) => a - b)
+            : undefined,
+        trunk_native_vlan: mode === "trunk" ? trunkNative : undefined,
+        description,
+      });
+      onClose();
+    } catch (err: any) {
+      setError(err.message || "Failed to configure port.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleVlan = (vid: number) =>
+    setTrunkAllowed((prev) => {
+      const next = new Set(prev);
+      next.has(vid) ? next.delete(vid) : next.add(vid);
+      return next;
+    });
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-lg bg-blue-100 flex items-center justify-center">
+              <Settings2 size={16} className="text-blue-600" />
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">
+                Configure Port
+              </h3>
+              <p className="text-xs text-slate-500">
+                {switchName} — {port.label}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-slate-200 transition-colors"
+          >
+            <X size={18} className="text-slate-500" />
+          </button>
+        </div>
+
+        <form
+          onSubmit={handleSubmit}
+          className="p-6 space-y-4 overflow-y-auto flex-1"
+        >
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              <AlertCircle size={16} className="shrink-0" />
+              {error}
+            </div>
+          )}
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Description
+            </label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="e.g. Engineering Lab uplink"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Mode */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-2">
+              Port Mode
+            </label>
+            <div className="flex gap-2">
+              {(["access", "trunk"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className={cn(
+                    "flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border text-sm font-medium transition-all",
+                    mode === m
+                      ? m === "access"
+                        ? "bg-blue-50 border-blue-300 text-blue-700 ring-2 ring-blue-200"
+                        : "bg-purple-50 border-purple-300 text-purple-700 ring-2 ring-purple-200"
+                      : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50",
+                  )}
+                >
+                  {m === "access" ? (
+                    <Monitor size={16} />
+                  ) : (
+                    <ArrowRightLeft size={16} />
+                  )}
+                  {m === "access" ? "Access" : "Trunk"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {mode === "access" && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Access VLAN
+              </label>
+              <select
+                value={accessVlan}
+                onChange={(e) => setAccessVlan(Number(e.target.value))}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {vlans.map((v) => (
+                  <option key={v.vlan_id} value={v.vlan_id}>
+                    VLAN {v.vlan_id} — {v.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-400 mt-1">
+                The port will carry only this VLAN's untagged traffic.
+              </p>
+            </div>
+          )}
+
+          {mode === "trunk" && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Native VLAN
+                </label>
+                <select
+                  value={trunkNative}
+                  onChange={(e) => setTrunkNative(Number(e.target.value))}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                >
+                  {vlans.map((v) => (
+                    <option key={v.vlan_id} value={v.vlan_id}>
+                      VLAN {v.vlan_id} — {v.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-2">
+                  Allowed VLANs
+                </label>
+                <div className="border border-slate-200 rounded-lg max-h-40 overflow-y-auto divide-y divide-slate-100">
+                  {vlans.map((v) => (
+                    <label
+                      key={v.vlan_id}
+                      className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 cursor-pointer transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={trunkAllowed.has(v.vlan_id)}
+                        onChange={() => toggleVlan(v.vlan_id)}
+                        className="h-4 w-4 rounded border-slate-300 text-purple-600 focus:ring-purple-500"
+                      />
+                      <span className="text-sm text-slate-700">
+                        <span className="font-mono font-medium">
+                          {v.vlan_id}
+                        </span>{" "}
+                        — {v.name}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-400 mt-1">
+                  {trunkAllowed.size} VLAN{trunkAllowed.size !== 1 ? "s" : ""}{" "}
+                  selected
+                </p>
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
+            >
+              {submitting ? "Applying…" : "Apply Configuration"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Port Grid ────────────────────────────────────────────────────────────────
 
 function PortGrid({
   ports,
   onToggle,
+  isAdmin,
 }: {
   ports: Port[];
   onToggle: (label: string) => void;
+  isAdmin: boolean;
 }) {
   return (
     <div className="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-16 lg:grid-cols-24 gap-1.5">
       {ports.map((p) => {
         const d = STATUS_CFG[p.status];
+        const canToggle = isAdmin;
         return (
           <button
             key={p.id}
-            onClick={() => onToggle(p.label)}
-            title={`Port ${p.number} — ${p.status}${p.locked ? " (Locked)" : ""}\nClick to toggle lock`}
-            className={`relative w-full aspect-square rounded-lg border-2 flex flex-col items-center justify-center text-xs font-medium transition-all duration-150 hover:scale-110 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 ${
+            onClick={() => canToggle && onToggle(p.label)}
+            disabled={!canToggle}
+            title={`Port ${p.number} — ${p.status}${p.locked ? " (Locked)" : ""}${canToggle ? "\nClick to toggle lock" : ""}`}
+            className={`relative w-full aspect-square rounded-lg border-2 flex flex-col items-center justify-center text-xs font-medium transition-all duration-150 ${canToggle ? "hover:scale-110 hover:shadow-md cursor-pointer" : "cursor-not-allowed opacity-75"} focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-1 ${
               p.locked
                 ? "border-red-300 bg-red-50"
                 : p.status === "active"
@@ -261,15 +600,17 @@ function PortGrid({
   );
 }
 
-// ─── Port Table ─────────────────────────────────────────
+// ─── Port Table ───────────────────────────────────────────────────────────────
 
 function PortTable({
   ports,
   onToggle,
+  onConfigure,
   isAdmin,
 }: {
   ports: Port[];
   onToggle: (label: string) => void;
+  onConfigure: (port: Port) => void;
   isAdmin: boolean;
 }) {
   return (
@@ -286,7 +627,7 @@ function PortTable({
               "VLAN",
               "MAC Address",
               "Description",
-              ...(isAdmin ? ["Action"] : []),
+              "Actions",
             ].map((h) => (
               <th
                 key={h}
@@ -330,28 +671,36 @@ function PortTable({
                 <td className="px-3 py-2.5 text-slate-500">
                   {p.description || "—"}
                 </td>
-                {isAdmin && (
-                  <td className="px-3 py-2.5">
+                <td className="px-3 py-2.5">
+                  <div className="flex items-center gap-1.5">
+                    {isAdmin && (
+                      <button
+                        onClick={() => onToggle(p.label)}
+                        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 ${
+                          p.locked
+                            ? "bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500"
+                            : "bg-red-100 text-red-700 hover:bg-red-200 focus:ring-red-500"
+                        }`}
+                      >
+                        {p.locked ? (
+                          <>
+                            <Unlock size={12} /> Unlock
+                          </>
+                        ) : (
+                          <>
+                            <Lock size={12} /> Lock
+                          </>
+                        )}
+                      </button>
+                    )}
                     <button
-                      onClick={() => onToggle(p.label)}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 ${
-                        p.locked
-                          ? "bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500"
-                          : "bg-red-100 text-red-700 hover:bg-red-200 focus:ring-red-500"
-                      }`}
+                      onClick={() => onConfigure(p)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
                     >
-                      {p.locked ? (
-                        <>
-                          <Unlock size={12} /> Unlock
-                        </>
-                      ) : (
-                        <>
-                          <Lock size={12} /> Lock
-                        </>
-                      )}
+                      <Settings2 size={12} /> Configure
                     </button>
-                  </td>
-                )}
+                  </div>
+                </td>
               </tr>
             ))
           )}
@@ -361,30 +710,89 @@ function PortTable({
   );
 }
 
-// ─── Switch Detail View ─────────────────────────────────
+// ─── Pagination ───────────────────────────────────────────────────────────────
+
+function Pagination({
+  page,
+  totalPages,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  onChange: (p: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50">
+      <p className="text-xs text-slate-500">
+        Page {page} of {totalPages} · {PAGE_SIZE} ports per page
+      </p>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => onChange(page - 1)}
+          disabled={page <= 1}
+          className="p-1.5 rounded-lg border border-slate-300 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <ChevronLeft size={16} className="text-slate-600" />
+        </button>
+        {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+          let p: number;
+          if (totalPages <= 7) p = i + 1;
+          else if (page <= 4) p = i + 1;
+          else if (page >= totalPages - 3) p = totalPages - 6 + i;
+          else p = page - 3 + i;
+          return (
+            <button
+              key={p}
+              onClick={() => onChange(p)}
+              className={`w-8 h-8 rounded-lg text-xs font-medium transition-colors border ${
+                p === page
+                  ? "bg-red-700 text-white border-red-700"
+                  : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"
+              }`}
+            >
+              {p}
+            </button>
+          );
+        })}
+        <button
+          onClick={() => onChange(page + 1)}
+          disabled={page >= totalPages}
+          className="p-1.5 rounded-lg border border-slate-300 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <ChevronRightIcon size={16} className="text-slate-600" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Switch Detail View ───────────────────────────────────────────────────────
 
 function SwitchPortDetail({
   sw,
-  ports,
-  portsLoading,
-  portsError,
+  pageCache,
+  currentPage,
   isAdmin,
-  accessToken,
+  vlans,
   onBack,
-  onRefresh,
+  onSync,
+  onPageChange,
   onToggle,
+  onConfigure,
   onBulkLock,
   onBulkUnlock,
 }: {
   sw: CiscoSwitch;
-  ports: Port[];
-  portsLoading: boolean;
-  portsError: string | null;
+  pageCache: PortPageCache;
+  currentPage: number;
   isAdmin: boolean;
-  accessToken: string | null;
+  vlans: VlanOption[];
   onBack: () => void;
-  onRefresh: () => void;
+  onSync: () => void;
+  onPageChange: (p: number) => void;
   onToggle: (label: string) => void;
+  onConfigure: (port: Port) => void;
   onBulkLock: () => void;
   onBulkUnlock: () => void;
 }) {
@@ -392,14 +800,15 @@ function SwitchPortDetail({
   const [filter, setFilter] = useState<PortFilter>("all");
   const [view, setView] = useState<"grid" | "table">("table");
 
+  const currentPorts = pageCache.pages[currentPage] ?? [];
+
   const filtered = useMemo(() => {
-    let r = ports;
+    let r = currentPorts;
     if (filter === "locked") r = r.filter((p) => p.locked);
     else if (filter === "unlocked") r = r.filter((p) => !p.locked);
     else if (filter === "active") r = r.filter((p) => p.status === "active");
     else if (filter === "inactive")
       r = r.filter((p) => p.status === "inactive");
-
     const q = search.toLowerCase().trim();
     if (q)
       r = r.filter(
@@ -410,16 +819,31 @@ function SwitchPortDetail({
           (p.macAddress && p.macAddress.toLowerCase().includes(q)),
       );
     return r;
-  }, [ports, filter, search]);
+  }, [currentPorts, filter, search]);
 
+  // Stats across all loaded pages
+  const allLoadedPorts = useMemo(
+    () => Object.values(pageCache.pages).flat(),
+    [pageCache.pages],
+  );
   const stats = useMemo(() => {
-    const s = { active: 0, inactive: 0, error: 0, locked: 0, unlocked: 0 };
-    for (const p of ports) {
+    const s = {
+      active: 0,
+      inactive: 0,
+      error: 0,
+      locked: 0,
+      unlocked: 0,
+      trunk: 0,
+      access: 0,
+    };
+    for (const p of allLoadedPorts) {
       s[p.status]++;
       p.locked ? s.locked++ : s.unlocked++;
     }
     return s;
-  }, [ports]);
+  }, [allLoadedPorts]);
+
+  const loadingPage = pageCache.loading;
 
   return (
     <div className="space-y-6">
@@ -441,18 +865,25 @@ function SwitchPortDetail({
               <span className="font-mono">{sw.host}</span>
               <span>•</span>
               <span>{sw.device_model || "Unknown"}</span>
+              {pageCache.totalCount > 0 && (
+                <>
+                  <span>•</span>
+                  <span>{pageCache.totalCount} ports in DB</span>
+                </>
+              )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
-              onClick={onRefresh}
-              className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg text-xs font-medium"
+              onClick={onSync}
+              disabled={pageCache.syncing}
+              className="flex items-center gap-1.5 px-3 py-2 border border-slate-300 text-slate-600 hover:bg-slate-50 rounded-lg text-xs font-medium disabled:opacity-60"
             >
               <RefreshCw
                 size={14}
-                className={portsLoading ? "animate-spin" : ""}
-              />{" "}
-              Refresh
+                className={pageCache.syncing ? "animate-spin" : ""}
+              />
+              {pageCache.syncing ? "Syncing…" : "Sync from Switch"}
             </button>
             {isAdmin && (
               <>
@@ -475,17 +906,27 @@ function SwitchPortDetail({
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         {[
           {
             label: "Total Ports",
-            value: ports.length,
+            value: pageCache.totalCount,
             color: "text-slate-900",
           },
           { label: "Active", value: stats.active, color: "text-green-700" },
           { label: "Inactive", value: stats.inactive, color: "text-slate-500" },
           { label: "Locked", value: stats.locked, color: "text-red-700" },
           { label: "Unlocked", value: stats.unlocked, color: "text-green-700" },
+          {
+            label: "Page",
+            value: `${currentPage}/${pageCache.totalPages}`,
+            color: "text-blue-700",
+          },
+          {
+            label: "Loaded",
+            value: allLoadedPorts.length,
+            color: "text-purple-700",
+          },
         ].map((s) => (
           <div
             key={s.label}
@@ -493,17 +934,25 @@ function SwitchPortDetail({
           >
             <p className="text-xs text-slate-500">{s.label}</p>
             <p className={`text-lg font-bold ${s.color} mt-0.5`}>
-              {portsLoading ? "…" : s.value}
+              {loadingPage && s.label === "Total Ports" ? "…" : s.value}
             </p>
           </div>
         ))}
       </div>
 
+      {/* Sync progress bar */}
+      {pageCache.syncing && (
+        <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-3 text-sm text-blue-700">
+          <Loader2 size={16} className="animate-spin shrink-0" />
+          Fetching live port data from switch and saving to database…
+        </div>
+      )}
+
       {/* Error */}
-      {portsError && (
+      {pageCache.error && (
         <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center gap-2">
           <AlertTriangle size={16} />
-          {portsError}
+          {pageCache.error}
         </div>
       )}
 
@@ -541,7 +990,11 @@ function SwitchPortDetail({
             <button
               key={v}
               onClick={() => setView(v)}
-              className={`px-3 py-2 text-xs font-medium transition-colors ${view === v ? "bg-red-700 text-white" : "bg-white text-slate-600 hover:bg-slate-50"}`}
+              className={`px-3 py-2 text-xs font-medium transition-colors ${
+                view === v
+                  ? "bg-red-700 text-white"
+                  : "bg-white text-slate-600 hover:bg-slate-50"
+              }`}
             >
               {v.charAt(0).toUpperCase() + v.slice(1)}
             </button>
@@ -551,14 +1004,16 @@ function SwitchPortDetail({
 
       {/* Port View */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        {portsLoading ? (
+        {loadingPage ? (
           <div className="flex flex-col items-center justify-center py-16 text-slate-400">
             <Loader2 size={32} className="animate-spin mb-3" />
-            <p className="text-sm">Connecting to switch and fetching ports…</p>
+            <p className="text-sm">
+              Loading page {currentPage} ({PAGE_SIZE} ports)…
+            </p>
           </div>
         ) : view === "grid" ? (
           <div className="p-4">
-            <PortGrid ports={filtered} onToggle={onToggle} />
+            <PortGrid ports={filtered} onToggle={onToggle} isAdmin={isAdmin} />
             {filtered.length === 0 && (
               <p className="text-center py-8 text-slate-400 text-sm">
                 No ports match the current filter
@@ -566,8 +1021,19 @@ function SwitchPortDetail({
             )}
           </div>
         ) : (
-          <PortTable ports={filtered} onToggle={onToggle} isAdmin={isAdmin} />
+          <PortTable
+            ports={filtered}
+            onToggle={onToggle}
+            onConfigure={onConfigure}
+            isAdmin={isAdmin}
+          />
         )}
+
+        <Pagination
+          page={currentPage}
+          totalPages={pageCache.totalPages}
+          onChange={onPageChange}
+        />
       </div>
 
       {/* Legend */}
@@ -590,7 +1056,7 @@ function SwitchPortDetail({
   );
 }
 
-// ─── Main Component ─────────────────────────────────────
+// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function CiscoPortManagementSection() {
   const { accessToken } = useAuth();
@@ -600,88 +1066,190 @@ export default function CiscoPortManagementSection() {
   const [switches, setSwitches] = useState<CiscoSwitch[]>([]);
   const [switchesLoading, setSwitchesLoading] = useState(true);
 
+  // Per-switch page cache: switchId → PortPageCache
+  const [cacheMap, setCacheMap] = useState<Record<number, PortPageCache>>({});
+  // Per-switch current page
+  const [pageMap, setPageMap] = useState<Record<number, number>>({});
+
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [portCache, setPortCache] = useState<Record<number, PortCache>>({});
+
   const [confirmAction, setConfirmAction] = useState<{
     title: string;
     message: string;
     confirmLabel: string;
     action: () => void;
+    port?: Port;
   } | null>(null);
 
-  // ── Load switches ──
+  const [configurePort, setConfigurePort] = useState<{
+    port: Port;
+    switchId: number;
+  } | null>(null);
+  const [vlans, setVlans] = useState<VlanOption[]>([]);
+
+  // ── Load switches ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (!accessToken) return;
     setSwitchesLoading(true);
-    fetchCiscoSwitches(accessToken)
-      .then(setSwitches)
+    apiFetch<{ switches: CiscoSwitch[] }>(`${PREFIX}/switches`, accessToken)
+      .then((d) => setSwitches(d.switches ?? []))
       .catch(() => toast.error("Failed to load switches"))
       .finally(() => setSwitchesLoading(false));
   }, [accessToken]);
 
-  // ── Load ports for a switch ──
-  const loadPorts = useCallback(
-    async (switchId: number, force = false) => {
-      if (!force && portCache[switchId]?.ports.length > 0) return;
+  // ── Load VLANs for configure modal ─────────────────────────────────────────
 
-      setPortCache((prev) => ({
+  useEffect(() => {
+    if (!accessToken) return;
+    fetchVlans("")
+      .then((d) => setVlans(d.vlans ?? []))
+      .catch(() => {});
+  }, [accessToken]);
+
+  // ── Load a DB page for a switch ────────────────────────────────────────────
+
+  const loadDbPage = useCallback(
+    async (switchId: number, page: number) => {
+      // Already have this page loaded?
+      const existing = cacheMap[switchId];
+      if (existing?.pages[page]) {
+        setPageMap((prev) => ({ ...prev, [switchId]: page }));
+        return;
+      }
+
+      setCacheMap((prev) => ({
         ...prev,
-        [switchId]: { ports: [], loading: true, error: null },
+        [switchId]: {
+          ...(prev[switchId] ?? emptyPageCache()),
+          loading: true,
+          error: null,
+        },
       }));
 
       try {
-        const res = await fetchPortStatus(switchId, accessToken);
-        if (res.success) {
-          const mapped = res.ports.map((p) => apiPortToPort(p, switchId));
-          setPortCache((prev) => ({
-            ...prev,
-            [switchId]: { ports: mapped, loading: false, error: null },
-          }));
-        } else {
-          setPortCache((prev) => ({
-            ...prev,
-            [switchId]: {
-              ports: [],
-              loading: false,
-              error: res.error || "Failed to fetch ports",
-            },
-          }));
-        }
-      } catch (err: any) {
-        setPortCache((prev) => ({
+        const data = await apiFetch<{
+          success: boolean;
+          port_count: number;
+          ports: CiscoPortInfo[];
+          page: number;
+          page_size: number;
+          total_pages: number;
+          error?: string;
+        }>(
+          `${PREFIX}/switches/${switchId}/ports-db?page=${page}&page_size=${PAGE_SIZE}`,
+          accessToken,
+        );
+
+        if (!data.success) throw new Error(data.error ?? "Failed");
+
+        const mapped = data.ports.map((p) => apiPortToPort(p, switchId));
+
+        setCacheMap((prev) => ({
           ...prev,
-          [switchId]: { ports: [], loading: false, error: err.message },
+          [switchId]: {
+            ...(prev[switchId] ?? emptyPageCache()),
+            pages: { ...(prev[switchId]?.pages ?? {}), [page]: mapped },
+            totalCount: data.port_count,
+            totalPages: data.total_pages,
+            loading: false,
+            error: null,
+            syncing: false,
+          },
+        }));
+        setPageMap((prev) => ({ ...prev, [switchId]: page }));
+      } catch (err: any) {
+        setCacheMap((prev) => ({
+          ...prev,
+          [switchId]: {
+            ...(prev[switchId] ?? emptyPageCache()),
+            loading: false,
+            error: err.message,
+          },
         }));
       }
     },
-    [accessToken, portCache],
+    [accessToken, cacheMap],
   );
 
-  // ── Select switch → load ports ──
+  // ── Sync ports from switch → DB, then reload page 1 ───────────────────────
+
+  const syncPorts = useCallback(
+    async (switchId: number) => {
+      setCacheMap((prev) => ({
+        ...prev,
+        [switchId]: {
+          ...(prev[switchId] ?? emptyPageCache()),
+          syncing: true,
+          error: null,
+        },
+      }));
+
+      try {
+        await apiFetch(
+          `${PREFIX}/switches/${switchId}/sync-ports`,
+          accessToken,
+          { method: "POST" },
+        );
+        // Clear page cache for this switch and reload page 1
+        setCacheMap((prev) => ({
+          ...prev,
+          [switchId]: { ...emptyPageCache(), syncing: false },
+        }));
+        setPageMap((prev) => ({ ...prev, [switchId]: 1 }));
+        // Now load page 1 fresh
+        setTimeout(() => loadDbPage(switchId, 1), 0);
+        toast.success("Ports synced and saved to database.");
+      } catch (err: any) {
+        setCacheMap((prev) => ({
+          ...prev,
+          [switchId]: {
+            ...(prev[switchId] ?? emptyPageCache()),
+            syncing: false,
+            error: err.message,
+          },
+        }));
+        toast.error(err.message || "Sync failed");
+      }
+    },
+    [accessToken, loadDbPage],
+  );
+
+  // ── Select switch → load page 1 from DB ───────────────────────────────────
+
   const selectSwitch = useCallback(
     (id: number) => {
       setSelectedId(id);
-      loadPorts(id);
+      const page = pageMap[id] ?? 1;
+      loadDbPage(id, page);
     },
-    [loadPorts],
+    [loadDbPage, pageMap],
   );
 
-  // ── Expand → load ports ──
+  // ── Expand (preview) → load page 1 from DB ────────────────────────────────
+
   const toggleExpand = useCallback(
     (id: number) => {
       const next = expandedId === id ? null : id;
       setExpandedId(next);
-      if (next !== null) loadPorts(next);
+      if (next !== null) loadDbPage(next, pageMap[next] ?? 1);
     },
-    [expandedId, loadPorts],
+    [expandedId, loadDbPage, pageMap],
   );
 
-  // ── Toggle lock ──
+  // ── Toggle lock (admin only) ────────────────────────────────────────────────
+
   const handleToggle = useCallback(
     (switchId: number, portLabel: string) => {
-      const cache = portCache[switchId];
-      const port = cache?.ports.find((p) => p.label === portLabel);
+      if (!isAdmin) {
+        toast.error("Only administrators can lock/unlock ports.");
+        return;
+      }
+
+      const cache = cacheMap[switchId];
+      const page = pageMap[switchId] ?? 1;
+      const port = cache?.pages[page]?.find((p) => p.label === portLabel);
       if (!port) return;
 
       const action = port.locked ? "unlock" : "lock";
@@ -689,27 +1257,25 @@ export default function CiscoPortManagementSection() {
 
       setConfirmAction({
         title: `${action === "lock" ? "Lock" : "Unlock"} Port ${port.number}`,
-        message: `${action === "lock" ? "Lock" : "Unlock"} port ${port.label} on ${sw?.name || "switch"}? ${
-          action === "lock"
-            ? "This will block changes on this port."
-            : "This will allow changes on this port."
-        }`,
+        message: `${action === "lock" ? "Lock" : "Unlock"} port ${port.label} on ${sw?.name || "switch"}?`,
         confirmLabel: action === "lock" ? "Lock Port" : "Unlock Port",
+        port: port,
         action: async () => {
           setConfirmAction(null);
           try {
             const res = await togglePortLock(switchId, portLabel, accessToken);
             if (res.success) {
-              // Update cache locally
-              setPortCache((prev) => ({
-                ...prev,
-                [switchId]: {
-                  ...prev[switchId],
-                  ports: prev[switchId].ports.map((p) =>
+              setCacheMap((prev) => {
+                const sw = prev[switchId];
+                if (!sw) return prev;
+                const updatedPages = { ...sw.pages };
+                for (const pg in updatedPages) {
+                  updatedPages[pg] = updatedPages[pg].map((p) =>
                     p.label === portLabel ? { ...p, locked: res.locked } : p,
-                  ),
-                },
-              }));
+                  );
+                }
+                return { ...prev, [switchId]: { ...sw, pages: updatedPages } };
+              });
               toast.success(res.message);
             } else {
               toast.error("Failed to toggle lock");
@@ -720,16 +1286,22 @@ export default function CiscoPortManagementSection() {
         },
       });
     },
-    [portCache, switches, accessToken],
+    [cacheMap, pageMap, switches, accessToken, isAdmin],
   );
 
-  // ── Bulk lock/unlock ──
+  // ── Bulk lock / unlock (admin only) ─────────────────────────────────────────
+
   const handleBulkLock = useCallback(
     (switchId: number) => {
+      if (!isAdmin) {
+        toast.error("Only administrators can lock/unlock ports.");
+        return;
+      }
+
       const sw = switches.find((s) => s.id === switchId);
       setConfirmAction({
         title: "Lock All Ports",
-        message: `Lock ALL ports on ${sw?.name}? This blocks changes on every port.`,
+        message: `Lock ALL ports on ${sw?.name}?`,
         confirmLabel: "Lock All",
         action: async () => {
           setConfirmAction(null);
@@ -737,18 +1309,25 @@ export default function CiscoPortManagementSection() {
           try {
             const res = await bulkLockPorts(switchId, accessToken);
             toast.success(res.message, { id: tid });
-            loadPorts(switchId, true);
+            // Invalidate cache and reload current page
+            setCacheMap((prev) => ({ ...prev, [switchId]: emptyPageCache() }));
+            loadDbPage(switchId, 1);
           } catch (err: any) {
             toast.error(err.message, { id: tid });
           }
         },
       });
     },
-    [switches, accessToken, loadPorts],
+    [switches, accessToken, loadDbPage, isAdmin],
   );
 
   const handleBulkUnlock = useCallback(
     (switchId: number) => {
+      if (!isAdmin) {
+        toast.error("Only administrators can lock/unlock ports.");
+        return;
+      }
+
       const sw = switches.find((s) => s.id === switchId);
       setConfirmAction({
         title: "Unlock All Ports",
@@ -760,34 +1339,90 @@ export default function CiscoPortManagementSection() {
           try {
             const res = await bulkUnlockPorts(switchId, accessToken);
             toast.success(res.message, { id: tid });
-            loadPorts(switchId, true);
+            setCacheMap((prev) => ({ ...prev, [switchId]: emptyPageCache() }));
+            loadDbPage(switchId, 1);
           } catch (err: any) {
             toast.error(err.message, { id: tid });
           }
         },
       });
     },
-    [switches, accessToken, loadPorts],
+    [switches, accessToken, loadDbPage, isAdmin],
   );
 
-  // ── Selected switch detail ──
+  // ── Configure port ──────────────────────────────────────────────────────────
+
+  const handleConfigure = useCallback(
+    async (
+      portLabel: string,
+      switchId: number,
+      data: {
+        mode: "access" | "trunk";
+        access_vlan?: number;
+        trunk_allowed_vlans?: number[];
+        trunk_native_vlan?: number;
+        description?: string;
+      },
+    ) => {
+      const newVlan =
+        data.mode === "trunk"
+          ? (data.trunk_allowed_vlans ?? []).join(",")
+          : String(data.access_vlan ?? 1);
+
+      await apiFetch(
+        `${PREFIX}/switches/${switchId}/change-vlan`,
+        accessToken,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            port_label: portLabel,
+            new_vlan: newVlan,
+            vlan_type: data.mode === "trunk" ? "trunk" : "Access",
+            description: data.description ?? "",
+          }),
+        },
+      );
+      toast.success(
+        `Port ${portLabel} configured as ${data.mode} on VLAN ${newVlan}`,
+      );
+      // Reload current page to reflect changes
+      const page = pageMap[switchId] ?? 1;
+      setCacheMap((prev) => {
+        const sw = prev[switchId];
+        if (!sw) return prev;
+        const updatedPages = { ...sw.pages };
+        delete updatedPages[page];
+        return { ...prev, [switchId]: { ...sw, pages: updatedPages } };
+      });
+      loadDbPage(switchId, page);
+    },
+    [accessToken, pageMap, loadDbPage],
+  );
+
+  // ── Selected switch view ────────────────────────────────────────────────────
+
   const selectedSwitch =
     selectedId !== null ? switches.find((s) => s.id === selectedId) : null;
-  const selectedCache = selectedId !== null ? portCache[selectedId] : null;
+  const selectedCache =
+    selectedId !== null ? (cacheMap[selectedId] ?? emptyPageCache()) : null;
+  const selectedPage = selectedId !== null ? (pageMap[selectedId] ?? 1) : 1;
 
   if (selectedSwitch && selectedCache) {
     return (
       <>
         <SwitchPortDetail
           sw={selectedSwitch}
-          ports={selectedCache.ports}
-          portsLoading={selectedCache.loading}
-          portsError={selectedCache.error}
+          pageCache={selectedCache}
+          currentPage={selectedPage}
           isAdmin={isAdmin}
-          accessToken={accessToken}
+          vlans={vlans}
           onBack={() => setSelectedId(null)}
-          onRefresh={() => loadPorts(selectedSwitch.id, true)}
+          onSync={() => syncPorts(selectedSwitch.id)}
+          onPageChange={(p) => loadDbPage(selectedSwitch.id, p)}
           onToggle={(label) => handleToggle(selectedSwitch.id, label)}
+          onConfigure={(port) =>
+            setConfigurePort({ port, switchId: selectedSwitch.id })
+          }
           onBulkLock={() => handleBulkLock(selectedSwitch.id)}
           onBulkUnlock={() => handleBulkUnlock(selectedSwitch.id)}
         />
@@ -795,25 +1430,48 @@ export default function CiscoPortManagementSection() {
           <ConfirmDialog
             {...confirmAction}
             onCancel={() => setConfirmAction(null)}
+            showConfigure={!!confirmAction.port && !confirmAction.port.locked}
+            onConfigure={
+              confirmAction.port && !confirmAction.port.locked
+                ? () => {
+                    setConfirmAction(null);
+                    setConfigurePort({
+                      port: confirmAction.port!,
+                      switchId: selectedSwitch.id,
+                    });
+                  }
+                : undefined
+            }
           />
         )}
+        <ConfigurePortModal
+          open={!!configurePort && configurePort.switchId === selectedSwitch.id}
+          onClose={() => setConfigurePort(null)}
+          port={configurePort?.port ?? null}
+          switchId={selectedSwitch.id}
+          switchName={selectedSwitch.name}
+          vlans={vlans}
+          onSave={(label, data) =>
+            handleConfigure(label, selectedSwitch.id, data)
+          }
+        />
       </>
     );
   }
 
-  // ── List view ──
-  const totalPorts = Object.values(portCache).reduce(
-    (s, c) => s + c.ports.length,
-    0,
+  // ── List view ───────────────────────────────────────────────────────────────
+
+  // Aggregate stats across all cached switches
+  const allPorts = Object.values(cacheMap).flatMap((c) =>
+    Object.values(c.pages).flat(),
   );
-  const totalLocked = Object.values(portCache).reduce(
-    (s, c) => s + c.ports.filter((p) => p.locked).length,
-    0,
-  );
-  const totalActive = Object.values(portCache).reduce(
-    (s, c) => s + c.ports.filter((p) => p.status === "active").length,
-    0,
-  );
+  const totalPortsLoaded = allPorts.length;
+  const totalLocked = allPorts.filter((p) => p.locked).length;
+  const totalActive = allPorts.filter((p) => p.status === "active").length;
+  const totalTrunk = allPorts.filter(
+    (p) => p.vlan.toLowerCase().includes("trunk") || p.vlan.includes(","),
+  ).length;
+  const totalAccess = totalPortsLoaded - totalTrunk;
 
   return (
     <div className="space-y-6">
@@ -823,13 +1481,13 @@ export default function CiscoPortManagementSection() {
           <Cable className="text-red-700" size={28} /> Port Management
         </h1>
         <p className="text-slate-500 mt-1">
-          View and control individual switch ports — lock or unlock ports to
-          manage network access
+          View and control individual switch ports — sync from device,
+          {isAdmin ? " lock/unlock and" : ""} configure VLANs
         </p>
       </div>
 
-      {/* Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
           <p className="text-sm text-slate-500">Total Switches</p>
           <p className="text-2xl font-bold text-slate-900 mt-1">
@@ -848,6 +1506,18 @@ export default function CiscoPortManagementSection() {
             {totalLocked || "—"}
           </p>
         </div>
+        <div className="bg-white rounded-xl border border-blue-200 p-4 shadow-sm">
+          <p className="text-sm text-blue-600">Access Ports</p>
+          <p className="text-2xl font-bold text-blue-700 mt-1">
+            {totalPortsLoaded > 0 ? totalAccess : "—"}
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border border-purple-200 p-4 shadow-sm">
+          <p className="text-sm text-purple-600">Trunk Ports</p>
+          <p className="text-2xl font-bold text-purple-700 mt-1">
+            {totalPortsLoaded > 0 ? totalTrunk : "—"}
+          </p>
+        </div>
       </div>
 
       {/* Loading */}
@@ -860,11 +1530,11 @@ export default function CiscoPortManagementSection() {
       {/* Switch list */}
       <div className="space-y-3">
         {switches.map((sw) => {
-          const cache = portCache[sw.id];
+          const cache = cacheMap[sw.id];
           const isExp = expandedId === sw.id;
-          const lockedCount = cache?.ports.filter((p) => p.locked).length ?? 0;
-          const activeCount =
-            cache?.ports.filter((p) => p.status === "active").length ?? 0;
+          const page1 = cache?.pages[1] ?? [];
+          const lockedCount = page1.filter((p) => p.locked).length;
+          const activeCount = page1.filter((p) => p.status === "active").length;
 
           return (
             <div
@@ -888,14 +1558,17 @@ export default function CiscoPortManagementSection() {
                     <h3 className="font-semibold text-slate-900">{sw.name}</h3>
                     <p className="text-xs text-slate-500">
                       {sw.host} • {sw.device_model || "Unknown"}
+                      {cache &&
+                        cache.totalCount > 0 &&
+                        ` • ${cache.totalCount} ports`}
                     </p>
                   </div>
                 </button>
 
                 <div className="flex items-center gap-4">
-                  {cache && !cache.loading && (
+                  {cache && !cache.loading && page1.length > 0 && (
                     <div className="hidden sm:flex items-center gap-3 text-xs text-slate-500">
-                      <span>{cache.ports.length} ports</span>
+                      <span>{cache.totalCount} total</span>
                       <span className="text-green-600">
                         {activeCount} active
                       </span>
@@ -911,33 +1584,61 @@ export default function CiscoPortManagementSection() {
                 </div>
               </div>
 
-              {/* Expanded preview */}
+              {/* Expanded preview (page 1 grid) */}
               {isExp && (
                 <div className="border-t border-slate-100 p-4 bg-slate-50/50">
                   {cache?.loading ? (
                     <div className="flex items-center justify-center py-6 text-slate-400">
                       <Loader2 size={20} className="animate-spin mr-2" />{" "}
-                      Fetching ports…
+                      Loading page 1…
                     </div>
                   ) : cache?.error ? (
                     <div className="text-sm text-red-600 flex items-center gap-2">
                       <AlertTriangle size={16} />
                       {cache.error}
+                      <button
+                        onClick={() => syncPorts(sw.id)}
+                        className="ml-2 text-xs underline text-blue-600 hover:text-blue-800"
+                      >
+                        Sync from switch
+                      </button>
                     </div>
-                  ) : cache?.ports.length ? (
+                  ) : page1.length > 0 ? (
                     <>
-                      <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-3">
-                        Port Overview (click a port to toggle lock)
-                      </p>
+                      <div className="flex items-center justify-between mb-3">
+                        <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                          Port Overview — Page 1 of {cache.totalPages}
+                          {isAdmin && " (click to toggle lock)"}
+                        </p>
+                        {cache.totalPages > 1 && (
+                          <span className="text-xs text-slate-400">
+                            {cache.totalCount} ports total
+                          </span>
+                        )}
+                      </div>
                       <PortGrid
-                        ports={cache.ports}
+                        ports={page1}
                         onToggle={(label) => handleToggle(sw.id, label)}
+                        isAdmin={isAdmin}
                       />
                     </>
                   ) : (
-                    <p className="text-sm text-slate-400 text-center py-4">
-                      No port data available
-                    </p>
+                    <div className="text-center py-6">
+                      <p className="text-sm text-slate-400 mb-3">
+                        No port data in DB for this switch.
+                      </p>
+                      <button
+                        onClick={() => syncPorts(sw.id)}
+                        disabled={cache?.syncing}
+                        className="flex items-center gap-1.5 mx-auto px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors disabled:opacity-60"
+                      >
+                        <RefreshCw
+                          size={14}
+                          className={cache?.syncing ? "animate-spin" : ""}
+                        />
+                        {cache?.syncing ? "Syncing…" : "Sync from Switch"}
+                      </button>
+                    </div>
                   )}
                 </div>
               )}
@@ -959,6 +1660,18 @@ export default function CiscoPortManagementSection() {
         <ConfirmDialog
           {...confirmAction}
           onCancel={() => setConfirmAction(null)}
+          showConfigure={!!confirmAction.port && !confirmAction.port.locked}
+          onConfigure={
+            confirmAction.port && !confirmAction.port.locked && selectedId
+              ? () => {
+                  setConfirmAction(null);
+                  setConfigurePort({
+                    port: confirmAction.port!,
+                    switchId: selectedId,
+                  });
+                }
+              : undefined
+          }
         />
       )}
     </div>

@@ -9,6 +9,7 @@ import logging
 import time as _time
 from datetime import datetime
 from typing import Optional
+from math import ceil 
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
@@ -21,6 +22,9 @@ from app.models.cisco_switch import (
     CiscoPortLock,
     CiscoVlan,
     CiscoPortAssignment,
+    CiscoPortSnapshot,
+    CiscoInterfaceSnapshot,
+    CiscoVlanSnapshot,
 )
 from app.models.cisco_schemas import (
     SwitchCreate,
@@ -52,6 +56,9 @@ from app.models.cisco_schemas import (
     PortAssignmentRead,
     PortAssignmentListResponse,
     VlanMgmtStatsResponse,
+    PortStatusPageResponse,
+    InterfacesPageResponse,
+    VlansPageResponse,
 )
 from app.services.cisco_client import (
     CiscoConnectionService,
@@ -333,7 +340,7 @@ def execute_command(
 
 
 # ═══════════════════════════════════════════════════════
-# Device Info / Interfaces / VLANs
+# Device Info / Interfaces / VLANs - SYNC TO DB
 # ═══════════════════════════════════════════════════════
 
 
@@ -373,6 +380,285 @@ def get_device_info(
     )
 
 
+@router.post(
+    "/switches/{switch_id}/sync-interfaces",
+    response_model=InterfacesResponse,
+)
+def sync_interfaces(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Fetch interfaces from switch and sync to DB.
+    """
+    sw = get_switch_or_404(db, switch_id)
+    service = CiscoConnectionService(sw)
+    try:
+        ok, proto, output, error = service.execute_command_preference(
+            "show ip interface brief", timeout=20
+        )
+    except Exception as e:
+        return InterfacesResponse(
+            success=False, error=f"{type(e).__name__}: {e}"
+        )
+    if not ok:
+        return InterfacesResponse(
+            success=False, protocol_used=proto, error=error
+        )
+    
+    raw = parse_interfaces(output)
+    now = datetime.utcnow()
+    
+    # Sync to DB
+    for iface_data in raw:
+        snapshot = (
+            db.query(CiscoInterfaceSnapshot)
+            .filter(
+                CiscoInterfaceSnapshot.switch_id == switch_id,
+                CiscoInterfaceSnapshot.name == iface_data["name"],
+            )
+            .first()
+        )
+        
+        if snapshot:
+            snapshot.status = iface_data["status"]
+            snapshot.protocol = iface_data["protocol"]
+            snapshot.ip_address = iface_data.get("ip_address")
+            snapshot.last_seen_at = now
+        else:
+            snapshot = CiscoInterfaceSnapshot(
+                switch_id=switch_id,
+                name=iface_data["name"],
+                status=iface_data["status"],
+                protocol=iface_data["protocol"],
+                ip_address=iface_data.get("ip_address"),
+                last_seen_at=now,
+                created_at=now,
+            )
+            db.add(snapshot)
+    
+    try:
+        sw.cached_interfaces = json.dumps(raw)
+        sw.cache_updated_at = now
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to sync interfaces: {e}")
+        return InterfacesResponse(
+            success=False, error=f"Failed to sync: {str(e)}"
+        )
+    
+    interfaces = [InterfaceInfo(**i) for i in raw]
+    return InterfacesResponse(
+        success=True,
+        interfaces=interfaces,
+        total=len(interfaces),
+        protocol_used=proto,
+        cached_at=sw.cache_updated_at,
+    )
+
+
+@router.get(
+    "/switches/{switch_id}/interfaces-db",
+    response_model=InterfacesPageResponse,
+)
+def get_interfaces_db(
+    switch_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return paginated interfaces from DB snapshot.
+    """
+    get_switch_or_404(db, switch_id)
+    
+    total = (
+        db.query(CiscoInterfaceSnapshot)
+        .filter(CiscoInterfaceSnapshot.switch_id == switch_id)
+        .count()
+    )
+    
+    snapshots = (
+        db.query(CiscoInterfaceSnapshot)
+        .filter(CiscoInterfaceSnapshot.switch_id == switch_id)
+        .order_by(CiscoInterfaceSnapshot.name.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    
+    interfaces = [
+        InterfaceInfo(
+            name=s.name,
+            status=s.status,
+            protocol=s.protocol,
+            ip_address=s.ip_address,
+        )
+        for s in snapshots
+    ]
+    
+    # Get cached_at from switch
+    sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
+    
+    return InterfacesPageResponse(
+        success=True,
+        switch_id=switch_id,
+        interfaces=interfaces,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=ceil(total / page_size) if total > 0 else 1,
+        cached_at=sw.cache_updated_at if sw else None,
+    )
+
+
+@router.post(
+    "/switches/{switch_id}/sync-vlans",
+    response_model=VlansResponse,
+)
+def sync_vlans(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Fetch VLANs from switch and sync to DB.
+    """
+    sw = get_switch_or_404(db, switch_id)
+    service = CiscoConnectionService(sw)
+    try:
+        ok, proto, output, error = service.execute_command_preference(
+            "show vlan brief", timeout=20
+        )
+    except Exception as e:
+        return VlansResponse(
+            success=False, error=f"{type(e).__name__}: {e}"
+        )
+    if not ok:
+        return VlansResponse(
+            success=False, protocol_used=proto, error=error
+        )
+    
+    raw = parse_vlans(output)
+    now = datetime.utcnow()
+    
+    # Sync to DB
+    for vlan_data in raw:
+        snapshot = (
+            db.query(CiscoVlanSnapshot)
+            .filter(
+                CiscoVlanSnapshot.switch_id == switch_id,
+                CiscoVlanSnapshot.vlan_id == vlan_data["id"],
+            )
+            .first()
+        )
+        
+        ports_json = json.dumps(vlan_data.get("ports", []))
+        
+        if snapshot:
+            snapshot.name = vlan_data["name"]
+            snapshot.status = vlan_data["status"]
+            snapshot.ports = ports_json
+            snapshot.last_seen_at = now
+        else:
+            snapshot = CiscoVlanSnapshot(
+                switch_id=switch_id,
+                vlan_id=vlan_data["id"],
+                name=vlan_data["name"],
+                status=vlan_data["status"],
+                ports=ports_json,
+                last_seen_at=now,
+                created_at=now,
+            )
+            db.add(snapshot)
+    
+    try:
+        sw.cached_vlans = json.dumps(raw)
+        sw.cache_updated_at = now
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to sync VLANs: {e}")
+        return VlansResponse(
+            success=False, error=f"Failed to sync: {str(e)}"
+        )
+    
+    vlans = [VlanInfo(**v) for v in raw]
+    return VlansResponse(
+        success=True,
+        vlans=vlans,
+        total=len(vlans),
+        protocol_used=proto,
+        cached_at=sw.cache_updated_at,
+    )
+
+
+@router.get(
+    "/switches/{switch_id}/vlans-db",
+    response_model=VlansPageResponse,
+)
+def get_vlans_db(
+    switch_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return paginated VLANs from DB snapshot.
+    """
+    get_switch_or_404(db, switch_id)
+    
+    total = (
+        db.query(CiscoVlanSnapshot)
+        .filter(CiscoVlanSnapshot.switch_id == switch_id)
+        .count()
+    )
+    
+    snapshots = (
+        db.query(CiscoVlanSnapshot)
+        .filter(CiscoVlanSnapshot.switch_id == switch_id)
+        .order_by(CiscoVlanSnapshot.vlan_id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    
+    vlans = []
+    for s in snapshots:
+        try:
+            ports = json.loads(s.ports) if s.ports else []
+        except:
+            ports = []
+        
+        vlans.append(
+            VlanInfo(
+                id=s.vlan_id,
+                name=s.name,
+                status=s.status,
+                ports=ports,
+            )
+        )
+    
+    # Get cached_at from switch
+    sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
+    
+    return VlansPageResponse(
+        success=True,
+        switch_id=switch_id,
+        vlans=vlans,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=ceil(total / page_size) if total > 0 else 1,
+        cached_at=sw.cache_updated_at if sw else None,
+    )
+
+
+# Keep old endpoints for backward compatibility (deprecated)
 @router.get(
     "/switches/{switch_id}/interfaces",
     response_model=InterfacesResponse,
@@ -1079,4 +1365,188 @@ def vlan_mgmt_update_port(
         pa.id,
         current_user.username,
     )
-    return 
+    return _pa_to_read(pa)
+
+
+@router.post(
+    "/switches/{switch_id}/sync-ports",
+    response_model=PortStatusResponse,
+)
+def sync_ports(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Fetch live port data from the Cisco switch and upsert it into
+    cisco_port_snapshots so that the paginated DB endpoint can serve it.
+    Returns the full (non-paginated) list for immediate use.
+    """
+    sw = get_switch_or_404(db, switch_id)
+    service = CiscoConnectionService(sw)
+ 
+    try:
+        ok, proto, raw_ports, error = service.get_all_port_status(timeout=25)
+    except Exception as e:
+        return PortStatusResponse(
+            success=False, switch_id=switch_id,
+            error=f"{type(e).__name__}: {e}",
+        )
+ 
+    if not ok:
+        return PortStatusResponse(
+            success=False, switch_id=switch_id,
+            protocol_used=proto, error=error,
+        )
+ 
+    locks = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock)
+        .filter(CiscoPortLock.switch_id == switch_id)
+        .all()
+    }
+ 
+    now = datetime.utcnow()
+    saved_ports = []
+ 
+    for p in raw_ports:
+        label = p["port_label"]
+ 
+        snapshot = (
+            db.query(CiscoPortSnapshot)
+            .filter(
+                CiscoPortSnapshot.switch_id == switch_id,
+                CiscoPortSnapshot.port_label == label,
+            )
+            .first()
+        )
+ 
+        if snapshot:
+            snapshot.port_number  = p.get("port_number", 0)
+            snapshot.description  = p.get("description", "")
+            snapshot.status       = p["status"]
+            snapshot.vlan         = p.get("vlan", "")
+            snapshot.duplex       = p.get("duplex", "")
+            snapshot.speed        = p.get("speed", "")
+            snapshot.port_type    = p.get("port_type", "")
+            snapshot.mac_address  = p.get("mac_address")
+            snapshot.last_seen_at = now
+        else:
+            snapshot = CiscoPortSnapshot(
+                switch_id=switch_id,
+                port_label=label,
+                port_number=p.get("port_number", 0),
+                description=p.get("description", ""),
+                status=p["status"],
+                vlan=p.get("vlan", ""),
+                duplex=p.get("duplex", ""),
+                speed=p.get("speed", ""),
+                port_type=p.get("port_type", ""),
+                mac_address=p.get("mac_address"),
+                last_seen_at=now,
+                created_at=now,
+            )
+            db.add(snapshot)
+ 
+        saved_ports.append(
+            CiscoPortInfo(
+                port_label=label,
+                port_number=p.get("port_number", 0),
+                description=p.get("description", ""),
+                status=p["status"],
+                vlan=p.get("vlan", ""),
+                duplex=p.get("duplex", ""),
+                speed=p.get("speed", ""),
+                port_type=p.get("port_type", ""),
+                mac_address=p.get("mac_address"),
+                locked=label in locks,
+            )
+        )
+ 
+    db.commit()
+ 
+    saved_ports.sort(
+        key=lambda x: (x.port_label.split("/")[0], x.port_number)
+    )
+ 
+    logger.info(
+        "Synced %d ports for switch %d (%s) by %s",
+        len(saved_ports), switch_id, sw.name, current_user.username,
+    )
+ 
+    return PortStatusResponse(
+        success=True,
+        switch_id=switch_id,
+        port_count=len(saved_ports),
+        ports=saved_ports,
+        protocol_used=proto,
+    )
+ 
+ 
+@router.get(
+    "/switches/{switch_id}/ports-db",
+    response_model=PortStatusPageResponse,
+)
+def get_ports_db(
+    switch_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return a paginated list of ports from the DB snapshot table.
+    Use POST /sync-ports first to populate the table.
+    """
+    get_switch_or_404(db, switch_id)
+ 
+    locks = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock)
+        .filter(CiscoPortLock.switch_id == switch_id)
+        .all()
+    }
+ 
+    total = (
+        db.query(CiscoPortSnapshot)
+        .filter(CiscoPortSnapshot.switch_id == switch_id)
+        .count()
+    )
+ 
+    snapshots = (
+        db.query(CiscoPortSnapshot)
+        .filter(CiscoPortSnapshot.switch_id == switch_id)
+        .order_by(
+            CiscoPortSnapshot.port_label.asc(),
+            CiscoPortSnapshot.port_number.asc(),
+        )
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+ 
+    ports = [
+        CiscoPortInfo(
+            port_label=s.port_label,
+            port_number=s.port_number,
+            description=s.description or "",
+            status=s.status,
+            vlan=s.vlan or "",
+            duplex=s.duplex or "",
+            speed=s.speed or "",
+            port_type=s.port_type or "",
+            mac_address=s.mac_address,
+            locked=s.port_label in locks,
+        )
+        for s in snapshots
+    ]
+ 
+    return PortStatusPageResponse(
+        success=True,
+        switch_id=switch_id,
+        port_count=total,
+        ports=ports,
+        page=page,
+        page_size=page_size,
+        total_pages=ceil(total / page_size) if total > 0 else 1,
+    )
