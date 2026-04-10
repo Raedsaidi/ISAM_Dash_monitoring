@@ -66,6 +66,14 @@ interface WanTemplate {
   updated_at: string;
 }
 
+interface WanTemplateList {
+  templates: WanTemplate[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
 interface WanModel {
   id: number;
   name: string;
@@ -693,7 +701,6 @@ function TemplateNameHint() {
           at least one existing WAN Mode token. Examples:{" "}
           <span className="font-mono">GPON</span>,{" "}
           <span className="font-mono">GPON-DHCP</span>,{" "}
-          <span className="font-mono">USERNAME_GPON-DHCP_Generic</span>.
         </div>
       </div>
     </div>
@@ -1208,6 +1215,11 @@ export default function WanTemplatesSection() {
     "ALL" | "GLOBAL" | "USER_INSTANCE"
   >("ALL");
 
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [totalTemplates, setTotalTemplates] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
   const [showWanModelsModal, setShowWanModelsModal] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingTemplate, setEditingTemplate] = useState<WanTemplate | null>(
@@ -1248,7 +1260,10 @@ export default function WanTemplatesSection() {
   const [confirmDialog, setConfirmDialog] =
     useState<ConfirmDialogState>(EMPTY_CONFIRM);
 
-  const finalName = useMemo(() => buildFinalName(name, project), [name, project]);
+  const finalName = useMemo(
+    () => buildFinalName(name, project),
+    [name, project]
+  );
 
   const matchedWanModel = useMemo(
     () => extractMatchedWanModel(name, wanModels),
@@ -1263,7 +1278,7 @@ export default function WanTemplatesSection() {
   useEffect(() => {
     if (!accessToken) return;
     loadData();
-  }, [accessToken, scopeFilter]);
+  }, [accessToken, scopeFilter, page, pageSize, search]);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -1281,39 +1296,23 @@ export default function WanTemplatesSection() {
     [detectedVariables]
   );
 
-  const filteredTemplates = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return templates;
-
-    return templates.filter((t) => {
-      const appliesTo =
-        t.scope === "GLOBAL"
-          ? "global"
-          : `${t.isam_instance_id ?? ""} ${instName(
-              instances,
-              t.isam_instance_id
-            )}`;
-
-      return (
-        t.name.toLowerCase().includes(q) ||
-        (t.created_by || "").toLowerCase().includes(q) ||
-        (t.project || "").toLowerCase().includes(q) ||
-        appliesTo.toLowerCase().includes(q)
-      );
-    });
-  }, [templates, search, instances]);
-
   const hasBlockingTemplateTestError = useMemo(
     () => testState.executionHasTemplateErrors,
     [testState.executionHasTemplateErrors]
   );
 
-  const canSave = Boolean(
-    name.trim() &&
-      commandsTemplate.trim() &&
-      isValidTemplateName(name, wanModels) &&
-      !hasBlockingTemplateTestError
+  const lastTestFailed = useMemo(
+    () => Boolean(testState.error),
+    [testState.error]
   );
+
+  const canSave = Boolean(
+  name.trim() &&
+    commandsTemplate.trim() &&
+    isValidTemplateName(name, wanModels) &&
+    !hasBlockingTemplateTestError &&
+    !lastTestFailed
+);
 
   const trimmedName = name.trim();
   const templateNameExistsInModels = isValidTemplateName(trimmedName, wanModels);
@@ -1363,21 +1362,34 @@ export default function WanTemplatesSection() {
     setLoading(true);
     setGlobalError(null);
     try {
-      const scopeParam = scopeFilter !== "ALL" ? `&scope=${scopeFilter}` : "";
+      const params = new URLSearchParams();
+      params.set("_", Date.now().toString());
+      params.set("page", String(page));
+      params.set("page_size", String(pageSize));
+      if (scopeFilter !== "ALL") {
+        params.set("scope", scopeFilter);
+      }
+      if (search.trim()) {
+        params.set("search", search.trim());
+      }
 
       const [instRes, tplRes] = await Promise.all([
         authFetch<{ instances: IsamInstance[] }>(
           `${ISAM_BASE_URL}/api/v1/isam/instances`,
           accessToken
         ),
-        authFetch<{ templates: WanTemplate[] }>(
-          `${ISAM_BASE_URL}/api/v1/isam/wan-templates?_=${Date.now()}${scopeParam}`,
+        authFetch<WanTemplateList>(
+          `${ISAM_BASE_URL}/api/v1/isam/wan-templates?${params.toString()}`,
           accessToken
         ),
       ]);
 
       setInstances(instRes.instances || []);
       setTemplates(tplRes.templates || []);
+      setTotalTemplates(tplRes.total ?? 0);
+      setPage(tplRes.page ?? page);
+      setPageSize(tplRes.page_size ?? pageSize);
+      setTotalPages(tplRes.total_pages ?? 1);
     } catch (err: any) {
       setGlobalError(getSimpleErrorMessage(err, "Unable to load templates."));
     } finally {
@@ -1385,23 +1397,28 @@ export default function WanTemplatesSection() {
     }
   }
 
-  function validateTemplateForm(): string | null {
-    const trimmedNameLocal = name.trim();
-    const trimmedCommands = commandsTemplate.trim();
+  
+function validateTemplateForm(): string | null {
+  const trimmedNameLocal = name.trim();
+  const trimmedCommands = commandsTemplate.trim();
 
-    if (!trimmedNameLocal) return "Template name is required.";
-    if (!isValidTemplateName(trimmedNameLocal, wanModels)) {
-      return "Template name must contain an existing WAN mode.";
-    }
-    if (!trimmedCommands) return "Template content is required.";
-    if (trimmedNameLocal.length > 100) return "Template name is too long.";
-    if (project.trim().length > 100) return "Project name is too long.";
-    if (hasBlockingTemplateTestError) {
-      return "Saving is disabled because the last test detected invalid template commands.";
-    }
-
-    return null;
+  if (!trimmedNameLocal) return "Template name is required.";
+  if (!isValidTemplateName(trimmedNameLocal, wanModels)) {
+    return "Template name must contain an existing WAN mode.";
   }
+  if (!trimmedCommands) return "Template content is required.";
+  if (trimmedNameLocal.length > 100) return "Template name is too long.";
+  if (project.trim().length > 100) return "Project name is too long.";
+  if (hasBlockingTemplateTestError) {
+    return "Saving is disabled because the last test detected invalid template commands.";
+  }
+  if (testState.error) {
+    return "Saving is disabled because the last test failed. Fix the error or modify the template before saving.";
+  }
+
+  return null;
+}
+
 
   function resetStatesOnly() {
     setPreviewState({
@@ -1576,10 +1593,19 @@ export default function WanTemplatesSection() {
       const outputAnalysis = analyzeRawOutput(res.raw_output || "");
       const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
 
+      let userFriendlyError: string | null = null;
+      if (!res.success) {
+        const backendMessageSource = res.message || res.raw_output || "";
+        userFriendlyError = getSimpleErrorMessage(
+          { message: backendMessageSource },
+          "Template test failed."
+        );
+      }
+
       setTestState({
         loading: false,
         success: res.success && !hasTemplateErrors,
-        error: res.success ? null : res.message || "Test failed.",
+        error: res.success ? null : userFriendlyError,
         warningMessage:
           res.success && hasTemplateErrors
             ? "Template tested, but invalid or unsupported commands were detected in device output."
@@ -1587,20 +1613,27 @@ export default function WanTemplatesSection() {
         protocol_used: res.protocol_used,
         raw_output: res.raw_output,
         rendered_commands: res.rendered_commands,
-        message: res.success && !hasTemplateErrors ? res.message : null,
+        message:
+          res.success && !hasTemplateErrors
+            ? res.message || "Template test executed successfully."
+            : null,
         executionHasTemplateErrors: hasTemplateErrors,
         errorBlocks: outputAnalysis.errorBlocks,
       });
 
       if (res.success && !hasTemplateErrors) {
-        toast.success(res.message || "Test successful.", { id: tid });
+        const successMsg =
+          res.message && res.message.trim().length > 0
+            ? res.message
+            : "Template test executed successfully.";
+        toast.success(successMsg, { id: tid });
       } else if (res.success && hasTemplateErrors) {
         toast.warning(
           "Template contains invalid or unsupported commands. Saving is disabled until the template is fixed.",
           { id: tid }
         );
       } else {
-        toast.error(res.message || "Test failed.", { id: tid });
+        toast.error(userFriendlyError || "Template test failed.", { id: tid });
       }
     } catch (err: any) {
       const simpleMsg = getSimpleErrorMessage(err, "Unable to test template.");
@@ -1797,12 +1830,21 @@ export default function WanTemplatesSection() {
                 type="text"
                 placeholder="Search by name, creator, project..."
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
                 className="pl-9"
               />
             </div>
 
-            <ScopeSwitch value={scopeFilter} onChange={setScopeFilter} />
+            <ScopeSwitch
+              value={scopeFilter}
+              onChange={(v) => {
+                setScopeFilter(v);
+                setPage(1);
+              }}
+            />
           </div>
         </div>
 
@@ -1813,7 +1855,7 @@ export default function WanTemplatesSection() {
             <SectionTitle
               icon={FileText}
               title="Templates"
-              description={`${filteredTemplates.length} template(s)`}
+              description={`Page ${page} of ${totalPages} · ${totalTemplates} template(s)`}
             />
           </div>
 
@@ -1822,122 +1864,170 @@ export default function WanTemplatesSection() {
               <Loader2 size={16} className="animate-spin" /> Loading templates...
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    {[
-                      "Template",
-                      "Project",
-                      "Scope",
-                      "Applies To",
-                      "Creator",
-                      "Updated",
-                    ].map((h) => (
-                      <th
-                        key={h}
-                        className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500"
-                      >
-                        {h}
+            <>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      {[
+                        "Template",
+                        "Project",
+                        "Scope",
+                        "Applies To",
+                        "Creator",
+                        "Updated",
+                      ].map((h) => (
+                        <th
+                          key={h}
+                          className="px-5 py-3 text-left text-[11px] font-bold uppercase tracking-wider text-slate-500"
+                        >
+                          {h}
+                        </th>
+                      ))}
+                      <th className="px-5 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                        Actions
                       </th>
-                    ))}
-                    <th className="px-5 py-3 text-right text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
+                    </tr>
+                  </thead>
 
-                <tbody className="divide-y divide-slate-100">
-                  {filteredTemplates.map((t) => {
-                    const lines = t.commands_template
-                      .split("\n")
-                      .filter(Boolean).length;
+                  <tbody className="divide-y divide-slate-100">
+                    {templates.map((t) => {
+                      const lines = t.commands_template
+                        .split("\n")
+                        .filter(Boolean).length;
 
-                    return (
-                      <tr key={t.id} className="hover:bg-slate-50/70">
-                        <td className="px-5 py-4 align-top">
-                          <div className="space-y-1">
-                            <div className="font-semibold text-slate-900">
-                              {t.name}
+                      return (
+                        <tr key={t.id} className="hover:bg-slate-50/70">
+                          <td className="px-5 py-4 align-top">
+                            <div className="space-y-1">
+                              <div className="font-semibold text-slate-900">
+                                {t.name}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {lines} line(s)
+                              </div>
                             </div>
-                            <div className="text-[11px] text-slate-500">
-                              {lines} line(s)
+                          </td>
+
+                          <td className="px-5 py-4 align-top">
+                            {t.project ? (
+                              <Badge variant="orange">
+                                <FolderOpen size={11} />
+                                {t.project}
+                              </Badge>
+                            ) : (
+                              <span className="text-xs text-slate-400">—</span>
+                            )}
+                          </td>
+
+                          <td className="px-5 py-4 align-top">
+                            <ScopeBadge scope={t.scope} />
+                          </td>
+
+                          <td className="px-5 py-4 align-top text-slate-700">
+                            {t.scope === "GLOBAL"
+                              ? "All ISAM"
+                              : instName(instances, t.isam_instance_id)}
+                          </td>
+
+                          <td className="px-5 py-4 align-top text-slate-700">
+                            {t.created_by || "—"}
+                          </td>
+
+                          <td className="px-5 py-4 align-top text-xs text-slate-500">
+                            {new Date(t.updated_at).toLocaleString()}
+                          </td>
+
+                          <td className="px-5 py-4 align-top text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <Btn
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openEditModal(t)}
+                              >
+                                <Edit size={14} /> Edit
+                              </Btn>
+
+                              <Btn
+                                size="sm"
+                                variant="danger"
+                                onClick={() =>
+                                  setConfirmDialog({
+                                    open: true,
+                                    action: "delete-template",
+                                    template: t,
+                                    loading: false,
+                                  })
+                                }
+                              >
+                                <Trash2 size={14} /> Delete
+                              </Btn>
                             </div>
-                          </div>
-                        </td>
+                          </td>
+                        </tr>
+                      );
+                    })}
 
-                        <td className="px-5 py-4 align-top">
-                          {t.project ? (
-                            <Badge variant="orange">
-                              <FolderOpen size={11} />
-                              {t.project}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-slate-400">—</span>
-                          )}
-                        </td>
-
-                        <td className="px-5 py-4 align-top">
-                          <ScopeBadge scope={t.scope} />
-                        </td>
-
-                        <td className="px-5 py-4 align-top text-slate-700">
-                          {t.scope === "GLOBAL"
-                            ? "All ISAM"
-                            : instName(instances, t.isam_instance_id)}
-                        </td>
-
-                        <td className="px-5 py-4 align-top text-slate-700">
-                          {t.created_by || "—"}
-                        </td>
-
-                        <td className="px-5 py-4 align-top text-xs text-slate-500">
-                          {new Date(t.updated_at).toLocaleString()}
-                        </td>
-
-                        <td className="px-5 py-4 align-top text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <Btn
-                              size="sm"
-                              variant="outline"
-                              onClick={() => openEditModal(t)}
-                            >
-                              <Edit size={14} /> Edit
-                            </Btn>
-
-                            <Btn
-                              size="sm"
-                              variant="danger"
-                              onClick={() =>
-                                setConfirmDialog({
-                                  open: true,
-                                  action: "delete-template",
-                                  template: t,
-                                  loading: false,
-                                })
-                              }
-                            >
-                              <Trash2 size={14} /> Delete
-                            </Btn>
-                          </div>
+                    {templates.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={7}
+                          className="px-5 py-12 text-center text-sm text-slate-500"
+                        >
+                          No templates found.
                         </td>
                       </tr>
-                    );
-                  })}
+                    )}
+                  </tbody>
+                </table>
+              </div>
 
-                  {filteredTemplates.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={7}
-                        className="px-5 py-12 text-center text-sm text-slate-500"
-                      >
-                        No templates found.
-                      </td>
-                    </tr>
+              <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3 text-xs text-slate-600">
+                <div>
+                  {totalTemplates > 0 ? (
+                    <>
+                      Showing{" "}
+                      <span className="font-semibold">
+                        {Math.min((page - 1) * pageSize + 1, totalTemplates)}
+                      </span>
+                      {"–"}
+                      <span className="font-semibold">
+                        {Math.min(page * pageSize, totalTemplates)}
+                      </span>{" "}
+                      of{" "}
+                      <span className="font-semibold">{totalTemplates}</span>{" "}
+                      templates
+                    </>
+                  ) : (
+                    "No templates to display"
                   )}
-                </tbody>
-              </table>
-            </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Btn
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                  >
+                    Previous
+                  </Btn>
+                  <span className="text-xs text-slate-500">
+                    Page {page} of {totalPages}
+                  </span>
+                  <Btn
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setPage((p) => Math.min(totalPages, p + 1))
+                    }
+                    disabled={page >= totalPages}
+                  >
+                    Next
+                  </Btn>
+                </div>
+              </div>
+            </>
           )}
         </div>
 
@@ -1968,7 +2058,9 @@ export default function WanTemplatesSection() {
               </div>
 
               <form onSubmit={handleSaveTemplate} className="p-6 space-y-6">
-                {formError && <AlertBanner variant="error">{formError}</AlertBanner>}
+                {formError && (
+                  <AlertBanner variant="error">{formError}</AlertBanner>
+                )}
 
                 <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
                   <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
@@ -2353,10 +2445,11 @@ configure equipment ont interface [[$port]] admin-state up`}
                         </div>
                       )}
 
-                      {hasBlockingTemplateTestError && (
+                      {(hasBlockingTemplateTestError || testState.error) && (
                         <div className="text-[11px] text-amber-600">
-                          Saving is disabled because the last test detected
-                          invalid template commands.
+                          {hasBlockingTemplateTestError
+                            ? "Saving is disabled because the last test detected invalid template commands."
+                            : "Saving is disabled because the last test failed. Fix the error or modify the template before saving."}
                         </div>
                       )}
 
