@@ -1,6 +1,6 @@
 // src/components/cisco/CiscoVlanManagementSection.tsx
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   RefreshCw,
   AlertCircle,
@@ -13,16 +13,17 @@ import {
   Layers,
   Monitor,
   Network,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Plus,
+  X,
+  CheckCircle2,
 } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { useAuth } from "../../context/AuthContext";
 import { fetchSwitches } from "../../services/ciscoVlanApi";
-import {
-  getCiscoInterfaces,
-  getCiscoVlans,
-  type InterfaceInfo,
-  type VlanInfo,
-} from "../../services/ciscoApi";
+import { toast } from "sonner";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -31,6 +32,268 @@ import {
 interface SwitchOption {
   id: number;
   name: string;
+}
+
+interface InterfaceInfo {
+  name: string;
+  status: string;
+  protocol: string;
+  ip_address: string | null;
+}
+
+interface VlanInfo {
+  id: number;
+  name: string;
+  status: string;
+  ports: string[];
+}
+
+interface InterfacesPageResponse {
+  success: boolean;
+  switch_id: number;
+  interfaces: InterfaceInfo[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  cached_at: string | null;
+  protocol_used: string | null;
+  error?: string;
+}
+
+interface VlansPageResponse {
+  success: boolean;
+  switch_id: number;
+  vlans: VlanInfo[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  cached_at: string | null;
+  protocol_used: string | null;
+  error?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/*  API Helpers                                                        */
+/* ------------------------------------------------------------------ */
+
+const CISCO_BASE =
+  (import.meta as any).env?.VITE_CISCO_BASE_URL ?? "http://localhost:8002";
+const PREFIX = `${CISCO_BASE}/api/v1/cisco`;
+
+function authHeaders(token: string | null): Record<string, string> {
+  const h: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) h["Authorization"] = `Bearer ${token}`;
+  return h;
+}
+
+async function apiFetch<T>(url: string, token: string | null): Promise<T> {
+  const res = await fetch(url, { headers: authHeaders(token) });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.detail || body?.message || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+async function apiPost<T>(
+  url: string,
+  token: string | null,
+  body: unknown,
+): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    throw new Error(b?.detail || b?.message || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Pagination Component                                               */
+/* ------------------------------------------------------------------ */
+
+function Pagination({
+  page,
+  totalPages,
+  onChange,
+}: {
+  page: number;
+  totalPages: number;
+  onChange: (p: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+
+  return (
+    <div className="flex items-center justify-center gap-2 mt-4">
+      <button
+        onClick={() => onChange(page - 1)}
+        disabled={page <= 1}
+        className="p-1.5 rounded-lg border border-slate-300 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        <ChevronLeft size={16} className="text-slate-600" />
+      </button>
+      <span className="text-xs text-slate-500 font-medium">
+        Page {page} of {totalPages}
+      </span>
+      <button
+        onClick={() => onChange(page + 1)}
+        disabled={page >= totalPages}
+        className="p-1.5 rounded-lg border border-slate-300 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+      >
+        <ChevronRight size={16} className="text-slate-600" />
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Add VLAN Modal                                                     */
+/* ------------------------------------------------------------------ */
+
+function AddVlanModal({
+  open,
+  onClose,
+  onAdd,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAdd: (data: { vlan_id: number; name: string }) => Promise<void>;
+}) {
+  const [vlanId, setVlanId] = useState("");
+  const [vlanName, setVlanName] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setVlanId("");
+      setVlanName("");
+      setError("");
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const id = parseInt(vlanId, 10);
+    if (isNaN(id) || id < 2 || id > 4094) {
+      setError("VLAN ID must be between 2 and 4094.");
+      return;
+    }
+    if (!vlanName.trim()) {
+      setError("VLAN name is required.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onAdd({ vlan_id: id, name: vlanName.trim() });
+    } catch (err: any) {
+      setError(err.message || "Failed to create VLAN.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center">
+      <div
+        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+        {/* Modal Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-8 rounded-lg bg-emerald-100 flex items-center justify-center">
+              <Plus size={16} className="text-emerald-600" />
+            </div>
+            <h3 className="text-lg font-semibold text-slate-900">
+              Add New VLAN
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-slate-200 transition-colors"
+          >
+            <X size={18} className="text-slate-500" />
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {error && (
+            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              <AlertCircle size={16} className="shrink-0" />
+              {error}
+            </div>
+          )}
+
+          {/* VLAN ID — text input so user can type freely */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              VLAN ID <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={vlanId}
+              onChange={(e) => {
+                setVlanId(e.target.value);
+                setError("");
+              }}
+              placeholder="2 – 4094"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+            <p className="text-xs text-slate-400 mt-1">
+              Enter a value between 2 and 4094.
+            </p>
+          </div>
+
+          {/* VLAN Name */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              VLAN Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              maxLength={32}
+              value={vlanName}
+              onChange={(e) => {
+                setVlanName(e.target.value);
+                setError("");
+              }}
+              placeholder="e.g. Engineering"
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting}
+              className="px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors disabled:opacity-50"
+            >
+              {submitting ? "Creating…" : "Create VLAN"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -44,33 +307,23 @@ export default function CiscoVlanManagementSection() {
   const [selectedSwitchId, setSelectedSwitchId] = useState<number | null>(null);
   const [loadingSwitches, setLoadingSwitches] = useState(false);
 
-  const [interfaces, setInterfaces] = useState<{
-    loading: boolean;
-    error: string | null;
-    data: InterfaceInfo[];
-    protocol_used: string | null;
-    cached_at: string | null;
-  }>({
-    loading: false,
-    error: null,
-    data: [],
-    protocol_used: null,
-    cached_at: null,
-  });
+  // Interfaces state
+  const [interfacesData, setInterfacesData] =
+    useState<InterfacesPageResponse | null>(null);
+  const [interfacesPage, setInterfacesPage] = useState(1);
+  const [interfacesSearch, setInterfacesSearch] = useState("");
+  const [loadingInterfaces, setLoadingInterfaces] = useState(false);
+  const [interfacesError, setInterfacesError] = useState<string | null>(null);
 
-  const [vlans, setVlans] = useState<{
-    loading: boolean;
-    error: string | null;
-    data: VlanInfo[];
-    protocol_used: string | null;
-    cached_at: string | null;
-  }>({
-    loading: false,
-    error: null,
-    data: [],
-    protocol_used: null,
-    cached_at: null,
-  });
+  // VLANs state
+  const [vlansData, setVlansData] = useState<VlansPageResponse | null>(null);
+  const [vlansPage, setVlansPage] = useState(1);
+  const [vlansSearch, setVlansSearch] = useState("");
+  const [loadingVlans, setLoadingVlans] = useState(false);
+  const [vlansError, setVlansError] = useState<string | null>(null);
+
+  // Add VLAN modal
+  const [addVlanOpen, setAddVlanOpen] = useState(false);
 
   // Load switches on mount
   useEffect(() => {
@@ -78,14 +331,30 @@ export default function CiscoVlanManagementSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load interfaces and VLANs when switch changes
+  // Sync and load when switch changes
   useEffect(() => {
     if (selectedSwitchId) {
-      loadInterfaces();
-      loadVlans();
+      syncAndLoadInterfaces(selectedSwitchId);
+      syncAndLoadVlans(selectedSwitchId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSwitchId]);
+
+  // Reload interfaces when page/search changes
+  useEffect(() => {
+    if (selectedSwitchId) {
+      loadInterfaces(selectedSwitchId, interfacesPage, interfacesSearch);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [interfacesPage, interfacesSearch]);
+
+  // Reload VLANs when page/search changes
+  useEffect(() => {
+    if (selectedSwitchId) {
+      loadVlans(selectedSwitchId, vlansPage, vlansSearch);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vlansPage, vlansSearch]);
 
   async function loadSwitches() {
     setLoadingSwitches(true);
@@ -106,52 +375,112 @@ export default function CiscoVlanManagementSection() {
     }
   }
 
-  async function loadInterfaces() {
-    if (!selectedSwitchId) return;
-    setInterfaces((s) => ({ ...s, loading: true, error: null }));
+  // Sync interfaces from switch to DB
+  async function syncAndLoadInterfaces(switchId: number) {
     try {
-      const res = await getCiscoInterfaces(selectedSwitchId, accessToken);
-      setInterfaces({
-        loading: false,
-        error: res.success ? null : res.error || "Failed to load interfaces.",
-        data: res.interfaces || [],
-        protocol_used: res.protocol_used,
-        cached_at: res.cached_at,
-      });
+      await apiFetch(
+        `${PREFIX}/switches/${switchId}/sync-interfaces`,
+        accessToken,
+      );
     } catch (err: any) {
-      setInterfaces((s) => ({
-        ...s,
-        loading: false,
-        error: err.message || "Failed to load interfaces.",
-      }));
+      console.warn("Failed to sync interfaces:", err);
     }
+    loadInterfaces(switchId, interfacesPage, interfacesSearch);
   }
 
-  async function loadVlans() {
-    if (!selectedSwitchId) return;
-    setVlans((s) => ({ ...s, loading: true, error: null }));
+  // Sync VLANs from switch to DB
+  async function syncAndLoadVlans(switchId: number) {
     try {
-      const res = await getCiscoVlans(selectedSwitchId, accessToken);
-      setVlans({
-        loading: false,
-        error: res.success ? null : res.error || "Failed to load VLANs.",
-        data: res.vlans || [],
-        protocol_used: res.protocol_used,
-        cached_at: res.cached_at,
-      });
+      await apiFetch(`${PREFIX}/switches/${switchId}/sync-vlans`, accessToken);
     } catch (err: any) {
-      setVlans((s) => ({
-        ...s,
-        loading: false,
-        error: err.message || "Failed to load VLANs.",
-      }));
+      console.warn("Failed to sync VLANs:", err);
     }
+    loadVlans(switchId, vlansPage, vlansSearch);
   }
+
+  // Load interfaces from DB with pagination
+  const loadInterfaces = useCallback(
+    async (switchId: number, page: number, search: string) => {
+      setLoadingInterfaces(true);
+      setInterfacesError(null);
+      try {
+        const data = await apiFetch<InterfacesPageResponse>(
+          `${PREFIX}/switches/${switchId}/interfaces-db?page=${page}&page_size=20`,
+          accessToken,
+        );
+
+        // Client-side search filter
+        if (search.trim()) {
+          const filtered = data.interfaces.filter(
+            (iface) =>
+              iface.name.toLowerCase().includes(search.toLowerCase()) ||
+              (iface.ip_address &&
+                iface.ip_address.toLowerCase().includes(search.toLowerCase())),
+          );
+          setInterfacesData({ ...data, interfaces: filtered });
+        } else {
+          setInterfacesData(data);
+        }
+      } catch (err: any) {
+        setInterfacesError(err.message || "Failed to load interfaces.");
+      } finally {
+        setLoadingInterfaces(false);
+      }
+    },
+    [accessToken],
+  );
+
+  // Load VLANs from DB with pagination
+  const loadVlans = useCallback(
+    async (switchId: number, page: number, search: string) => {
+      setLoadingVlans(true);
+      setVlansError(null);
+      try {
+        const data = await apiFetch<VlansPageResponse>(
+          `${PREFIX}/switches/${switchId}/vlans-db?page=${page}&page_size=20`,
+          accessToken,
+        );
+
+        // Client-side search filter
+        if (search.trim()) {
+          const filtered = data.vlans.filter(
+            (vlan) =>
+              vlan.name.toLowerCase().includes(search.toLowerCase()) ||
+              String(vlan.id).includes(search),
+          );
+          setVlansData({ ...data, vlans: filtered });
+        } else {
+          setVlansData(data);
+        }
+      } catch (err: any) {
+        setVlansError(err.message || "Failed to load VLANs.");
+      } finally {
+        setLoadingVlans(false);
+      }
+    },
+    [accessToken],
+  );
 
   const handleRefresh = () => {
-    loadInterfaces();
-    loadVlans();
+    if (selectedSwitchId) {
+      syncAndLoadInterfaces(selectedSwitchId);
+      syncAndLoadVlans(selectedSwitchId);
+    }
   };
+
+  // Create VLAN via API then re-sync the VLANs panel
+  const handleAddVlan = useCallback(
+    async (data: { vlan_id: number; name: string }) => {
+      await apiPost(`${PREFIX}/vlans`, accessToken, data);
+      toast.success(`VLAN ${data.vlan_id} (${data.name}) created`);
+      setAddVlanOpen(false);
+      if (selectedSwitchId) {
+        syncAndLoadVlans(selectedSwitchId);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [accessToken, selectedSwitchId],
+  );
 
   if (loadingSwitches) {
     return (
@@ -202,7 +531,13 @@ export default function CiscoVlanManagementSection() {
               </label>
               <select
                 value={selectedSwitchId || ""}
-                onChange={(e) => setSelectedSwitchId(Number(e.target.value))}
+                onChange={(e) => {
+                  setSelectedSwitchId(Number(e.target.value));
+                  setInterfacesPage(1);
+                  setVlansPage(1);
+                  setInterfacesSearch("");
+                  setVlansSearch("");
+                }}
                 className="px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px]"
               >
                 {switches.map((s) => (
@@ -213,15 +548,24 @@ export default function CiscoVlanManagementSection() {
               </select>
             </div>
 
+            {/* Add VLAN button */}
+            <button
+              onClick={() => setAddVlanOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 transition-colors"
+            >
+              <Plus size={16} />
+              Add VLAN
+            </button>
+
             <button
               onClick={handleRefresh}
-              disabled={interfaces.loading || vlans.loading}
+              disabled={loadingInterfaces || loadingVlans}
               className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw
                 size={16}
                 className={cn(
-                  (interfaces.loading || vlans.loading) && "animate-spin",
+                  (loadingInterfaces || loadingVlans) && "animate-spin",
                 )}
               />
               Refresh
@@ -248,8 +592,8 @@ export default function CiscoVlanManagementSection() {
                   <div className="flex items-center gap-2 mt-1 text-xs text-slate-600">
                     <Clock size={12} />
                     <span>
-                      {interfaces.cached_at
-                        ? new Date(interfaces.cached_at).toLocaleString(
+                      {interfacesData?.cached_at
+                        ? new Date(interfacesData.cached_at).toLocaleString(
                             "en-US",
                             {
                               month: "short",
@@ -260,9 +604,9 @@ export default function CiscoVlanManagementSection() {
                           )
                         : "Not fetched"}
                     </span>
-                    {interfaces.protocol_used && (
+                    {interfacesData?.protocol_used && (
                       <span className="px-2 py-0.5 bg-blue-200 text-blue-800 rounded-full text-[10px] font-semibold uppercase">
-                        {interfaces.protocol_used}
+                        {interfacesData.protocol_used}
                       </span>
                     )}
                   </div>
@@ -270,7 +614,7 @@ export default function CiscoVlanManagementSection() {
               </div>
               <div className="text-right">
                 <div className="text-3xl font-bold text-blue-600">
-                  {interfaces.data.length}
+                  {interfacesData?.total ?? 0}
                 </div>
                 <div className="text-xs text-slate-500 uppercase tracking-wider font-medium">
                   Total
@@ -279,26 +623,46 @@ export default function CiscoVlanManagementSection() {
             </div>
           </div>
 
+          {/* Search */}
+          <div className="p-4 border-b border-slate-200 bg-white">
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type="text"
+                placeholder="Search interfaces by name or IP..."
+                value={interfacesSearch}
+                onChange={(e) => {
+                  setInterfacesSearch(e.target.value);
+                  setInterfacesPage(1);
+                }}
+                className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
           {/* Content */}
           <div className="p-5 flex-1 overflow-y-auto max-h-[500px] bg-slate-50">
-            {interfaces.loading ? (
+            {loadingInterfaces ? (
               <div className="flex flex-col items-center justify-center py-12 text-slate-400">
                 <Loader2 size={32} className="animate-spin mb-3" />
                 <span className="text-sm font-medium">
                   Fetching interfaces...
                 </span>
               </div>
-            ) : interfaces.error ? (
+            ) : interfacesError ? (
               <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
                 <AlertCircle size={18} className="mt-0.5 shrink-0" />
                 <div>
                   <p className="font-semibold mb-1">Error Loading Interfaces</p>
-                  <p>{interfaces.error}</p>
+                  <p>{interfacesError}</p>
                 </div>
               </div>
-            ) : interfaces.data.length > 0 ? (
+            ) : interfacesData && interfacesData.interfaces.length > 0 ? (
               <div className="space-y-2">
-                {interfaces.data.map((iface, idx) => {
+                {interfacesData.interfaces.map((iface, idx) => {
                   const isUp =
                     iface.status.toLowerCase().includes("up") &&
                     iface.protocol.toLowerCase().includes("up");
@@ -359,20 +723,30 @@ export default function CiscoVlanManagementSection() {
                   No interface data available
                 </p>
                 <p className="text-xs text-slate-400 mt-1">
-                  Test the connection in Switch Management
+                  {interfacesSearch
+                    ? "No results match your search"
+                    : "Sync data from switch"}
                 </p>
               </div>
+            )}
+
+            {interfacesData && (
+              <Pagination
+                page={interfacesPage}
+                totalPages={interfacesData.total_pages}
+                onChange={setInterfacesPage}
+              />
             )}
           </div>
 
           {/* Footer */}
-          {interfaces.data.length > 0 && (
+          {interfacesData && interfacesData.interfaces.length > 0 && (
             <div className="bg-slate-100 border-t border-slate-200 px-5 py-3">
               <div className="flex items-center justify-between text-xs text-slate-600">
                 <span>
                   <span className="font-semibold">
                     {
-                      interfaces.data.filter((i) =>
+                      interfacesData.interfaces.filter((i) =>
                         i.status.toLowerCase().includes("up"),
                       ).length
                     }
@@ -380,7 +754,7 @@ export default function CiscoVlanManagementSection() {
                   up ·{" "}
                   <span className="font-semibold">
                     {
-                      interfaces.data.filter(
+                      interfacesData.interfaces.filter(
                         (i) => !i.status.toLowerCase().includes("up"),
                       ).length
                     }
@@ -388,7 +762,8 @@ export default function CiscoVlanManagementSection() {
                   down
                 </span>
                 <span className="text-slate-500">
-                  Total: {interfaces.data.length} interfaces
+                  Page {interfacesData.page} of {interfacesData.total_pages} ·
+                  Total: {interfacesData.total}
                 </span>
               </div>
             </div>
@@ -409,18 +784,21 @@ export default function CiscoVlanManagementSection() {
                   <div className="flex items-center gap-2 mt-1 text-xs text-slate-600">
                     <Clock size={12} />
                     <span>
-                      {vlans.cached_at
-                        ? new Date(vlans.cached_at).toLocaleString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          })
+                      {vlansData?.cached_at
+                        ? new Date(vlansData.cached_at).toLocaleString(
+                            "en-US",
+                            {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            },
+                          )
                         : "Not fetched"}
                     </span>
-                    {vlans.protocol_used && (
+                    {vlansData?.protocol_used && (
                       <span className="px-2 py-0.5 bg-purple-200 text-purple-800 rounded-full text-[10px] font-semibold uppercase">
-                        {vlans.protocol_used}
+                        {vlansData.protocol_used}
                       </span>
                     )}
                   </div>
@@ -428,7 +806,7 @@ export default function CiscoVlanManagementSection() {
               </div>
               <div className="text-right">
                 <div className="text-3xl font-bold text-purple-600">
-                  {vlans.data.length}
+                  {vlansData?.total ?? 0}
                 </div>
                 <div className="text-xs text-slate-500 uppercase tracking-wider font-medium">
                   VLANs
@@ -437,24 +815,44 @@ export default function CiscoVlanManagementSection() {
             </div>
           </div>
 
+          {/* Search */}
+          <div className="p-4 border-b border-slate-200 bg-white">
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+              />
+              <input
+                type="text"
+                placeholder="Search VLANs by ID or name..."
+                value={vlansSearch}
+                onChange={(e) => {
+                  setVlansSearch(e.target.value);
+                  setVlansPage(1);
+                }}
+                className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+            </div>
+          </div>
+
           {/* Content */}
           <div className="p-5 flex-1 overflow-y-auto max-h-[500px] bg-slate-50">
-            {vlans.loading ? (
+            {loadingVlans ? (
               <div className="flex flex-col items-center justify-center py-12 text-slate-400">
                 <Loader2 size={32} className="animate-spin mb-3" />
                 <span className="text-sm font-medium">Fetching VLANs...</span>
               </div>
-            ) : vlans.error ? (
+            ) : vlansError ? (
               <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
                 <AlertCircle size={18} className="mt-0.5 shrink-0" />
                 <div>
                   <p className="font-semibold mb-1">Error Loading VLANs</p>
-                  <p>{vlans.error}</p>
+                  <p>{vlansError}</p>
                 </div>
               </div>
-            ) : vlans.data.length > 0 ? (
+            ) : vlansData && vlansData.vlans.length > 0 ? (
               <div className="space-y-3">
-                {vlans.data.map((vlan) => (
+                {vlansData.vlans.map((vlan) => (
                   <div
                     key={vlan.id}
                     className="p-4 bg-white rounded-lg border border-slate-200 hover:border-purple-300 hover:shadow-sm transition-all"
@@ -512,34 +910,58 @@ export default function CiscoVlanManagementSection() {
                   No VLAN data available
                 </p>
                 <p className="text-xs text-slate-400 mt-1">
-                  Test the connection in Switch Management
+                  {vlansSearch
+                    ? "No results match your search"
+                    : "Sync data from switch"}
                 </p>
               </div>
+            )}
+
+            {vlansData && (
+              <Pagination
+                page={vlansPage}
+                totalPages={vlansData.total_pages}
+                onChange={setVlansPage}
+              />
             )}
           </div>
 
           {/* Footer */}
-          {vlans.data.length > 0 && (
+          {vlansData && vlansData.vlans.length > 0 && (
             <div className="bg-slate-100 border-t border-slate-200 px-5 py-3">
               <div className="flex items-center justify-between text-xs text-slate-600">
                 <span>
                   <span className="font-semibold">
-                    {vlans.data.filter((v) => v.status === "active").length}
+                    {
+                      vlansData.vlans.filter((v) => v.status === "active")
+                        .length
+                    }
                   </span>{" "}
                   active ·{" "}
                   <span className="font-semibold">
-                    {vlans.data.filter((v) => v.status !== "active").length}
+                    {
+                      vlansData.vlans.filter((v) => v.status !== "active")
+                        .length
+                    }
                   </span>{" "}
                   inactive
                 </span>
                 <span className="text-slate-500">
-                  Total: {vlans.data.length} VLANs
+                  Page {vlansData.page} of {vlansData.total_pages} · Total:{" "}
+                  {vlansData.total}
                 </span>
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* Add VLAN Modal */}
+      <AddVlanModal
+        open={addVlanOpen}
+        onClose={() => setAddVlanOpen(false)}
+        onAdd={handleAddVlan}
+      />
     </div>
   );
 }
