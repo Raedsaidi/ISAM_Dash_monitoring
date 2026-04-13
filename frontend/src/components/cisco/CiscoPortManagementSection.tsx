@@ -936,6 +936,12 @@ function PortTable({
 
 // ─── Pagination ───────────────────────────────────────────────────────────────
 
+// src/components/cisco/CiscoPortManagementSection.tsx
+// Only these two pieces change — everything else stays identical
+
+// ─── Pagination ───────────────────────────────────────────────────────────────
+// Always renders regardless of totalPages / port count
+
 function Pagination({
   page,
   totalPages,
@@ -945,11 +951,13 @@ function Pagination({
   totalPages: number;
   onChange: (p: number) => void;
 }) {
-  // Always render — even when totalPages === 1 so the bar is always visible
+  // Clamp so we never render page buttons below 1
+  const safeTotalPages = Math.max(1, totalPages);
+
   return (
     <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50">
       <p className="text-xs text-slate-500">
-        Page {page} of {totalPages} · {PAGE_SIZE} ports per page
+        Page {page} of {safeTotalPages} · {PAGE_SIZE} ports per page
       </p>
       <div className="flex items-center gap-1">
         <button
@@ -959,11 +967,12 @@ function Pagination({
         >
           <ChevronLeft size={16} className="text-slate-600" />
         </button>
-        {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+
+        {Array.from({ length: Math.min(safeTotalPages, 7) }, (_, i) => {
           let p: number;
-          if (totalPages <= 7) p = i + 1;
+          if (safeTotalPages <= 7) p = i + 1;
           else if (page <= 4) p = i + 1;
-          else if (page >= totalPages - 3) p = totalPages - 6 + i;
+          else if (page >= safeTotalPages - 3) p = safeTotalPages - 6 + i;
           else p = page - 3 + i;
           return (
             <button
@@ -979,9 +988,10 @@ function Pagination({
             </button>
           );
         })}
+
         <button
           onClick={() => onChange(page + 1)}
-          disabled={page >= totalPages}
+          disabled={page >= safeTotalPages}
           className="p-1.5 rounded-lg border border-slate-300 hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <ChevronRightIcon size={16} className="text-slate-600" />
