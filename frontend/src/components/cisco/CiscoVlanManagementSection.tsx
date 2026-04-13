@@ -738,9 +738,7 @@ export default function CiscoVlanManagementSection() {
                   <h3 className="font-bold text-slate-900 text-lg">
                     Interfaces
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    From DB · synced on load
-                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">Live snapshot</p>
                   <div className="flex items-center gap-2 mt-1 text-xs text-slate-600">
                     <Clock size={12} />
                     <span>
@@ -936,9 +934,7 @@ export default function CiscoVlanManagementSection() {
                   <h3 className="font-bold text-slate-900 text-lg">
                     Switch VLANs
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Live snapshot · stored in DB
-                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">Live snapshot</p>
                   <div className="flex items-center gap-2 mt-1 text-xs text-slate-600">
                     <Clock size={12} />
                     <span>
@@ -1126,11 +1122,7 @@ export default function CiscoVlanManagementSection() {
                   Managed VLANs
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Stored in{" "}
-                  <code className="font-mono bg-slate-100 px-1 rounded">
-                    cisco_vlans
-                  </code>{" "}
-                  · server-side search · used by Port Configuration
+                  used by Port Configuration
                 </p>
               </div>
             </div>
