@@ -1207,6 +1207,9 @@ def vlan_mgmt_list_vlans(
     )
 
 
+# app/routes/cisco_routes.py
+# Replace the vlan_mgmt_create_vlan endpoint
+
 @router.post(
     "/vlan-management/vlans",
     response_model=VlanMgmtRead,
@@ -1217,6 +1220,11 @@ def vlan_mgmt_create_vlan(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
+    """
+    Create a VLAN in cisco_vlans (management table) AND inject it into
+    cisco_vlan_snapshots for every known switch so it appears immediately
+    in the Switch VLANs card without waiting for a full sync.
+    """
     existing = (
         db.query(CiscoVlan)
         .filter(CiscoVlan.vlan_id == body.vlan_id)
@@ -1229,32 +1237,66 @@ def vlan_mgmt_create_vlan(
         )
 
     now = datetime.utcnow()
+
+    # ── 1. Insert into management table (cisco_vlans) ─────────────
     vlan = CiscoVlan(
-        vlan_id=body.vlan_id,
-        name=body.name.strip(),
-        status="active",
-        created_at=now,
-        updated_at=now,
+        vlan_id    = body.vlan_id,
+        name       = body.name.strip(),
+        status     = "active",
+        created_at = now,
+        updated_at = now,
     )
     db.add(vlan)
+
+    # ── 2. Inject into cisco_vlan_snapshots for every switch ──────
+    #    so the Switch VLANs card shows it straight away.
+    #    If a snapshot row already exists for this switch+vlan we
+    #    update it; otherwise we create a new one.
+    switches = db.query(CiscoSwitch).all()
+    for sw in switches:
+        snapshot = (
+            db.query(CiscoVlanSnapshot)
+            .filter(
+                CiscoVlanSnapshot.switch_id == sw.id,
+                CiscoVlanSnapshot.vlan_id   == body.vlan_id,
+            )
+            .first()
+        )
+        if snapshot:
+            # Update in case name/status changed
+            snapshot.name         = body.name.strip()
+            snapshot.status       = "active"
+            snapshot.last_seen_at = now
+        else:
+            db.add(
+                CiscoVlanSnapshot(
+                    switch_id    = sw.id,
+                    vlan_id      = body.vlan_id,
+                    name         = body.name.strip(),
+                    status       = "active",
+                    ports        = "[]",       # no ports yet
+                    last_seen_at = now,
+                    created_at   = now,
+                )
+            )
+
     db.commit()
     db.refresh(vlan)
+
     logger.info(
-        "Created VLAN %d (%s) by %s",
-        vlan.vlan_id,
-        vlan.name,
-        current_user.username,
-    )
-    return VlanMgmtRead(
-        id=vlan.id,
-        vlan_id=vlan.vlan_id,
-        name=vlan.name,
-        status=vlan.status,
-        port_count=0,
-        created_at=vlan.created_at,
-        updated_at=vlan.updated_at,
+        "Created VLAN %d (%s) by %s — injected into %d switch snapshot(s)",
+        vlan.vlan_id, vlan.name, current_user.username, len(switches),
     )
 
+    return VlanMgmtRead(
+        id         = vlan.id,
+        vlan_id    = vlan.vlan_id,
+        name       = vlan.name,
+        status     = vlan.status,
+        port_count = 0,
+        created_at = vlan.created_at,
+        updated_at = vlan.updated_at,
+    )
 
 @router.delete(
     "/vlan-management/vlans/{vlan_db_id}",
