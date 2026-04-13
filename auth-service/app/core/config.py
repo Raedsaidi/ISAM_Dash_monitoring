@@ -13,7 +13,7 @@ class Settings(BaseModel):
     # URL SQLite : fichier auth.db dans le répertoire du projet
     DB_URL: str = Field(default="sqlite:///./auth.db")
 
-    JWT_SECRET_KEY: str = Field(default="change_this_super_secret_key")
+    JWT_SECRET_KEY: str = Field(default="GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2")
     JWT_ALGORITHM: str = Field(default="HS256")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=60)
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
@@ -32,7 +32,7 @@ def get_settings() -> Settings:
 
         DB_URL=os.getenv("DB_URL", "sqlite:///./auth.db"),
 
-        JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "change_this_super_secret_key"),
+        JWT_SECRET_KEY=os.getenv("JWT_SECRET_KEY", "GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2"),
         JWT_ALGORITHM=os.getenv("JWT_ALGORITHM", "HS256"),
         JWT_ACCESS_TOKEN_EXPIRE_MINUTES=int(
             os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60")
