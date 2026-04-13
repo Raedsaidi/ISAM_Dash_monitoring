@@ -59,6 +59,9 @@ from app.models.cisco_schemas import (
     PortStatusPageResponse,
     InterfacesPageResponse,
     VlansPageResponse,
+    PortStats,
+    SwitchOverviewSummary,
+    OverviewResponse,
 )
 from app.services.cisco_client import (
     CiscoConnectionService,
@@ -467,29 +470,39 @@ def get_interfaces_db(
     switch_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    search: str = Query("", max_length=200),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     """
-    Return paginated interfaces from DB snapshot.
+    Return paginated interfaces from DB snapshot with server-side search.
     """
     get_switch_or_404(db, switch_id)
-    
-    total = (
-        db.query(CiscoInterfaceSnapshot)
-        .filter(CiscoInterfaceSnapshot.switch_id == switch_id)
-        .count()
+
+    q = db.query(CiscoInterfaceSnapshot).filter(
+        CiscoInterfaceSnapshot.switch_id == switch_id
     )
-    
+
+    if search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                CiscoInterfaceSnapshot.name.ilike(term),
+                CiscoInterfaceSnapshot.status.ilike(term),
+                CiscoInterfaceSnapshot.protocol.ilike(term),
+                CiscoInterfaceSnapshot.ip_address.ilike(term),
+            )
+        )
+
+    total = q.count()
+
     snapshots = (
-        db.query(CiscoInterfaceSnapshot)
-        .filter(CiscoInterfaceSnapshot.switch_id == switch_id)
-        .order_by(CiscoInterfaceSnapshot.name.asc())
+        q.order_by(CiscoInterfaceSnapshot.name.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    
+
     interfaces = [
         InterfaceInfo(
             name=s.name,
@@ -499,10 +512,9 @@ def get_interfaces_db(
         )
         for s in snapshots
     ]
-    
-    # Get cached_at from switch
+
     sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
-    
+
     return InterfacesPageResponse(
         success=True,
         switch_id=switch_id,
@@ -596,44 +608,51 @@ def sync_vlans(
     )
 
 
-@router.get(
-    "/switches/{switch_id}/vlans-db",
-    response_model=VlansPageResponse,
-)
 def get_vlans_db(
     switch_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    search: str = Query("", max_length=200),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     """
-    Return paginated VLANs from DB snapshot.
+    Return paginated VLANs from DB snapshot with server-side search.
     """
     get_switch_or_404(db, switch_id)
-    
-    total = (
-        db.query(CiscoVlanSnapshot)
-        .filter(CiscoVlanSnapshot.switch_id == switch_id)
-        .count()
+
+    q = db.query(CiscoVlanSnapshot).filter(
+        CiscoVlanSnapshot.switch_id == switch_id
     )
-    
+
+    if search.strip():
+        term = f"%{search.strip()}%"
+        # Also allow numeric VLAN ID match
+        filters = [
+            CiscoVlanSnapshot.name.ilike(term),
+            CiscoVlanSnapshot.status.ilike(term),
+        ]
+        try:
+            filters.append(CiscoVlanSnapshot.vlan_id == int(search.strip()))
+        except ValueError:
+            pass
+        q = q.filter(or_(*filters))
+
+    total = q.count()
+
     snapshots = (
-        db.query(CiscoVlanSnapshot)
-        .filter(CiscoVlanSnapshot.switch_id == switch_id)
-        .order_by(CiscoVlanSnapshot.vlan_id.asc())
+        q.order_by(CiscoVlanSnapshot.vlan_id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
     )
-    
+
     vlans = []
     for s in snapshots:
         try:
             ports = json.loads(s.ports) if s.ports else []
-        except:
+        except Exception:
             ports = []
-        
         vlans.append(
             VlanInfo(
                 id=s.vlan_id,
@@ -642,10 +661,9 @@ def get_vlans_db(
                 ports=ports,
             )
         )
-    
-    # Get cached_at from switch
+
     sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
-    
+
     return VlansPageResponse(
         success=True,
         switch_id=switch_id,
@@ -1491,40 +1509,112 @@ def get_ports_db(
     switch_id: int,
     page: int = Query(1, ge=1),
     page_size: int = Query(48, ge=1, le=200),
+    search: str = Query("", max_length=200),
+    filter_by: str = Query("all", max_length=50),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     """
     Return a paginated list of ports from the DB snapshot table.
+    Supports server-side search and filter.
     Use POST /sync-ports first to populate the table.
     """
     get_switch_or_404(db, switch_id)
- 
+
     locks = {
         lock.port_label
         for lock in db.query(CiscoPortLock)
         .filter(CiscoPortLock.switch_id == switch_id)
         .all()
     }
- 
-    total = (
-        db.query(CiscoPortSnapshot)
-        .filter(CiscoPortSnapshot.switch_id == switch_id)
-        .count()
+
+    q = db.query(CiscoPortSnapshot).filter(
+        CiscoPortSnapshot.switch_id == switch_id
     )
- 
-    snapshots = (
-        db.query(CiscoPortSnapshot)
-        .filter(CiscoPortSnapshot.switch_id == switch_id)
-        .order_by(
-            CiscoPortSnapshot.port_label.asc(),
-            CiscoPortSnapshot.port_number.asc(),
+
+    # ── Search ──────────────────────────────────────────────────
+    if search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                CiscoPortSnapshot.port_label.ilike(term),
+                CiscoPortSnapshot.description.ilike(term),
+                CiscoPortSnapshot.mac_address.ilike(term),
+                CiscoPortSnapshot.vlan.ilike(term),
+            )
         )
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
- 
+
+    # ── Filter ───────────────────────────────────────────────────
+    if filter_by == "active":
+        q = q.filter(
+            or_(
+                CiscoPortSnapshot.status.ilike("connected"),
+                CiscoPortSnapshot.status.ilike("up"),
+            )
+        )
+    elif filter_by == "inactive":
+        q = q.filter(
+            ~CiscoPortSnapshot.status.ilike("connected"),
+            ~CiscoPortSnapshot.status.ilike("up"),
+            ~CiscoPortSnapshot.status.ilike("%err%"),
+            ~CiscoPortSnapshot.status.ilike("%disabled%"),
+        )
+    elif filter_by == "locked":
+        if locks:
+            q = q.filter(CiscoPortSnapshot.port_label.in_(locks))
+        else:
+            # No locked ports → return empty
+            return PortStatusPageResponse(
+                success=True,
+                switch_id=switch_id,
+                port_count=0,
+                ports=[],
+                page=1,
+                page_size=page_size,
+                total_pages=1,
+                stats=PortStats(
+                    active=0, inactive=0, error=0,
+                    locked=0, unlocked=0,
+                ),
+            )
+    elif filter_by == "unlocked":
+        if locks:
+            q = q.filter(~CiscoPortSnapshot.port_label.in_(locks))
+
+    # ── Total count for the current filter/search ────────────────
+    total = q.count()
+
+    # ── Compute stats across ALL filtered rows (not just this page) ──
+    all_snapshots = q.all()
+
+    active_count = 0
+    inactive_count = 0
+    error_count = 0
+    locked_count = 0
+    unlocked_count = 0
+
+    for s in all_snapshots:
+        status_lower = (s.status or "").lower()
+        if status_lower in ("connected", "up"):
+            active_count += 1
+        elif "err" in status_lower or "disabled" in status_lower:
+            error_count += 1
+        else:
+            inactive_count += 1
+
+        if s.port_label in locks:
+            locked_count += 1
+        else:
+            unlocked_count += 1
+
+    # ── Sort by port_number (int) then port_label ────────────────
+    all_snapshots.sort(key=lambda s: (s.port_number, s.port_label))
+
+    # ── Paginate ─────────────────────────────────────────────────
+    total_pages = ceil(total / page_size) if total > 0 else 1
+    start = (page - 1) * page_size
+    page_snapshots = all_snapshots[start: start + page_size]
+
     ports = [
         CiscoPortInfo(
             port_label=s.port_label,
@@ -1538,9 +1628,9 @@ def get_ports_db(
             mac_address=s.mac_address,
             locked=s.port_label in locks,
         )
-        for s in snapshots
+        for s in page_snapshots
     ]
- 
+
     return PortStatusPageResponse(
         success=True,
         switch_id=switch_id,
@@ -1548,5 +1638,185 @@ def get_ports_db(
         ports=ports,
         page=page,
         page_size=page_size,
-        total_pages=ceil(total / page_size) if total > 0 else 1,
+        total_pages=total_pages,
+        stats=PortStats(
+            active=active_count,
+            inactive=inactive_count,
+            error=error_count,
+            locked=locked_count,
+            unlocked=unlocked_count,
+        ),
+    )
+@router.get(
+    "/vlan-management/vlans/all",
+    response_model=VlanMgmtListResponse,
+)
+def vlan_mgmt_list_all_vlans(
+    search: str = Query("", max_length=100),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """Return all VLANs with optional search — used by Configure Port modal."""
+    q = db.query(CiscoVlan)
+    if search.strip():
+        term = f"%{search.strip()}%"
+        filters = [CiscoVlan.name.ilike(term)]
+        try:
+            filters.append(CiscoVlan.vlan_id == int(search.strip()))
+        except ValueError:
+            pass
+        q = q.filter(or_(*filters))
+
+    rows = q.order_by(CiscoVlan.vlan_id.asc()).all()
+    vlans = [
+        VlanMgmtRead(
+            id=r.id,
+            vlan_id=r.vlan_id,
+            name=r.name,
+            status=r.status,
+            port_count=_port_count_for_vlan(db, r.vlan_id),
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
+    return VlanMgmtListResponse(success=True, vlans=vlans, total=len(vlans))
+# app/routes/cisco_routes.py - Add this new endpoint
+
+@router.get(
+    "/overview",
+    response_model=OverviewResponse,
+)
+def get_overview(
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return a fully DB-backed overview — no live switch calls.
+    All data comes from what was previously synced/tested.
+    """
+    switches = db.query(CiscoSwitch).order_by(CiscoSwitch.id.asc()).all()
+
+    total_switches   = len(switches)
+    active_switches  = sum(1 for s in switches if s.status == "active")
+    error_switches   = sum(1 for s in switches if s.status == "error")
+    inactive_switches = sum(1 for s in switches if s.status == "inactive")
+
+    response_times = [
+        s.last_response_time_ms
+        for s in switches
+        if s.last_response_time_ms is not None and s.last_response_time_ms > 0
+    ]
+    avg_response_time = (
+        round(sum(response_times) / len(response_times), 1)
+        if response_times else None
+    )
+
+    # Protocol distribution from health_protocol_used
+    proto_counts: dict[str, int] = {}
+    for sw in switches:
+        proto = sw.health_protocol_used or "none"
+        proto_counts[proto] = proto_counts.get(proto, 0) + 1
+
+    # VLAN stats from cisco_vlans table
+    total_vlans  = db.query(CiscoVlan).count()
+    active_vlans = db.query(CiscoVlan).filter(CiscoVlan.status == "active").count()
+    access_ports = (
+        db.query(CiscoPortAssignment)
+        .filter(CiscoPortAssignment.mode == "access")
+        .count()
+    )
+    trunk_ports = (
+        db.query(CiscoPortAssignment)
+        .filter(CiscoPortAssignment.mode == "trunk")
+        .count()
+    )
+
+    # Port summary across ALL synced snapshots
+    all_snapshots = db.query(CiscoPortSnapshot).all()
+    total_ports    = len(all_snapshots)
+    connected_ports = sum(
+        1 for p in all_snapshots
+        if (p.status or "").lower() in ("connected", "up")
+    )
+    locked_labels = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock).all()
+    }
+    locked_ports = sum(
+        1 for p in all_snapshots
+        if p.port_label in locked_labels
+    )
+
+    # Per-switch summary cards
+    switch_summaries = []
+    for sw in switches:
+        # Count ports for this switch from snapshots
+        sw_snapshots = db.query(CiscoPortSnapshot).filter(
+            CiscoPortSnapshot.switch_id == sw.id
+        ).all()
+        sw_total     = len(sw_snapshots)
+        sw_connected = sum(
+            1 for p in sw_snapshots
+            if (p.status or "").lower() in ("connected", "up")
+        )
+        sw_locked = sum(
+            1 for p in sw_snapshots
+            if p.port_label in locked_labels
+        )
+        # VLAN snapshot count for this switch
+        sw_vlan_count = db.query(CiscoVlanSnapshot).filter(
+            CiscoVlanSnapshot.switch_id == sw.id
+        ).count()
+        # Interface snapshot count
+        sw_iface_count = db.query(CiscoInterfaceSnapshot).filter(
+            CiscoInterfaceSnapshot.switch_id == sw.id
+        ).count()
+
+        switch_summaries.append(
+            SwitchOverviewSummary(
+                id=sw.id,
+                name=sw.name,
+                host=sw.host,
+                status=sw.status,
+                protocol_preference=sw.protocol_preference,
+                health_protocol_used=sw.health_protocol_used,
+                last_error=sw.last_error,
+                last_checked_at=sw.last_checked_at,
+                last_response_time_ms=sw.last_response_time_ms,
+                device_hostname=sw.device_hostname,
+                device_model=sw.device_model,
+                ios_version=sw.ios_version,
+                serial_number=sw.serial_number,
+                cache_updated_at=sw.cache_updated_at,
+                port_total=sw_total,
+                port_connected=sw_connected,
+                port_locked=sw_locked,
+                vlan_count=sw_vlan_count,
+                interface_count=sw_iface_count,
+            )
+        )
+
+    recently_checked = sorted(
+        [s for s in switch_summaries if s.last_checked_at is not None],
+        key=lambda s: s.last_checked_at,  # type: ignore[arg-type]
+        reverse=True,
+    )[:5]
+
+    return OverviewResponse(
+        total_switches=total_switches,
+        active_switches=active_switches,
+        error_switches=error_switches,
+        inactive_switches=inactive_switches,
+        avg_response_time_ms=avg_response_time,
+        protocol_distribution=proto_counts,
+        total_vlans=total_vlans,
+        active_vlans=active_vlans,
+        access_ports=access_ports,
+        trunk_ports=trunk_ports,
+        total_ports=total_ports,
+        connected_ports=connected_ports,
+        locked_ports=locked_ports,
+        switches=switch_summaries,
+        recently_checked=recently_checked,
     )
