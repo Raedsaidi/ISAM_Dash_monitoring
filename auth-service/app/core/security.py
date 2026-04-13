@@ -93,7 +93,7 @@ async def get_current_user(
 ) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Token invalide ou expiré.",
+        detail="invalid authentication credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
@@ -122,7 +122,7 @@ async def require_super_admin(current_user: User = Depends(get_current_user)) ->
     if current_user.role != UserRole.SUPER_ADMIN.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Accès réservé au SUPER_ADMIN.",
+            detail="reserved for SUPER_ADMIN only.",
         )
     return current_user
 
@@ -131,6 +131,6 @@ async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role not in (UserRole.ADMIN.value, UserRole.SUPER_ADMIN.value):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Accès réservé aux ADMIN / SUPER_ADMIN.",
+            detail="Access reserved for ADMIN / SUPER_ADMIN.",
         )
     return current_user

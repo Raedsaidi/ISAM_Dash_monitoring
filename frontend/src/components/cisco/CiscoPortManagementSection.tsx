@@ -32,15 +32,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../context/AuthContext";
-import {
-  fetchCiscoSwitches,
-  togglePortLock,
-  bulkLockPorts,
-  bulkUnlockPorts,
-  type CiscoSwitch,
-  type CiscoPortInfo,
-} from "../../services/ciscoApi";
-import { fetchVlans } from "../../services/ciscoVlanApi";
+import { type CiscoSwitch, type CiscoPortInfo } from "../../services/ciscoApi";
 import { cn } from "../../utils/cn";
 
 // ─── Constants ──────────────────────────────────────────────────────────────
@@ -49,6 +41,7 @@ const BASE =
   (import.meta as any).env?.VITE_CISCO_BASE_URL ?? "http://localhost:8002";
 const PREFIX = `${BASE}/api/v1/cisco`;
 const PAGE_SIZE = 48;
+const VLAN_PREFIX = `${BASE}/api/v1/cisco`;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +60,14 @@ interface Port {
   description: string;
 }
 
+interface PortStats {
+  active: number;
+  inactive: number;
+  error: number;
+  locked: number;
+  unlocked: number;
+}
+
 interface PortPageCache {
   pages: Record<number, Port[]>;
   totalPages: number;
@@ -74,6 +75,9 @@ interface PortPageCache {
   loading: boolean;
   error: string | null;
   syncing: boolean;
+  stats: PortStats | null;
+  currentSearch: string;
+  currentFilter: PortFilter;
 }
 
 interface VlanOption {
@@ -150,6 +154,9 @@ function emptyPageCache(): PortPageCache {
     loading: false,
     error: null,
     syncing: false,
+    stats: null,
+    currentSearch: "",
+    currentFilter: "all",
   };
 }
 
@@ -430,7 +437,7 @@ function ConfigurePortModal({
   port,
   switchId,
   switchName,
-  vlans,
+  token,
   onSave,
 }: {
   open: boolean;
@@ -438,7 +445,7 @@ function ConfigurePortModal({
   port: Port | null;
   switchId: number;
   switchName: string;
-  vlans: VlanOption[];
+  token: string | null;
   onSave: (
     portLabel: string,
     data: {
@@ -458,6 +465,28 @@ function ConfigurePortModal({
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const [vlanSearch, setVlanSearch] = useState("");
+  const [vlans, setVlans] = useState<VlanOption[]>([]);
+  const [vlansLoading, setVlansLoading] = useState(false);
+
+  // Debounced VLAN search — fetches from backend
+  useEffect(() => {
+    if (!open) return;
+    setVlansLoading(true);
+    const tid = setTimeout(() => {
+      const params = new URLSearchParams();
+      if (vlanSearch.trim()) params.set("search", vlanSearch.trim());
+      apiFetch<{ success: boolean; vlans: VlanOption[]; total: number }>(
+        `${VLAN_PREFIX}/vlan-management/vlans/all?${params.toString()}`,
+        token,
+      )
+        .then((d) => setVlans(d.vlans ?? []))
+        .catch(() => setVlans([]))
+        .finally(() => setVlansLoading(false));
+    }, 300);
+    return () => clearTimeout(tid);
+  }, [open, vlanSearch, token]);
+
   useEffect(() => {
     if (open && port) {
       setMode("access");
@@ -466,6 +495,7 @@ function ConfigurePortModal({
       setTrunkAllowed(new Set());
       setDescription(port.description || "");
       setError("");
+      setVlanSearch("");
     }
   }, [open, port]);
 
@@ -587,6 +617,35 @@ function ConfigurePortModal({
             </div>
           </div>
 
+          {/* VLAN search — shared for both access and trunk */}
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              Search VLANs
+            </label>
+            <div className="relative">
+              <Search
+                size={14}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none"
+              />
+              <input
+                type="text"
+                value={vlanSearch}
+                onChange={(e) => setVlanSearch(e.target.value)}
+                placeholder="Search by VLAN ID or name…"
+                className="w-full pl-8 pr-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {vlansLoading && (
+                <Loader2
+                  size={14}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin"
+                />
+              )}
+            </div>
+            {!vlansLoading && vlans.length === 0 && (
+              <p className="text-xs text-slate-400 mt-1">No VLANs found.</p>
+            )}
+          </div>
+
           {mode === "access" && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -595,6 +654,7 @@ function ConfigurePortModal({
               <select
                 value={accessVlan}
                 onChange={(e) => setAccessVlan(Number(e.target.value))}
+                size={5}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 {vlans.map((v) => (
@@ -615,6 +675,7 @@ function ConfigurePortModal({
                 <select
                   value={trunkNative}
                   onChange={(e) => setTrunkNative(Number(e.target.value))}
+                  size={3}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
                 >
                   {vlans.map((v) => (
@@ -680,8 +741,6 @@ function ConfigurePortModal({
 }
 
 // ─── Port Grid ────────────────────────────────────────────────────────────────
-// NOTE: Grid appearance is UNCHANGED. Locked ports only have their click
-// handler blocked — they still look exactly the same as before.
 
 function PortGrid({
   ports,
@@ -696,8 +755,6 @@ function PortGrid({
     <div className="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-16 lg:grid-cols-24 gap-1.5">
       {ports.map((p) => {
         const d = STATUS_CFG[p.status];
-        // A locked port can never be clicked regardless of admin status.
-        // The visual appearance is identical to the original — no change.
         const clickable = isAdmin && !p.locked;
 
         return (
@@ -810,7 +867,6 @@ function PortTable({
                 </td>
                 <td className="px-3 py-2.5">
                   <div className="flex items-center gap-1.5">
-                    {/* Lock / Unlock — admin only */}
                     {isAdmin && (
                       <button
                         onClick={() => onToggle(p.label)}
@@ -832,7 +888,6 @@ function PortTable({
                       </button>
                     )}
 
-                    {/* Configure — disabled when port is locked */}
                     <button
                       onClick={() => !p.locked && onConfigure(p)}
                       disabled={p.locked}
@@ -851,7 +906,6 @@ function PortTable({
                       <Settings2 size={12} /> Configure
                     </button>
 
-                    {/* Running Config — disabled when port is locked */}
                     <button
                       onClick={() => !p.locked && onViewConfig(p)}
                       disabled={p.locked}
@@ -891,7 +945,7 @@ function Pagination({
   totalPages: number;
   onChange: (p: number) => void;
 }) {
-  if (totalPages <= 1) return null;
+  // Always render — even when totalPages === 1 so the bar is always visible
   return (
     <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200 bg-slate-50">
       <p className="text-xs text-slate-500">
@@ -944,7 +998,6 @@ function SwitchPortDetail({
   pageCache,
   currentPage,
   isAdmin,
-  vlans,
   token,
   onBack,
   onSync,
@@ -953,12 +1006,12 @@ function SwitchPortDetail({
   onConfigure,
   onBulkLock,
   onBulkUnlock,
+  onSearchFilterChange,
 }: {
   sw: CiscoSwitch;
   pageCache: PortPageCache;
   currentPage: number;
   isAdmin: boolean;
-  vlans: VlanOption[];
   token: string | null;
   onBack: () => void;
   onSync: () => void;
@@ -967,50 +1020,34 @@ function SwitchPortDetail({
   onConfigure: (port: Port) => void;
   onBulkLock: () => void;
   onBulkUnlock: () => void;
+  onSearchFilterChange: (search: string, filter: PortFilter) => void;
 }) {
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<PortFilter>("all");
+  const [search, setSearch] = useState(pageCache.currentSearch);
+  const [filter, setFilter] = useState<PortFilter>(pageCache.currentFilter);
   const [view, setView] = useState<"grid" | "table">("table");
   const [runningConfigPort, setRunningConfigPort] = useState<Port | null>(null);
 
+  // Debounce search/filter → backend
+  useEffect(() => {
+    const tid = setTimeout(() => {
+      onSearchFilterChange(search, filter);
+    }, 350);
+    return () => clearTimeout(tid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, filter]);
+
   const currentPorts = pageCache.pages[currentPage] ?? [];
-
-  const filtered = useMemo(() => {
-    let r = currentPorts;
-    if (filter === "locked") r = r.filter((p) => p.locked);
-    else if (filter === "unlocked") r = r.filter((p) => !p.locked);
-    else if (filter === "active") r = r.filter((p) => p.status === "active");
-    else if (filter === "inactive")
-      r = r.filter((p) => p.status === "inactive");
-    const q = search.toLowerCase().trim();
-    if (q)
-      r = r.filter(
-        (p) =>
-          p.label.toLowerCase().includes(q) ||
-          String(p.number).includes(q) ||
-          p.description.toLowerCase().includes(q) ||
-          (p.macAddress && p.macAddress.toLowerCase().includes(q)),
-      );
-    return r;
-  }, [currentPorts, filter, search]);
-
-  const allLoadedPorts = useMemo(
-    () => Object.values(pageCache.pages).flat(),
-    [pageCache.pages],
-  );
-
-  const stats = useMemo(() => {
-    const s = { active: 0, inactive: 0, error: 0, locked: 0, unlocked: 0 };
-    for (const p of allLoadedPorts) {
-      s[p.status]++;
-      p.locked ? s.locked++ : s.unlocked++;
-    }
-    return s;
-  }, [allLoadedPorts]);
-
   const loadingPage = pageCache.loading;
 
-  // Only show running config for unlocked ports
+  // Stats come from backend across all filtered rows
+  const stats = pageCache.stats ?? {
+    active: 0,
+    inactive: 0,
+    error: 0,
+    locked: 0,
+    unlocked: 0,
+  };
+
   const handleViewConfig = useCallback((port: Port) => {
     if (port.locked) return;
     setRunningConfigPort(port);
@@ -1039,7 +1076,7 @@ function SwitchPortDetail({
               {pageCache.totalCount > 0 && (
                 <>
                   <span>•</span>
-                  <span>{pageCache.totalCount} ports in DB</span>
+                  <span>{pageCache.totalCount} ports</span>
                 </>
               )}
             </div>
@@ -1076,7 +1113,7 @@ function SwitchPortDetail({
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — driven by backend stats for the current search/filter */}
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
         {[
           {
@@ -1086,17 +1123,13 @@ function SwitchPortDetail({
           },
           { label: "Active", value: stats.active, color: "text-green-700" },
           { label: "Inactive", value: stats.inactive, color: "text-slate-500" },
+          { label: "Error", value: stats.error, color: "text-orange-600" },
           { label: "Locked", value: stats.locked, color: "text-red-700" },
           { label: "Unlocked", value: stats.unlocked, color: "text-green-700" },
           {
             label: "Page",
             value: `${currentPage}/${pageCache.totalPages}`,
             color: "text-blue-700",
-          },
-          {
-            label: "Loaded",
-            value: allLoadedPorts.length,
-            color: "text-purple-700",
           },
         ].map((s) => (
           <div
@@ -1134,7 +1167,7 @@ function SwitchPortDetail({
           />
           <input
             type="text"
-            placeholder="Search by port, label, MAC, or description…"
+            placeholder="Search by port label, MAC, description, VLAN…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -1182,8 +1215,12 @@ function SwitchPortDetail({
           </div>
         ) : view === "grid" ? (
           <div className="p-4">
-            <PortGrid ports={filtered} onToggle={onToggle} isAdmin={isAdmin} />
-            {filtered.length === 0 && (
+            <PortGrid
+              ports={currentPorts}
+              onToggle={onToggle}
+              isAdmin={isAdmin}
+            />
+            {currentPorts.length === 0 && (
               <p className="text-center py-8 text-slate-400 text-sm">
                 No ports match the current filter
               </p>
@@ -1191,7 +1228,7 @@ function SwitchPortDetail({
           </div>
         ) : (
           <PortTable
-            ports={filtered}
+            ports={currentPorts}
             onToggle={onToggle}
             onConfigure={onConfigure}
             onViewConfig={handleViewConfig}
@@ -1199,6 +1236,7 @@ function SwitchPortDetail({
           />
         )}
 
+        {/* Pagination — always visible for both grid and table */}
         <Pagination
           page={currentPage}
           totalPages={pageCache.totalPages}
@@ -1223,7 +1261,7 @@ function SwitchPortDetail({
         </span>
       </div>
 
-      {/* Running Config Modal — only opens for unlocked ports */}
+      {/* Running Config Modal */}
       <RunningConfigModal
         open={!!runningConfigPort}
         onClose={() => setRunningConfigPort(null)}
@@ -1278,7 +1316,6 @@ export default function CiscoPortManagementSection() {
     port: Port;
     switchId: number;
   } | null>(null);
-  const [vlans, setVlans] = useState<VlanOption[]>([]);
 
   // ── Load switches ──────────────────────────────────────────────────────────
 
@@ -1291,21 +1328,25 @@ export default function CiscoPortManagementSection() {
       .finally(() => setSwitchesLoading(false));
   }, [accessToken]);
 
-  // ── Load VLANs ─────────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!accessToken) return;
-    fetchVlans("")
-      .then((d) => setVlans(d.vlans ?? []))
-      .catch(() => {});
-  }, [accessToken]);
-
-  // ── Load a DB page ─────────────────────────────────────────────────────────
+  // ── Load a DB page (with search + filter passed to backend) ───────────────
 
   const loadDbPage = useCallback(
-    async (switchId: number, page: number) => {
+    async (
+      switchId: number,
+      page: number,
+      search?: string,
+      filter?: PortFilter,
+    ) => {
       const existing = cacheMapRef.current[switchId];
-      if (existing?.pages[page] && !existing.loading) {
+      const effectiveSearch = search ?? existing?.currentSearch ?? "";
+      const effectiveFilter = filter ?? existing?.currentFilter ?? "all";
+
+      // Bust cache if search/filter changed
+      const searchChanged =
+        effectiveSearch !== (existing?.currentSearch ?? "") ||
+        effectiveFilter !== (existing?.currentFilter ?? "all");
+
+      if (!searchChanged && existing?.pages[page] && !existing.loading) {
         setPageMap((prev) => ({ ...prev, [switchId]: page }));
         return;
       }
@@ -1316,10 +1357,21 @@ export default function CiscoPortManagementSection() {
           ...(prev[switchId] ?? emptyPageCache()),
           loading: true,
           error: null,
+          pages: searchChanged ? {} : (prev[switchId]?.pages ?? {}),
+          currentSearch: effectiveSearch,
+          currentFilter: effectiveFilter,
         },
       }));
 
       try {
+        const params = new URLSearchParams({
+          page: String(page),
+          page_size: String(PAGE_SIZE),
+        });
+        if (effectiveSearch.trim())
+          params.set("search", effectiveSearch.trim());
+        if (effectiveFilter !== "all") params.set("filter_by", effectiveFilter);
+
         const data = await apiFetch<{
           success: boolean;
           port_count: number;
@@ -1327,9 +1379,16 @@ export default function CiscoPortManagementSection() {
           page: number;
           page_size: number;
           total_pages: number;
+          stats?: {
+            active: number;
+            inactive: number;
+            error: number;
+            locked: number;
+            unlocked: number;
+          };
           error?: string;
         }>(
-          `${PREFIX}/switches/${switchId}/ports-db?page=${page}&page_size=${PAGE_SIZE}`,
+          `${PREFIX}/switches/${switchId}/ports-db?${params.toString()}`,
           accessToken,
         );
 
@@ -1347,6 +1406,9 @@ export default function CiscoPortManagementSection() {
             loading: false,
             error: null,
             syncing: false,
+            stats: data.stats ?? null,
+            currentSearch: effectiveSearch,
+            currentFilter: effectiveFilter,
           },
         }));
         setPageMap((prev) => ({ ...prev, [switchId]: page }));
@@ -1423,6 +1485,15 @@ export default function CiscoPortManagementSection() {
       if (next !== null) loadDbPage(next, pageMap[next] ?? 1);
     },
     [expandedId, loadDbPage, pageMap],
+  );
+
+  // ── Handle search/filter change from detail view ───────────────────────────
+
+  const handleSearchFilterChange = useCallback(
+    (switchId: number, search: string, filter: PortFilter) => {
+      loadDbPage(switchId, 1, search, filter);
+    },
+    [loadDbPage],
   );
 
   // ── Toggle lock ────────────────────────────────────────────────────────────
@@ -1595,6 +1666,9 @@ export default function CiscoPortManagementSection() {
       toast.success(
         `Port ${portLabel} configured as ${data.mode} on VLAN ${newVlan}`,
       );
+
+      // Reload the current page preserving active search/filter
+      const currentCache = cacheMapRef.current[switchId];
       const page = pageMap[switchId] ?? 1;
       setCacheMap((prev) => {
         const swCache = prev[switchId];
@@ -1603,12 +1677,15 @@ export default function CiscoPortManagementSection() {
         delete updatedPages[page];
         return { ...prev, [switchId]: { ...swCache, pages: updatedPages } };
       });
-      loadDbPage(switchId, page);
+      loadDbPage(
+        switchId,
+        page,
+        currentCache?.currentSearch,
+        currentCache?.currentFilter,
+      );
     },
     [accessToken, pageMap, loadDbPage, setCacheMap],
   );
-
-  // ── Handle configure — guard against locked ports ──────────────────────────
 
   const handleConfigureRequest = useCallback((port: Port, switchId: number) => {
     if (port.locked) {
@@ -1634,23 +1711,31 @@ export default function CiscoPortManagementSection() {
           pageCache={selectedCache}
           currentPage={selectedPage}
           isAdmin={isAdmin}
-          vlans={vlans}
           token={accessToken}
           onBack={() => setSelectedId(null)}
           onSync={() => syncPorts(selectedSwitch.id)}
-          onPageChange={(p) => loadDbPage(selectedSwitch.id, p)}
+          onPageChange={(p) =>
+            loadDbPage(
+              selectedSwitch.id,
+              p,
+              selectedCache.currentSearch,
+              selectedCache.currentFilter,
+            )
+          }
           onToggle={(label) => handleToggle(selectedSwitch.id, label)}
           onConfigure={(port) =>
             handleConfigureRequest(port, selectedSwitch.id)
           }
           onBulkLock={() => handleBulkLock(selectedSwitch.id)}
           onBulkUnlock={() => handleBulkUnlock(selectedSwitch.id)}
+          onSearchFilterChange={(search, filter) =>
+            handleSearchFilterChange(selectedSwitch.id, search, filter)
+          }
         />
         {confirmAction && (
           <ConfirmDialog
             {...confirmAction}
             onCancel={() => setConfirmAction(null)}
-            // "Configure" shortcut in confirm dialog only shown for unlocked ports
             showConfigure={!!confirmAction.port && !confirmAction.port.locked}
             onConfigure={
               confirmAction.port && !confirmAction.port.locked
@@ -1671,7 +1756,7 @@ export default function CiscoPortManagementSection() {
           port={configurePort?.port ?? null}
           switchId={selectedSwitch.id}
           switchName={selectedSwitch.name}
-          vlans={vlans}
+          token={accessToken}
           onSave={(label, data) =>
             handleConfigure(label, selectedSwitch.id, data)
           }

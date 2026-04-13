@@ -300,18 +300,11 @@ class VlanMgmtStatsResponse(BaseModel):
     active_vlans: int = 0
     access_ports: int = 0
     trunk_ports: int = 0
-class PortStatusPageResponse(BaseModel):
-    """Paginated port list loaded from the DB snapshot table."""
-    success: bool
-    switch_id: int = 0
-    port_count: int = 0
-    ports: List[CiscoPortInfo] = []
-    protocol_used: Optional[str] = None
-    error: Optional[str] = None
-    page: int = 1
-    page_size: int = 48
-    total_pages: int = 1
-# Add these to the existing file (app/models/cisco_schemas.py)
+
+
+# ═══════════════════════════════════════════════════════
+# Paginated responses
+# ═══════════════════════════════════════════════════════
 
 class InterfacesPageResponse(BaseModel):
     """Paginated interfaces list loaded from DB."""
@@ -341,6 +334,20 @@ class VlansPageResponse(BaseModel):
     cached_at: Optional[datetime] = None
 
 
+# ── NEW: per-page port statistics returned by the backend ──────────
+
+class PortStats(BaseModel):
+    """
+    Counts computed server-side across ALL rows matching the current
+    search/filter (not just the current page).
+    """
+    active: int = 0
+    inactive: int = 0
+    error: int = 0
+    locked: int = 0
+    unlocked: int = 0
+
+
 class PortStatusPageResponse(BaseModel):
     """Paginated port list loaded from the DB snapshot table."""
     success: bool
@@ -352,3 +359,55 @@ class PortStatusPageResponse(BaseModel):
     page: int = 1
     page_size: int = 48
     total_pages: int = 1
+    # Stats across ALL filtered rows (not just this page)
+    stats: Optional[PortStats] = None
+# app/models/cisco_schemas.py — append these classes
+
+class SwitchOverviewSummary(BaseModel):
+    """Per-switch row used in the overview, sourced entirely from DB."""
+    id: int
+    name: str
+    host: str
+    status: str
+    protocol_preference: str
+    health_protocol_used: Optional[str] = None
+    last_error: Optional[str] = None
+    last_checked_at: Optional[datetime] = None
+    last_response_time_ms: Optional[float] = None
+    device_hostname: Optional[str] = None
+    device_model: Optional[str] = None
+    ios_version: Optional[str] = None
+    serial_number: Optional[str] = None
+    cache_updated_at: Optional[datetime] = None
+    # Aggregated from snapshot tables
+    port_total: int = 0
+    port_connected: int = 0
+    port_locked: int = 0
+    vlan_count: int = 0
+    interface_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class OverviewResponse(BaseModel):
+    """Single endpoint that the Overview page reads from."""
+    # Switch health
+    total_switches: int = 0
+    active_switches: int = 0
+    error_switches: int = 0
+    inactive_switches: int = 0
+    avg_response_time_ms: Optional[float] = None
+    protocol_distribution: Dict[str, int] = {}
+    # VLAN management
+    total_vlans: int = 0
+    active_vlans: int = 0
+    access_ports: int = 0
+    trunk_ports: int = 0
+    # Port snapshots (aggregated across all switches)
+    total_ports: int = 0
+    connected_ports: int = 0
+    locked_ports: int = 0
+    # Per-switch details
+    switches: List[SwitchOverviewSummary] = []
+    recently_checked: List[SwitchOverviewSummary] = []
