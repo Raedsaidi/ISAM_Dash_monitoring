@@ -393,10 +393,12 @@ def sync_interfaces(
     current_user: TokenUser = Depends(get_current_user),
 ):
     """
-    Fetch interfaces from switch and sync to DB.
+    Fetch interfaces from switch, persist to cisco_interface_snapshots,
+    then return the synced list.
     """
     sw = get_switch_or_404(db, switch_id)
     service = CiscoConnectionService(sw)
+
     try:
         ok, proto, output, error = service.execute_command_preference(
             "show ip interface brief", timeout=20
@@ -405,62 +407,66 @@ def sync_interfaces(
         return InterfacesResponse(
             success=False, error=f"{type(e).__name__}: {e}"
         )
+
     if not ok:
         return InterfacesResponse(
             success=False, protocol_used=proto, error=error
         )
-    
+
     raw = parse_interfaces(output)
     now = datetime.utcnow()
-    
-    # Sync to DB
-    for iface_data in raw:
-        snapshot = (
-            db.query(CiscoInterfaceSnapshot)
-            .filter(
-                CiscoInterfaceSnapshot.switch_id == switch_id,
-                CiscoInterfaceSnapshot.name == iface_data["name"],
-            )
-            .first()
-        )
-        
-        if snapshot:
-            snapshot.status = iface_data["status"]
-            snapshot.protocol = iface_data["protocol"]
-            snapshot.ip_address = iface_data.get("ip_address")
-            snapshot.last_seen_at = now
-        else:
-            snapshot = CiscoInterfaceSnapshot(
-                switch_id=switch_id,
-                name=iface_data["name"],
-                status=iface_data["status"],
-                protocol=iface_data["protocol"],
-                ip_address=iface_data.get("ip_address"),
-                last_seen_at=now,
-                created_at=now,
-            )
-            db.add(snapshot)
-    
+
     try:
+        # Upsert every interface into cisco_interface_snapshots
+        for iface_data in raw:
+            snapshot = (
+                db.query(CiscoInterfaceSnapshot)
+                .filter(
+                    CiscoInterfaceSnapshot.switch_id == switch_id,
+                    CiscoInterfaceSnapshot.name == iface_data["name"],
+                )
+                .first()
+            )
+
+            if snapshot:
+                snapshot.status      = iface_data["status"]
+                snapshot.protocol    = iface_data["protocol"]
+                snapshot.ip_address  = iface_data.get("ip_address")
+                snapshot.last_seen_at = now
+            else:
+                snapshot = CiscoInterfaceSnapshot(
+                    switch_id    = switch_id,
+                    name         = iface_data["name"],
+                    status       = iface_data["status"],
+                    protocol     = iface_data["protocol"],
+                    ip_address   = iface_data.get("ip_address"),
+                    last_seen_at = now,
+                    created_at   = now,
+                )
+                db.add(snapshot)
+
+        # Keep the legacy JSON cache on the switch row
         sw.cached_interfaces = json.dumps(raw)
-        sw.cache_updated_at = now
+        sw.cache_updated_at  = now
         db.commit()
+
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to sync interfaces: {e}")
+        logger.error(
+            "Failed to sync interfaces to DB: %s", e, exc_info=True
+        )
         return InterfacesResponse(
             success=False, error=f"Failed to sync: {str(e)}"
         )
-    
+
     interfaces = [InterfaceInfo(**i) for i in raw]
     return InterfacesResponse(
         success=True,
         interfaces=interfaces,
         total=len(interfaces),
         protocol_used=proto,
-        cached_at=sw.cache_updated_at,
+        cached_at=now,
     )
-
 
 @router.get(
     "/switches/{switch_id}/interfaces-db",
@@ -468,14 +474,16 @@ def sync_interfaces(
 )
 def get_interfaces_db(
     switch_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    search: str = Query("", max_length=200),
-    db: Session = Depends(get_db),
+    page: int       = Query(1,   ge=1),
+    page_size: int  = Query(20,  ge=1, le=200),
+    search: str     = Query("",  max_length=200),
+    db: Session     = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     """
-    Return paginated interfaces from DB snapshot with server-side search.
+    Return paginated interfaces from cisco_interface_snapshots.
+    Supports server-side search by name, status, protocol, or IP.
+    Call POST /sync-interfaces first to populate the table.
     """
     get_switch_or_404(db, switch_id)
 
@@ -483,6 +491,7 @@ def get_interfaces_db(
         CiscoInterfaceSnapshot.switch_id == switch_id
     )
 
+    # ── Server-side search ────────────────────────────────────────
     if search.strip():
         term = f"%{search.strip()}%"
         q = q.filter(
@@ -495,6 +504,7 @@ def get_interfaces_db(
         )
 
     total = q.count()
+    total_pages = ceil(total / page_size) if total > 0 else 1
 
     snapshots = (
         q.order_by(CiscoInterfaceSnapshot.name.asc())
@@ -505,27 +515,117 @@ def get_interfaces_db(
 
     interfaces = [
         InterfaceInfo(
-            name=s.name,
-            status=s.status,
-            protocol=s.protocol,
-            ip_address=s.ip_address,
+            name       = s.name,
+            status     = s.status,
+            protocol   = s.protocol,
+            ip_address = s.ip_address,
         )
         for s in snapshots
     ]
 
-    sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
+    # Grab cached_at from the most-recently synced snapshot
+    latest_snapshot = (
+        db.query(CiscoInterfaceSnapshot)
+        .filter(CiscoInterfaceSnapshot.switch_id == switch_id)
+        .order_by(CiscoInterfaceSnapshot.last_seen_at.desc())
+        .first()
+    )
+    cached_at = latest_snapshot.last_seen_at if latest_snapshot else None
 
     return InterfacesPageResponse(
-        success=True,
-        switch_id=switch_id,
-        interfaces=interfaces,
-        total=total,
-        page=page,
-        page_size=page_size,
-        total_pages=ceil(total / page_size) if total > 0 else 1,
-        cached_at=sw.cache_updated_at if sw else None,
+        success     = True,
+        switch_id   = switch_id,
+        interfaces  = interfaces,
+        total       = total,
+        page        = page,
+        page_size   = page_size,
+        total_pages = total_pages,
+        cached_at   = cached_at,
+    )
+@router.get(                                    # ← decorator was missing
+    "/switches/{switch_id}/vlans-db",
+    response_model=VlansPageResponse,
+)
+def get_vlans_db(
+    switch_id: int,
+    page: int       = Query(1,   ge=1),
+    page_size: int  = Query(20,  ge=1, le=200),
+    search: str     = Query("",  max_length=200),
+    db: Session     = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return paginated VLANs from the cisco_vlan_snapshots table.
+    Supports server-side search by VLAN ID, name, or status.
+    Call POST /sync-vlans first to populate the table.
+    """
+    get_switch_or_404(db, switch_id)
+
+    q = db.query(CiscoVlanSnapshot).filter(
+        CiscoVlanSnapshot.switch_id == switch_id
     )
 
+    # ── Server-side search ────────────────────────────────────────
+    if search.strip():
+        term = f"%{search.strip()}%"
+        filters = [
+            CiscoVlanSnapshot.name.ilike(term),
+            CiscoVlanSnapshot.status.ilike(term),
+        ]
+        # Also allow exact numeric VLAN-ID match
+        try:
+            filters.append(
+                CiscoVlanSnapshot.vlan_id == int(search.strip())
+            )
+        except ValueError:
+            pass
+        q = q.filter(or_(*filters))
+
+    total = q.count()
+    total_pages = ceil(total / page_size) if total > 0 else 1
+
+    snapshots = (
+        q.order_by(CiscoVlanSnapshot.vlan_id.asc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    vlans = []
+    for s in snapshots:
+        try:
+            ports = json.loads(s.ports) if s.ports else []
+        except Exception:
+            ports = []
+
+        vlans.append(
+            VlanInfo(
+                id     = s.vlan_id,
+                name   = s.name,
+                status = s.status,
+                ports  = ports,
+            )
+        )
+
+    # Grab cached_at from the most-recently synced snapshot for this switch
+    latest_snapshot = (
+        db.query(CiscoVlanSnapshot)
+        .filter(CiscoVlanSnapshot.switch_id == switch_id)
+        .order_by(CiscoVlanSnapshot.last_seen_at.desc())
+        .first()
+    )
+    cached_at = latest_snapshot.last_seen_at if latest_snapshot else None
+
+    return VlansPageResponse(
+        success     = True,
+        switch_id   = switch_id,
+        vlans       = vlans,
+        total       = total,
+        page        = page,
+        page_size   = page_size,
+        total_pages = total_pages,
+        cached_at   = cached_at,
+    )
 
 @router.post(
     "/switches/{switch_id}/sync-vlans",
@@ -1501,23 +1601,27 @@ def sync_ports(
     )
  
  
+# app/routes/cisco_routes.py
+# Only the get_ports_db endpoint needs changes — everything else stays identical
+
 @router.get(
     "/switches/{switch_id}/ports-db",
     response_model=PortStatusPageResponse,
 )
 def get_ports_db(
     switch_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(48, ge=1, le=200),
-    search: str = Query("", max_length=200),
+    page: int      = Query(1,    ge=1),
+    page_size: int = Query(48,   ge=1, le=200),
+    search: str    = Query("",   max_length=200),
     filter_by: str = Query("all", max_length=50),
-    db: Session = Depends(get_db),
+    db: Session    = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     """
-    Return a paginated list of ports from the DB snapshot table.
-    Supports server-side search and filter.
-    Use POST /sync-ports first to populate the table.
+    Return a paginated list of ports from cisco_port_snapshots.
+    Ports are grouped by interface type prefix (e.g. GigabitEthernet,
+    FastEthernet, TenGigabitEthernet) and sorted numerically within
+    each group — so you get Gi1…Gi48, then Fa1…Fa48, not interleaved.
     """
     get_switch_or_404(db, switch_id)
 
@@ -1532,7 +1636,7 @@ def get_ports_db(
         CiscoPortSnapshot.switch_id == switch_id
     )
 
-    # ── Search ──────────────────────────────────────────────────
+    # ── Search ────────────────────────────────────────────────────
     if search.strip():
         term = f"%{search.strip()}%"
         q = q.filter(
@@ -1544,7 +1648,7 @@ def get_ports_db(
             )
         )
 
-    # ── Filter ───────────────────────────────────────────────────
+    # ── Filter ────────────────────────────────────────────────────
     if filter_by == "active":
         q = q.filter(
             or_(
@@ -1563,13 +1667,13 @@ def get_ports_db(
         if locks:
             q = q.filter(CiscoPortSnapshot.port_label.in_(locks))
         else:
-            # No locked ports → return empty
+            # No locked ports → return empty result but still with pagination
             return PortStatusPageResponse(
                 success=True,
                 switch_id=switch_id,
                 port_count=0,
                 ports=[],
-                page=1,
+                page=page,
                 page_size=page_size,
                 total_pages=1,
                 stats=PortStats(
@@ -1581,23 +1685,19 @@ def get_ports_db(
         if locks:
             q = q.filter(~CiscoPortSnapshot.port_label.in_(locks))
 
-    # ── Total count for the current filter/search ────────────────
-    total = q.count()
+    # ── Fetch all matching rows for stats + custom sort ───────────
+    total    = q.count()
+    all_rows = q.all()
 
-    # ── Compute stats across ALL filtered rows (not just this page) ──
-    all_snapshots = q.all()
+    # ── Stats across ALL filtered rows ────────────────────────────
+    active_count = inactive_count = error_count = 0
+    locked_count = unlocked_count = 0
 
-    active_count = 0
-    inactive_count = 0
-    error_count = 0
-    locked_count = 0
-    unlocked_count = 0
-
-    for s in all_snapshots:
-        status_lower = (s.status or "").lower()
-        if status_lower in ("connected", "up"):
+    for s in all_rows:
+        sl = (s.status or "").lower()
+        if sl in ("connected", "up"):
             active_count += 1
-        elif "err" in status_lower or "disabled" in status_lower:
+        elif "err" in sl or "disabled" in sl:
             error_count += 1
         else:
             inactive_count += 1
@@ -1607,44 +1707,119 @@ def get_ports_db(
         else:
             unlocked_count += 1
 
-    # ── Sort by port_number (int) then port_label ────────────────
-    all_snapshots.sort(key=lambda s: (s.port_number, s.port_label))
+    # ── Sort: group by interface-type prefix, then by port number ─
+    #
+    # Strategy:
+    #   1. Extract the alphabetic prefix from port_label
+    #      e.g. "GigabitEthernet1/0/3"  → prefix = "GigabitEthernet"
+    #           "Gi1/0/3"               → prefix = "Gi"
+    #           "FastEthernet0/1"       → prefix = "FastEthernet"
+    #           "Te1/1/1"               → prefix = "Te"
+    #           "Loopback0"             → prefix = "Loopback"
+    #   2. Assign a canonical order to known prefixes so that
+    #      GigabitEthernet / Gi come before FastEthernet / Fa, etc.
+    #   3. Within the same prefix group sort by the numeric portion
+    #      of port_label in natural order (1/0/1 < 1/0/2 < 1/0/10).
+    #
+    # This guarantees Gi1…Gi48 are consecutive, then Fa1…Fa48, etc.
 
-    # ── Paginate ─────────────────────────────────────────────────
-    total_pages = ceil(total / page_size) if total > 0 else 1
-    start = (page - 1) * page_size
-    page_snapshots = all_snapshots[start: start + page_size]
+    # Canonical prefix priority (lower = earlier in the list)
+    PREFIX_ORDER: dict[str, int] = {
+        # Ten-Gigabit variants
+        "tengigabitethernet": 0,
+        "te":                 0,
+        # Gigabit variants
+        "gigabitethernet":    1,
+        "gi":                 1,
+        # Fast-Ethernet variants
+        "fastethernet":       2,
+        "fa":                 2,
+        # Ethernet
+        "ethernet":           3,
+        "et":                 3,
+        # Management / VLAN / Loopback / Tunnel — push to the end
+        "vlan":               10,
+        "loopback":           11,
+        "tunnel":             12,
+        "management":         13,
+        "mgmt":               13,
+        "port-channel":       14,
+        "po":                 14,
+    }
+    DEFAULT_PREFIX_ORDER = 9  # unknown types go between physical and virtual
+
+    import re
+
+    def _port_sort_key(snapshot: CiscoPortSnapshot):
+        label = snapshot.port_label or ""
+
+        # Split label into leading alpha prefix and the rest
+        # e.g. "GigabitEthernet1/0/3" → ("GigabitEthernet", "1/0/3")
+        #      "Gi1/0/48"             → ("Gi", "1/0/48")
+        match = re.match(r'^([A-Za-z\-]+)(.*)', label)
+        if match:
+            alpha_prefix = match.group(1).lower().rstrip("/")
+            numeric_part = match.group(2).lstrip("/")
+        else:
+            alpha_prefix = label.lower()
+            numeric_part = ""
+
+        prefix_rank = PREFIX_ORDER.get(alpha_prefix, DEFAULT_PREFIX_ORDER)
+
+        # Natural-sort the numeric portion: split on "/" and "." then
+        # convert each segment to int so "1/0/10" > "1/0/9"
+        def _to_int(s: str) -> int:
+            try:
+                return int(s)
+            except ValueError:
+                return 0
+
+        numeric_rank = tuple(
+            _to_int(seg)
+            for seg in re.split(r'[/.]', numeric_part)
+            if seg != ""
+        )
+
+        return (prefix_rank, numeric_rank, label)
+
+    all_rows.sort(key=_port_sort_key)
+
+    # ── Paginate over the sorted list ─────────────────────────────
+    # Always return at least 1 total_page even when there are 0 rows
+    total_pages = max(1, ceil(total / page_size)) if page_size > 0 else 1
+    start       = (page - 1) * page_size
+    page_rows   = all_rows[start: start + page_size]
 
     ports = [
         CiscoPortInfo(
-            port_label=s.port_label,
-            port_number=s.port_number,
-            description=s.description or "",
-            status=s.status,
-            vlan=s.vlan or "",
-            duplex=s.duplex or "",
-            speed=s.speed or "",
-            port_type=s.port_type or "",
-            mac_address=s.mac_address,
-            locked=s.port_label in locks,
+            port_label  = s.port_label,
+            port_number = s.port_number,
+            description = s.description or "",
+            status      = s.status,
+            vlan        = s.vlan or "",
+            duplex      = s.duplex or "",
+            speed       = s.speed or "",
+            port_type   = s.port_type or "",
+            mac_address = s.mac_address,
+            locked      = s.port_label in locks,
         )
-        for s in page_snapshots
+        for s in page_rows
     ]
 
     return PortStatusPageResponse(
-        success=True,
-        switch_id=switch_id,
-        port_count=total,
-        ports=ports,
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages,
-        stats=PortStats(
-            active=active_count,
-            inactive=inactive_count,
-            error=error_count,
-            locked=locked_count,
-            unlocked=unlocked_count,
+        success     = True,
+        switch_id   = switch_id,
+        port_count  = total,
+        ports       = ports,
+        page        = page,
+        page_size   = page_size,
+        total_pages = total_pages,
+        stats       = PortStats(
+            active   = active_count,
+            inactive = inactive_count,
+            error    = error_count,
+            locked   = locked_count,
+            unlocked = unlocked_count,
         ),
     )
 @router.get(
