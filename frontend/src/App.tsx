@@ -9,7 +9,7 @@ import {
 } from "react-router-dom";
 import { cn } from "./utils/cn";
 import { NavSection } from "./types/isam";
-
+import CiscoConfigsSection from "./components/cisco/CiscoConfigsSection";
 import Sidebar from "./components/isam/Sidebar";
 import Header from "./components/isam/Header";
 import OverviewSection from "./components/isam/OverviewSection";
@@ -17,7 +17,6 @@ import JunctionsSection from "./components/isam/JunctionsSection";
 import AuditLogsSection from "./components/isam/AuditLogsSection";
 import UserManagementSection from "./components/isam/UserManagementSection";
 import WanTemplatesSection from "./components/isam/WanTemplatesSection";
-
 import CiscoSidebar from "./components/cisco/CiscoSidebar";
 import CiscoHeader from "./components/cisco/CiscoHeader";
 import CiscoOverviewSection from "./components/cisco/CiscoOverviewSection";
@@ -26,7 +25,6 @@ import CiscoSwitchManagementSection from "./components/cisco/CiscoSwitchManageme
 import CiscoPortManagementSection from "./components/cisco/CiscoPortManagementSection";
 import CiscoVlanManagementSection from "./components/cisco/CiscoVlanManagementSection";
 import MyTemplatesSection from "./components/isam/MyTemplatesSection";
-
 import ProductSelection from "./components/ProductSelection";
 import LoginForm from "./components/auth/LoginForm";
 import RegisterSelfForm from "./components/auth/RegisterSelfForm";
@@ -73,6 +71,10 @@ const isamSectionMeta: Record<NavSection, { title: string; subtitle: string }> =
       title: "VLAN Management",
       subtitle: "View and manage VLANs",
     },
+    "cisco-configs": {
+      title: "Cisco Configs Management",
+      subtitle: "Manage and configure Cisco device settings",
+    },
   };
 
 /* ------------ Cisco metadata ------------ */
@@ -101,6 +103,10 @@ const ciscoSectionMeta: Partial<
     title: "Cisco VLAN Management",
     subtitle:
       "Create, view, and delete VLANs — assign VLANs to ports in Access or Trunk mode",
+  },
+  "cisco-configs": {
+    title: "Cisco Configs Management",
+    subtitle: "Manage and configure Cisco device settings",
   },
 };
 
@@ -174,7 +180,7 @@ function App() {
 }
 
 /* ============================================================
-   ISAM Layout  (unchanged)
+   ISAM Layout
    ============================================================ */
 
 function IsamLayout() {
@@ -195,34 +201,19 @@ function IsamLayout() {
     "my-templates": "my-templates",
   };
 
-  const activeSection: NavSection = pathToSection[sub] || "overview";
+  const activeSection: NavSection = pathToSection[sub] ?? "overview";
   const meta = isamSectionMeta[activeSection];
 
   const handleNavigate = (section: NavSection) => {
-    let subPath: string;
-    switch (section) {
-      case "overview":
-        subPath = "overview";
-        break;
-      case "junctions":
-        subPath = "junctions";
-        break;
-      case "audit-logs":
-        subPath = "audit-logs";
-        break;
-      case "user-management":
-        subPath = "user-management";
-        break;
-      case "wan-templates":
-        subPath = "wan-templates";
-        break;
-      case "my-templates":
-        subPath = "my-templates";
-        break;
-      default:
-        subPath = "overview";
-    }
-    navigate(`/isam/${subPath}`);
+    const sectionToPath: Partial<Record<NavSection, string>> = {
+      overview: "overview",
+      junctions: "junctions",
+      "audit-logs": "audit-logs",
+      "user-management": "user-management",
+      "wan-templates": "wan-templates",
+      "my-templates": "my-templates",
+    };
+    navigate(`/isam/${sectionToPath[section] ?? "overview"}`);
   };
 
   return (
@@ -258,7 +249,7 @@ function IsamLayout() {
 }
 
 /* ============================================================
-   Cisco Layout  (UPDATED — added vlan-management)
+   Cisco Layout
    ============================================================ */
 
 function CiscoLayout() {
@@ -269,50 +260,32 @@ function CiscoLayout() {
   const pathAfterCisco = location.pathname.replace(/^\/cisco\/?/, "");
   const sub = pathAfterCisco.split("/")[0] || "overview";
 
-  let activeSection: NavSection;
-  switch (sub) {
-    case "user-management":
-      activeSection = "user-management";
-      break;
-    case "switch-management":
-      activeSection = "switch-management";
-      break;
-    case "port-management":
-      activeSection = "port-management";
-      break;
-    case "vlan-management":
-      activeSection = "vlan-management";
-      break;
-    case "overview":
-    default:
-      activeSection = "overview";
-  }
+  const pathToSection: Record<string, NavSection> = {
+    "": "overview",
+    overview: "overview",
+    "user-management": "user-management",
+    "switch-management": "switch-management",
+    "port-management": "port-management",
+    "vlan-management": "vlan-management",
+    "cisco-configs": "cisco-configs",
+  };
 
+  const activeSection: NavSection = pathToSection[sub] ?? "overview";
   const meta = ciscoSectionMeta[activeSection] ?? {
     title: "Cisco",
     subtitle: "",
   };
 
   const handleNavigate = (section: NavSection) => {
-    let subPath: string;
-    switch (section) {
-      case "user-management":
-        subPath = "user-management";
-        break;
-      case "switch-management":
-        subPath = "switch-management";
-        break;
-      case "port-management":
-        subPath = "port-management";
-        break;
-      case "vlan-management":
-        subPath = "vlan-management";
-        break;
-      case "overview":
-      default:
-        subPath = "overview";
-    }
-    navigate(`/cisco/${subPath}`);
+    const sectionToPath: Partial<Record<NavSection, string>> = {
+      overview: "overview",
+      "user-management": "user-management",
+      "switch-management": "switch-management",
+      "port-management": "port-management",
+      "vlan-management": "vlan-management",
+      "cisco-configs": "cisco-configs",
+    };
+    navigate(`/cisco/${sectionToPath[section] ?? "overview"}`);
   };
 
   return (
@@ -349,6 +322,7 @@ function CiscoLayout() {
               path="vlan-management"
               element={<CiscoVlanManagementSection />}
             />
+            <Route path="cisco-configs" element={<CiscoConfigsSection />} />
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>

@@ -1,4 +1,5 @@
 # app/routes/cisco_routes.py
+# Full corrected file
 
 """
 REST endpoints for Cisco switch management.
@@ -9,7 +10,7 @@ import logging
 import time as _time
 from datetime import datetime
 from typing import Optional
-from math import ceil 
+from math import ceil
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
@@ -25,6 +26,7 @@ from app.models.cisco_switch import (
     CiscoPortSnapshot,
     CiscoInterfaceSnapshot,
     CiscoVlanSnapshot,
+    CiscoPortConfigHistory,   # ← now imported
 )
 from app.models.cisco_schemas import (
     SwitchCreate,
@@ -46,7 +48,6 @@ from app.models.cisco_schemas import (
     VlanChangeRequest,
     VlanChangeResponse,
     PortConfigResponse,
-    # VLAN-Management
     VlanMgmtCreate,
     VlanMgmtRead,
     VlanMgmtListResponse,
@@ -62,6 +63,9 @@ from app.models.cisco_schemas import (
     PortStats,
     SwitchOverviewSummary,
     OverviewResponse,
+    PortConfigHistoryRead,        # ← now imported
+    PortConfigHistoryResponse,    # ← now imported
+    PortConfigHistoryHasResponse, # ← now imported
 )
 from app.services.cisco_client import (
     CiscoConnectionService,
@@ -82,14 +86,11 @@ logger = logging.getLogger(__name__)
 def get_switch_or_404(db: Session, switch_id: int) -> CiscoSwitch:
     sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
     if not sw:
-        raise HTTPException(
-            status_code=404, detail="Cisco switch not found."
-        )
+        raise HTTPException(status_code=404, detail="Cisco switch not found.")
     return sw
 
 
 def _port_count_for_vlan(db: Session, vlan_id: int) -> int:
-    """Count how many port assignments reference this VLAN."""
     access_count = (
         db.query(CiscoPortAssignment)
         .filter(
@@ -137,6 +138,31 @@ def _pa_to_read(pa: CiscoPortAssignment) -> PortAssignmentRead:
     )
 
 
+def _save_port_config_snapshot(
+    *,
+    db: Session,
+    switch_id: int,
+    port_label: str,
+    config_text: str,
+    saved_by: Optional[str] = None,
+) -> CiscoPortConfigHistory:
+    """
+    Persist the current running config for a port.
+    Call this inside change-vlan / configure-port handlers before pushing changes.
+    This is a plain synchronous function — no async needed for SQLAlchemy sync sessions.
+    """
+    entry = CiscoPortConfigHistory(
+        switch_id=switch_id,
+        port_label=port_label,
+        config_text=config_text,
+        saved_by=saved_by,
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return entry
+
+
 # ═══════════════════════════════════════════════════════
 # Switch CRUD
 # ═══════════════════════════════════════════════════════
@@ -167,18 +193,13 @@ def create_switch(
         db.refresh(sw)
         logger.info(
             "Created switch '%s' (id=%d) by %s",
-            sw.name,
-            sw.id,
-            current_user.username,
+            sw.name, sw.id, current_user.username,
         )
         return sw
     except Exception as e:
         db.rollback()
         logger.error("Failed to create switch: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create switch: {str(e)}",
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to create switch: {str(e)}")
 
 
 @router.get("/switches", response_model=SwitchListResponse)
@@ -187,17 +208,11 @@ def list_switches(
     current_user: TokenUser = Depends(get_current_user),
 ):
     try:
-        switches = (
-            db.query(CiscoSwitch).order_by(CiscoSwitch.id.asc()).all()
-        )
-        return SwitchListResponse(
-            switches=switches, total=len(switches)
-        )
+        switches = db.query(CiscoSwitch).order_by(CiscoSwitch.id.asc()).all()
+        return SwitchListResponse(switches=switches, total=len(switches))
     except Exception as e:
         logger.error("Failed to list switches: %s", e, exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"Database error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
 @router.get("/switches/{switch_id}", response_model=SwitchRead)
@@ -236,7 +251,6 @@ def delete_switch(
     sw = get_switch_or_404(db, switch_id)
     db.delete(sw)
     db.commit()
-    return
 
 
 # ═══════════════════════════════════════════════════════
@@ -254,9 +268,7 @@ def test_connection(
     current_user: TokenUser = Depends(require_admin),
 ):
     sw = get_switch_or_404(db, switch_id)
-    ok, proto, msg, duration_ms = test_connection_for_switch(
-        sw, timeout=10
-    )
+    ok, proto, msg, duration_ms = test_connection_for_switch(sw, timeout=10)
 
     sw.last_checked_at = datetime.utcnow()
     sw.last_response_time_ms = duration_ms
@@ -310,9 +322,7 @@ def test_connection(
 # ═══════════════════════════════════════════════════════
 
 
-@router.post(
-    "/switches/{switch_id}/execute", response_model=CommandResponse
-)
+@router.post("/switches/{switch_id}/execute", response_model=CommandResponse)
 def execute_command(
     switch_id: int,
     body: CommandRequest,
@@ -321,9 +331,7 @@ def execute_command(
 ):
     sw = get_switch_or_404(db, switch_id)
     if not body.command.strip():
-        raise HTTPException(
-            status_code=400, detail="Command must not be empty."
-        )
+        raise HTTPException(status_code=400, detail="Command must not be empty.")
     service = CiscoConnectionService(sw)
     start = _time.time()
     ok, proto, output, error = service.execute_command_preference(
@@ -343,7 +351,7 @@ def execute_command(
 
 
 # ═══════════════════════════════════════════════════════
-# Device Info / Interfaces / VLANs - SYNC TO DB
+# Device Info
 # ═══════════════════════════════════════════════════════
 
 
@@ -363,13 +371,9 @@ def get_device_info(
             "show version", timeout=20
         )
     except Exception as e:
-        return DeviceInfoResponse(
-            success=False, error=f"{type(e).__name__}: {e}"
-        )
+        return DeviceInfoResponse(success=False, error=f"{type(e).__name__}: {e}")
     if not ok:
-        return DeviceInfoResponse(
-            success=False, protocol_used=proto, error=error
-        )
+        return DeviceInfoResponse(success=False, protocol_used=proto, error=error)
     info = parse_show_version(output)
     return DeviceInfoResponse(
         success=True,
@@ -383,6 +387,11 @@ def get_device_info(
     )
 
 
+# ═══════════════════════════════════════════════════════
+# Sync Interfaces
+# ═══════════════════════════════════════════════════════
+
+
 @router.post(
     "/switches/{switch_id}/sync-interfaces",
     response_model=InterfacesResponse,
@@ -392,32 +401,21 @@ def sync_interfaces(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Fetch interfaces from switch, persist to cisco_interface_snapshots,
-    then return the synced list.
-    """
     sw = get_switch_or_404(db, switch_id)
     service = CiscoConnectionService(sw)
-
     try:
         ok, proto, output, error = service.execute_command_preference(
             "show ip interface brief", timeout=20
         )
     except Exception as e:
-        return InterfacesResponse(
-            success=False, error=f"{type(e).__name__}: {e}"
-        )
-
+        return InterfacesResponse(success=False, error=f"{type(e).__name__}: {e}")
     if not ok:
-        return InterfacesResponse(
-            success=False, protocol_used=proto, error=error
-        )
+        return InterfacesResponse(success=False, protocol_used=proto, error=error)
 
     raw = parse_interfaces(output)
     now = datetime.utcnow()
 
     try:
-        # Upsert every interface into cisco_interface_snapshots
         for iface_data in raw:
             snapshot = (
                 db.query(CiscoInterfaceSnapshot)
@@ -427,37 +425,29 @@ def sync_interfaces(
                 )
                 .first()
             )
-
             if snapshot:
-                snapshot.status      = iface_data["status"]
-                snapshot.protocol    = iface_data["protocol"]
-                snapshot.ip_address  = iface_data.get("ip_address")
+                snapshot.status = iface_data["status"]
+                snapshot.protocol = iface_data["protocol"]
+                snapshot.ip_address = iface_data.get("ip_address")
                 snapshot.last_seen_at = now
             else:
                 snapshot = CiscoInterfaceSnapshot(
-                    switch_id    = switch_id,
-                    name         = iface_data["name"],
-                    status       = iface_data["status"],
-                    protocol     = iface_data["protocol"],
-                    ip_address   = iface_data.get("ip_address"),
-                    last_seen_at = now,
-                    created_at   = now,
+                    switch_id=switch_id,
+                    name=iface_data["name"],
+                    status=iface_data["status"],
+                    protocol=iface_data["protocol"],
+                    ip_address=iface_data.get("ip_address"),
+                    last_seen_at=now,
+                    created_at=now,
                 )
                 db.add(snapshot)
-
-        # Keep the legacy JSON cache on the switch row
         sw.cached_interfaces = json.dumps(raw)
-        sw.cache_updated_at  = now
+        sw.cache_updated_at = now
         db.commit()
-
     except Exception as e:
         db.rollback()
-        logger.error(
-            "Failed to sync interfaces to DB: %s", e, exc_info=True
-        )
-        return InterfacesResponse(
-            success=False, error=f"Failed to sync: {str(e)}"
-        )
+        logger.error("Failed to sync interfaces: %s", e, exc_info=True)
+        return InterfacesResponse(success=False, error=f"Failed to sync: {str(e)}")
 
     interfaces = [InterfaceInfo(**i) for i in raw]
     return InterfacesResponse(
@@ -468,30 +458,29 @@ def sync_interfaces(
         cached_at=now,
     )
 
+
+# ═══════════════════════════════════════════════════════
+# Interfaces DB (paginated)
+# ═══════════════════════════════════════════════════════
+
+
 @router.get(
     "/switches/{switch_id}/interfaces-db",
     response_model=InterfacesPageResponse,
 )
 def get_interfaces_db(
     switch_id: int,
-    page: int       = Query(1,   ge=1),
-    page_size: int  = Query(20,  ge=1, le=200),
-    search: str     = Query("",  max_length=200),
-    db: Session     = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    search: str = Query("", max_length=200),
+    db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Return paginated interfaces from cisco_interface_snapshots.
-    Supports server-side search by name, status, protocol, or IP.
-    Call POST /sync-interfaces first to populate the table.
-    """
     get_switch_or_404(db, switch_id)
 
     q = db.query(CiscoInterfaceSnapshot).filter(
         CiscoInterfaceSnapshot.switch_id == switch_id
     )
-
-    # ── Server-side search ────────────────────────────────────────
     if search.strip():
         term = f"%{search.strip()}%"
         q = q.filter(
@@ -515,68 +504,138 @@ def get_interfaces_db(
 
     interfaces = [
         InterfaceInfo(
-            name       = s.name,
-            status     = s.status,
-            protocol   = s.protocol,
-            ip_address = s.ip_address,
+            name=s.name,
+            status=s.status,
+            protocol=s.protocol,
+            ip_address=s.ip_address,
         )
         for s in snapshots
     ]
 
-    # Grab cached_at from the most-recently synced snapshot
-    latest_snapshot = (
+    latest = (
         db.query(CiscoInterfaceSnapshot)
         .filter(CiscoInterfaceSnapshot.switch_id == switch_id)
         .order_by(CiscoInterfaceSnapshot.last_seen_at.desc())
         .first()
     )
-    cached_at = latest_snapshot.last_seen_at if latest_snapshot else None
+    cached_at = latest.last_seen_at if latest else None
 
     return InterfacesPageResponse(
-        success     = True,
-        switch_id   = switch_id,
-        interfaces  = interfaces,
-        total       = total,
-        page        = page,
-        page_size   = page_size,
-        total_pages = total_pages,
-        cached_at   = cached_at,
+        success=True,
+        switch_id=switch_id,
+        interfaces=interfaces,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        cached_at=cached_at,
     )
-@router.get(                                    # ← decorator was missing
+
+
+# ═══════════════════════════════════════════════════════
+# Sync VLANs
+# ═══════════════════════════════════════════════════════
+
+
+@router.post(
+    "/switches/{switch_id}/sync-vlans",
+    response_model=VlansResponse,
+)
+def sync_vlans(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    sw = get_switch_or_404(db, switch_id)
+    service = CiscoConnectionService(sw)
+    try:
+        ok, proto, output, error = service.execute_command_preference(
+            "show vlan brief", timeout=20
+        )
+    except Exception as e:
+        return VlansResponse(success=False, error=f"{type(e).__name__}: {e}")
+    if not ok:
+        return VlansResponse(success=False, protocol_used=proto, error=error)
+
+    raw = parse_vlans(output)
+    now = datetime.utcnow()
+
+    for vlan_data in raw:
+        snapshot = (
+            db.query(CiscoVlanSnapshot)
+            .filter(
+                CiscoVlanSnapshot.switch_id == switch_id,
+                CiscoVlanSnapshot.vlan_id == vlan_data["id"],
+            )
+            .first()
+        )
+        ports_json = json.dumps(vlan_data.get("ports", []))
+        if snapshot:
+            snapshot.name = vlan_data["name"]
+            snapshot.status = vlan_data["status"]
+            snapshot.ports = ports_json
+            snapshot.last_seen_at = now
+        else:
+            snapshot = CiscoVlanSnapshot(
+                switch_id=switch_id,
+                vlan_id=vlan_data["id"],
+                name=vlan_data["name"],
+                status=vlan_data["status"],
+                ports=ports_json,
+                last_seen_at=now,
+                created_at=now,
+            )
+            db.add(snapshot)
+
+    try:
+        sw.cached_vlans = json.dumps(raw)
+        sw.cache_updated_at = now
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error("Failed to sync VLANs: %s", e)
+        return VlansResponse(success=False, error=f"Failed to sync: {str(e)}")
+
+    vlans = [VlanInfo(**v) for v in raw]
+    return VlansResponse(
+        success=True,
+        vlans=vlans,
+        total=len(vlans),
+        protocol_used=proto,
+        cached_at=sw.cache_updated_at,
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# VLANs DB (paginated)
+# ═══════════════════════════════════════════════════════
+
+
+@router.get(
     "/switches/{switch_id}/vlans-db",
     response_model=VlansPageResponse,
 )
 def get_vlans_db(
     switch_id: int,
-    page: int       = Query(1,   ge=1),
-    page_size: int  = Query(20,  ge=1, le=200),
-    search: str     = Query("",  max_length=200),
-    db: Session     = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=200),
+    search: str = Query("", max_length=200),
+    db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Return paginated VLANs from the cisco_vlan_snapshots table.
-    Supports server-side search by VLAN ID, name, or status.
-    Call POST /sync-vlans first to populate the table.
-    """
     get_switch_or_404(db, switch_id)
 
     q = db.query(CiscoVlanSnapshot).filter(
         CiscoVlanSnapshot.switch_id == switch_id
     )
-
-    # ── Server-side search ────────────────────────────────────────
     if search.strip():
         term = f"%{search.strip()}%"
         filters = [
             CiscoVlanSnapshot.name.ilike(term),
             CiscoVlanSnapshot.status.ilike(term),
         ]
-        # Also allow exact numeric VLAN-ID match
         try:
-            filters.append(
-                CiscoVlanSnapshot.vlan_id == int(search.strip())
-            )
+            filters.append(CiscoVlanSnapshot.vlan_id == int(search.strip()))
         except ValueError:
             pass
         q = q.filter(or_(*filters))
@@ -597,172 +656,17 @@ def get_vlans_db(
             ports = json.loads(s.ports) if s.ports else []
         except Exception:
             ports = []
-
         vlans.append(
-            VlanInfo(
-                id     = s.vlan_id,
-                name   = s.name,
-                status = s.status,
-                ports  = ports,
-            )
+            VlanInfo(id=s.vlan_id, name=s.name, status=s.status, ports=ports)
         )
 
-    # Grab cached_at from the most-recently synced snapshot for this switch
-    latest_snapshot = (
+    latest = (
         db.query(CiscoVlanSnapshot)
         .filter(CiscoVlanSnapshot.switch_id == switch_id)
         .order_by(CiscoVlanSnapshot.last_seen_at.desc())
         .first()
     )
-    cached_at = latest_snapshot.last_seen_at if latest_snapshot else None
-
-    return VlansPageResponse(
-        success     = True,
-        switch_id   = switch_id,
-        vlans       = vlans,
-        total       = total,
-        page        = page,
-        page_size   = page_size,
-        total_pages = total_pages,
-        cached_at   = cached_at,
-    )
-
-@router.post(
-    "/switches/{switch_id}/sync-vlans",
-    response_model=VlansResponse,
-)
-def sync_vlans(
-    switch_id: int,
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    """
-    Fetch VLANs from switch and sync to DB.
-    """
-    sw = get_switch_or_404(db, switch_id)
-    service = CiscoConnectionService(sw)
-    try:
-        ok, proto, output, error = service.execute_command_preference(
-            "show vlan brief", timeout=20
-        )
-    except Exception as e:
-        return VlansResponse(
-            success=False, error=f"{type(e).__name__}: {e}"
-        )
-    if not ok:
-        return VlansResponse(
-            success=False, protocol_used=proto, error=error
-        )
-    
-    raw = parse_vlans(output)
-    now = datetime.utcnow()
-    
-    # Sync to DB
-    for vlan_data in raw:
-        snapshot = (
-            db.query(CiscoVlanSnapshot)
-            .filter(
-                CiscoVlanSnapshot.switch_id == switch_id,
-                CiscoVlanSnapshot.vlan_id == vlan_data["id"],
-            )
-            .first()
-        )
-        
-        ports_json = json.dumps(vlan_data.get("ports", []))
-        
-        if snapshot:
-            snapshot.name = vlan_data["name"]
-            snapshot.status = vlan_data["status"]
-            snapshot.ports = ports_json
-            snapshot.last_seen_at = now
-        else:
-            snapshot = CiscoVlanSnapshot(
-                switch_id=switch_id,
-                vlan_id=vlan_data["id"],
-                name=vlan_data["name"],
-                status=vlan_data["status"],
-                ports=ports_json,
-                last_seen_at=now,
-                created_at=now,
-            )
-            db.add(snapshot)
-    
-    try:
-        sw.cached_vlans = json.dumps(raw)
-        sw.cache_updated_at = now
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Failed to sync VLANs: {e}")
-        return VlansResponse(
-            success=False, error=f"Failed to sync: {str(e)}"
-        )
-    
-    vlans = [VlanInfo(**v) for v in raw]
-    return VlansResponse(
-        success=True,
-        vlans=vlans,
-        total=len(vlans),
-        protocol_used=proto,
-        cached_at=sw.cache_updated_at,
-    )
-
-
-def get_vlans_db(
-    switch_id: int,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    search: str = Query("", max_length=200),
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    """
-    Return paginated VLANs from DB snapshot with server-side search.
-    """
-    get_switch_or_404(db, switch_id)
-
-    q = db.query(CiscoVlanSnapshot).filter(
-        CiscoVlanSnapshot.switch_id == switch_id
-    )
-
-    if search.strip():
-        term = f"%{search.strip()}%"
-        # Also allow numeric VLAN ID match
-        filters = [
-            CiscoVlanSnapshot.name.ilike(term),
-            CiscoVlanSnapshot.status.ilike(term),
-        ]
-        try:
-            filters.append(CiscoVlanSnapshot.vlan_id == int(search.strip()))
-        except ValueError:
-            pass
-        q = q.filter(or_(*filters))
-
-    total = q.count()
-
-    snapshots = (
-        q.order_by(CiscoVlanSnapshot.vlan_id.asc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-
-    vlans = []
-    for s in snapshots:
-        try:
-            ports = json.loads(s.ports) if s.ports else []
-        except Exception:
-            ports = []
-        vlans.append(
-            VlanInfo(
-                id=s.vlan_id,
-                name=s.name,
-                status=s.status,
-                ports=ports,
-            )
-        )
-
-    sw = db.query(CiscoSwitch).filter(CiscoSwitch.id == switch_id).first()
+    cached_at = latest.last_seen_at if latest else None
 
     return VlansPageResponse(
         success=True,
@@ -771,16 +675,17 @@ def get_vlans_db(
         total=total,
         page=page,
         page_size=page_size,
-        total_pages=ceil(total / page_size) if total > 0 else 1,
-        cached_at=sw.cache_updated_at if sw else None,
+        total_pages=total_pages,
+        cached_at=cached_at,
     )
 
 
-# Keep old endpoints for backward compatibility (deprecated)
-@router.get(
-    "/switches/{switch_id}/interfaces",
-    response_model=InterfacesResponse,
-)
+# ═══════════════════════════════════════════════════════
+# Legacy endpoints (backward compat)
+# ═══════════════════════════════════════════════════════
+
+
+@router.get("/switches/{switch_id}/interfaces", response_model=InterfacesResponse)
 def get_interfaces(
     switch_id: int,
     db: Session = Depends(get_db),
@@ -793,13 +698,9 @@ def get_interfaces(
             "show ip interface brief", timeout=20
         )
     except Exception as e:
-        return InterfacesResponse(
-            success=False, error=f"{type(e).__name__}: {e}"
-        )
+        return InterfacesResponse(success=False, error=f"{type(e).__name__}: {e}")
     if not ok:
-        return InterfacesResponse(
-            success=False, protocol_used=proto, error=error
-        )
+        return InterfacesResponse(success=False, protocol_used=proto, error=error)
     raw = parse_interfaces(output)
     interfaces = [InterfaceInfo(**i) for i in raw]
     try:
@@ -818,9 +719,7 @@ def get_interfaces(
     )
 
 
-@router.get(
-    "/switches/{switch_id}/vlans", response_model=VlansResponse
-)
+@router.get("/switches/{switch_id}/vlans", response_model=VlansResponse)
 def get_vlans(
     switch_id: int,
     db: Session = Depends(get_db),
@@ -833,13 +732,9 @@ def get_vlans(
             "show vlan brief", timeout=20
         )
     except Exception as e:
-        return VlansResponse(
-            success=False, error=f"{type(e).__name__}: {e}"
-        )
+        return VlansResponse(success=False, error=f"{type(e).__name__}: {e}")
     if not ok:
-        return VlansResponse(
-            success=False, protocol_used=proto, error=error
-        )
+        return VlansResponse(success=False, protocol_used=proto, error=error)
     raw = parse_vlans(output)
     vlans = [VlanInfo(**v) for v in raw]
     try:
@@ -875,21 +770,16 @@ def get_port_status(
     sw = get_switch_or_404(db, switch_id)
     service = CiscoConnectionService(sw)
     try:
-        ok, proto, raw_ports, error = service.get_all_port_status(
-            timeout=25
-        )
+        ok, proto, raw_ports, error = service.get_all_port_status(timeout=25)
     except Exception as e:
         return PortStatusResponse(
-            success=False,
-            switch_id=switch_id,
+            success=False, switch_id=switch_id,
             error=f"{type(e).__name__}: {e}",
         )
     if not ok:
         return PortStatusResponse(
-            success=False,
-            switch_id=switch_id,
-            protocol_used=proto,
-            error=error,
+            success=False, switch_id=switch_id,
+            protocol_used=proto, error=error,
         )
     locks = (
         db.query(CiscoPortLock)
@@ -913,9 +803,7 @@ def get_port_status(
                 locked=p["port_label"] in locked_labels,
             )
         )
-    ports.sort(
-        key=lambda x: (x.port_label.split("/")[0], x.port_number)
-    )
+    ports.sort(key=lambda x: (x.port_label.split("/")[0], x.port_number))
     return PortStatusResponse(
         success=True,
         switch_id=switch_id,
@@ -943,16 +831,13 @@ def get_port_config(
         )
     except Exception as e:
         return PortConfigResponse(
-            success=False,
-            port_label=port_label,
+            success=False, port_label=port_label,
             error=f"{type(e).__name__}: {e}",
         )
     if not ok:
         return PortConfigResponse(
-            success=False,
-            port_label=port_label,
-            protocol_used=proto,
-            error=error,
+            success=False, port_label=port_label,
+            protocol_used=proto, error=error,
         )
     current_vlan = parse_running_config_vlan(output)
     return PortConfigResponse(
@@ -987,10 +872,8 @@ def toggle_port_lock(
         db.delete(existing)
         db.commit()
         return PortLockToggleResponse(
-            success=True,
-            port_label=port_label,
-            locked=False,
-            message=f"Port {port_label} unlocked.",
+            success=True, port_label=port_label,
+            locked=False, message=f"Port {port_label} unlocked.",
         )
     lock = CiscoPortLock(
         switch_id=switch_id,
@@ -1001,17 +884,13 @@ def toggle_port_lock(
     db.add(lock)
     db.commit()
     return PortLockToggleResponse(
-        success=True,
-        port_label=port_label,
+        success=True, port_label=port_label,
         locked=True,
         message=f"Port {port_label} locked by {current_user.username}.",
     )
 
 
-@router.post(
-    "/switches/{switch_id}/bulk-lock",
-    response_model=BulkLockResponse,
-)
+@router.post("/switches/{switch_id}/bulk-lock", response_model=BulkLockResponse)
 def bulk_lock_ports(
     switch_id: int,
     db: Session = Depends(get_db),
@@ -1021,11 +900,7 @@ def bulk_lock_ports(
     service = CiscoConnectionService(sw)
     ok, _, raw_ports, _ = service.get_all_port_status(timeout=25)
     if not ok:
-        return BulkLockResponse(
-            success=False,
-            affected=0,
-            message="Could not fetch port list.",
-        )
+        return BulkLockResponse(success=False, affected=0, message="Could not fetch port list.")
     existing = {
         lock.port_label
         for lock in db.query(CiscoPortLock)
@@ -1046,17 +921,10 @@ def bulk_lock_ports(
             )
             added += 1
     db.commit()
-    return BulkLockResponse(
-        success=True,
-        affected=added,
-        message=f"{added} ports locked.",
-    )
+    return BulkLockResponse(success=True, affected=added, message=f"{added} ports locked.")
 
 
-@router.post(
-    "/switches/{switch_id}/bulk-unlock",
-    response_model=BulkLockResponse,
-)
+@router.post("/switches/{switch_id}/bulk-unlock", response_model=BulkLockResponse)
 def bulk_unlock_ports(
     switch_id: int,
     db: Session = Depends(get_db),
@@ -1068,11 +936,7 @@ def bulk_unlock_ports(
         .delete()
     )
     db.commit()
-    return BulkLockResponse(
-        success=True,
-        affected=count,
-        message=f"{count} ports unlocked.",
-    )
+    return BulkLockResponse(success=True, affected=count, message=f"{count} ports unlocked.")
 
 
 @router.post(
@@ -1099,7 +963,23 @@ def change_port_vlan(
             success=False,
             error=f"Port {body.port_label} is locked by {lock.locked_by}.",
         )
+
     service = CiscoConnectionService(sw)
+
+    # Save config snapshot before making changes
+    try:
+        cfg_ok, _, cfg_out, _ = service.get_port_running_config(body.port_label)
+        if cfg_ok and cfg_out:
+            _save_port_config_snapshot(
+                db=db,
+                switch_id=switch_id,
+                port_label=body.port_label,
+                config_text=cfg_out,
+                saved_by=current_user.username,
+            )
+    except Exception as e:
+        logger.warning("Could not save config snapshot for %s: %s", body.port_label, e)
+
     try:
         ok, proto, output, error = service.change_vlan(
             port_label=body.port_label,
@@ -1109,46 +989,397 @@ def change_port_vlan(
             timeout=30,
         )
     except Exception as e:
-        return VlanChangeResponse(
-            success=False, error=f"{type(e).__name__}: {e}"
-        )
-    current_vlan = None
-    if ok:
+        return VlanChangeResponse(success=False, error=f"{type(e).__name__}: {e}")
+
+    if not ok:
+        return VlanChangeResponse(success=False, protocol_used=proto, error=error)
+
+    if body.port_status is not None:
+        shutdown_cmd = "shutdown" if body.port_status == "down" else "no shutdown"
+        commands = f"interface {body.port_label}\n {shutdown_cmd}\n end"
         try:
-            cfg_ok, _, cfg_out, _ = service.get_port_running_config(
-                body.port_label
+            status_ok, _, status_out, status_err = service.execute_command_preference(
+                command=commands, enable=True, timeout=15,
             )
-            if cfg_ok:
-                current_vlan = parse_running_config_vlan(cfg_out)
-        except Exception:
-            pass
+            if not status_ok:
+                logger.warning(
+                    "Port status command failed for %s: %s", body.port_label, status_err
+                )
+            else:
+                output = (output or "") + "\n" + (status_out or "")
+        except Exception as e:
+            logger.warning("Could not apply port status for %s: %s", body.port_label, e)
+
+    current_vlan = None
+    try:
+        cfg_ok, _, cfg_out, _ = service.get_port_running_config(body.port_label)
+        if cfg_ok:
+            current_vlan = parse_running_config_vlan(cfg_out)
+    except Exception:
+        pass
+
     return VlanChangeResponse(
-        success=ok,
-        output=output if ok else None,
+        success=True,
+        output=output,
         current_vlan=current_vlan,
         protocol_used=proto,
-        error=error if not ok else None,
+        error=None,
     )
 
 
 # ═══════════════════════════════════════════════════════
-# VLAN-Management — VLAN CRUD
+# Sync Ports
+# ═══════════════════════════════════════════════════════
+
+
+@router.post(
+    "/switches/{switch_id}/sync-ports",
+    response_model=PortStatusResponse,
+)
+def sync_ports(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    sw = get_switch_or_404(db, switch_id)
+    service = CiscoConnectionService(sw)
+
+    try:
+        ok, proto, raw_ports, error = service.get_all_port_status(timeout=25)
+    except Exception as e:
+        return PortStatusResponse(
+            success=False, switch_id=switch_id,
+            error=f"{type(e).__name__}: {e}",
+        )
+
+    if not ok:
+        return PortStatusResponse(
+            success=False, switch_id=switch_id,
+            protocol_used=proto, error=error,
+        )
+
+    locks = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock)
+        .filter(CiscoPortLock.switch_id == switch_id)
+        .all()
+    }
+
+    now = datetime.utcnow()
+    saved_ports = []
+
+    for p in raw_ports:
+        label = p["port_label"]
+        snapshot = (
+            db.query(CiscoPortSnapshot)
+            .filter(
+                CiscoPortSnapshot.switch_id == switch_id,
+                CiscoPortSnapshot.port_label == label,
+            )
+            .first()
+        )
+        if snapshot:
+            snapshot.port_number = p.get("port_number", 0)
+            snapshot.description = p.get("description", "")
+            snapshot.status = p["status"]
+            snapshot.vlan = p.get("vlan", "")
+            snapshot.duplex = p.get("duplex", "")
+            snapshot.speed = p.get("speed", "")
+            snapshot.port_type = p.get("port_type", "")
+            snapshot.mac_address = p.get("mac_address")
+            snapshot.last_seen_at = now
+        else:
+            snapshot = CiscoPortSnapshot(
+                switch_id=switch_id,
+                port_label=label,
+                port_number=p.get("port_number", 0),
+                description=p.get("description", ""),
+                status=p["status"],
+                vlan=p.get("vlan", ""),
+                duplex=p.get("duplex", ""),
+                speed=p.get("speed", ""),
+                port_type=p.get("port_type", ""),
+                mac_address=p.get("mac_address"),
+                last_seen_at=now,
+                created_at=now,
+            )
+            db.add(snapshot)
+
+        saved_ports.append(
+            CiscoPortInfo(
+                port_label=label,
+                port_number=p.get("port_number", 0),
+                description=p.get("description", ""),
+                status=p["status"],
+                vlan=p.get("vlan", ""),
+                duplex=p.get("duplex", ""),
+                speed=p.get("speed", ""),
+                port_type=p.get("port_type", ""),
+                mac_address=p.get("mac_address"),
+                locked=label in locks,
+            )
+        )
+
+    db.commit()
+    saved_ports.sort(key=lambda x: (x.port_label.split("/")[0], x.port_number))
+
+    logger.info(
+        "Synced %d ports for switch %d (%s) by %s",
+        len(saved_ports), switch_id, sw.name, current_user.username,
+    )
+
+    return PortStatusResponse(
+        success=True,
+        switch_id=switch_id,
+        port_count=len(saved_ports),
+        ports=saved_ports,
+        protocol_used=proto,
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# Ports DB (paginated)
 # ═══════════════════════════════════════════════════════
 
 
 @router.get(
-    "/vlan-management/stats", response_model=VlanMgmtStatsResponse
+    "/switches/{switch_id}/ports-db",
+    response_model=PortStatusPageResponse,
 )
+def get_ports_db(
+    switch_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(48, ge=1, le=200),
+    search: str = Query("", max_length=200),
+    filter_by: str = Query("all", max_length=50),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    import re
+
+    get_switch_or_404(db, switch_id)
+
+    locks = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock)
+        .filter(CiscoPortLock.switch_id == switch_id)
+        .all()
+    }
+
+    q = db.query(CiscoPortSnapshot).filter(
+        CiscoPortSnapshot.switch_id == switch_id
+    )
+
+    if search.strip():
+        term = f"%{search.strip()}%"
+        q = q.filter(
+            or_(
+                CiscoPortSnapshot.port_label.ilike(term),
+                CiscoPortSnapshot.description.ilike(term),
+                CiscoPortSnapshot.mac_address.ilike(term),
+                CiscoPortSnapshot.vlan.ilike(term),
+            )
+        )
+
+    if filter_by == "active":
+        q = q.filter(
+            or_(
+                CiscoPortSnapshot.status.ilike("connected"),
+                CiscoPortSnapshot.status.ilike("up"),
+            )
+        )
+    elif filter_by == "inactive":
+        q = q.filter(
+            ~CiscoPortSnapshot.status.ilike("connected"),
+            ~CiscoPortSnapshot.status.ilike("up"),
+            ~CiscoPortSnapshot.status.ilike("%err%"),
+            ~CiscoPortSnapshot.status.ilike("%disabled%"),
+        )
+    elif filter_by == "locked":
+        if locks:
+            q = q.filter(CiscoPortSnapshot.port_label.in_(locks))
+        else:
+            return PortStatusPageResponse(
+                success=True,
+                switch_id=switch_id,
+                port_count=0,
+                ports=[],
+                page=page,
+                page_size=page_size,
+                total_pages=1,
+                stats=PortStats(active=0, inactive=0, error=0, locked=0, unlocked=0),
+            )
+    elif filter_by == "unlocked":
+        if locks:
+            q = q.filter(~CiscoPortSnapshot.port_label.in_(locks))
+
+    total = q.count()
+    all_rows = q.all()
+
+    active_count = inactive_count = error_count = 0
+    locked_count = unlocked_count = 0
+
+    for s in all_rows:
+        sl = (s.status or "").lower()
+        if sl in ("connected", "up"):
+            active_count += 1
+        elif "err" in sl or "disabled" in sl:
+            error_count += 1
+        else:
+            inactive_count += 1
+        if s.port_label in locks:
+            locked_count += 1
+        else:
+            unlocked_count += 1
+
+    PREFIX_ORDER: dict[str, int] = {
+        "tengigabitethernet": 1, "te": 1,
+        "gigabitethernet": 0,    "gi": 0,
+        "fastethernet": 2,       "fa": 2,
+        "ethernet": 3,           "et": 3,
+        "vlan": 10, "loopback": 11, "tunnel": 12,
+        "management": 13, "mgmt": 13,
+        "port-channel": 14, "po": 14,
+    }
+    DEFAULT_PREFIX_ORDER = 9
+
+    def _port_sort_key(snapshot: CiscoPortSnapshot):
+        label = snapshot.port_label or ""
+        match = re.match(r'^([A-Za-z\-]+)(.*)', label)
+        if match:
+            alpha_prefix = match.group(1).lower().rstrip("/")
+            numeric_part = match.group(2).lstrip("/")
+        else:
+            alpha_prefix = label.lower()
+            numeric_part = ""
+        prefix_rank = PREFIX_ORDER.get(alpha_prefix, DEFAULT_PREFIX_ORDER)
+
+        def _to_int(s: str) -> int:
+            try:
+                return int(s)
+            except ValueError:
+                return 0
+
+        numeric_rank = tuple(
+            _to_int(seg)
+            for seg in re.split(r'[/.]', numeric_part)
+            if seg != ""
+        )
+        return (prefix_rank, numeric_rank, label)
+
+    all_rows.sort(key=_port_sort_key)
+
+    total_pages = max(1, ceil(total / page_size)) if page_size > 0 else 1
+    start = (page - 1) * page_size
+    page_rows = all_rows[start: start + page_size]
+
+    ports = [
+        CiscoPortInfo(
+            port_label=s.port_label,
+            port_number=s.port_number,
+            description=s.description or "",
+            status=s.status,
+            vlan=s.vlan or "",
+            duplex=s.duplex or "",
+            speed=s.speed or "",
+            port_type=s.port_type or "",
+            mac_address=s.mac_address,
+            locked=s.port_label in locks,
+        )
+        for s in page_rows
+    ]
+
+    return PortStatusPageResponse(
+        success=True,
+        switch_id=switch_id,
+        port_count=total,
+        ports=ports,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+        stats=PortStats(
+            active=active_count,
+            inactive=inactive_count,
+            error=error_count,
+            locked=locked_count,
+            unlocked=unlocked_count,
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# Port Config History
+# ═══════════════════════════════════════════════════════
+
+
+@router.get(
+    "/switches/{switch_id}/port-config-history/has-history",
+    response_model=PortConfigHistoryHasResponse,
+)
+def get_ports_with_history(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return the distinct port labels that have at least one saved config
+    snapshot for this switch.
+    MUST be before /port-config-history so FastAPI doesn't try to match
+    'has-history' as the port_label query param.
+    """
+    rows = (
+        db.query(CiscoPortConfigHistory.port_label)
+        .filter(CiscoPortConfigHistory.switch_id == switch_id)
+        .distinct()
+        .all()
+    )
+    return PortConfigHistoryHasResponse(
+        success=True,
+        port_labels=[r.port_label for r in rows],
+    )
+
+
+@router.get(
+    "/switches/{switch_id}/port-config-history",
+    response_model=PortConfigHistoryResponse,
+)
+def get_port_config_history(
+    switch_id: int,
+    port_label: str = Query(..., description="Port label, e.g. GigabitEthernet0/1"),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """Return the saved config snapshots for a port, newest first."""
+    rows = (
+        db.query(CiscoPortConfigHistory)
+        .filter(
+            CiscoPortConfigHistory.switch_id == switch_id,
+            CiscoPortConfigHistory.port_label == port_label,
+        )
+        .order_by(CiscoPortConfigHistory.saved_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return PortConfigHistoryResponse(
+        success=True,
+        history=[PortConfigHistoryRead.model_validate(r) for r in rows],
+        total=len(rows),
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# VLAN Management — Stats
+# ═══════════════════════════════════════════════════════
+
+
+@router.get("/vlan-management/stats", response_model=VlanMgmtStatsResponse)
 def vlan_mgmt_stats(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     total = db.query(CiscoVlan).count()
-    active = (
-        db.query(CiscoVlan)
-        .filter(CiscoVlan.status == "active")
-        .count()
-    )
+    active = db.query(CiscoVlan).filter(CiscoVlan.status == "active").count()
     access = (
         db.query(CiscoPortAssignment)
         .filter(CiscoPortAssignment.mode == "access")
@@ -1160,23 +1391,23 @@ def vlan_mgmt_stats(
         .count()
     )
     return VlanMgmtStatsResponse(
-        total_vlans=total,
-        active_vlans=active,
-        access_ports=access,
-        trunk_ports=trunk,
+        total_vlans=total, active_vlans=active,
+        access_ports=access, trunk_ports=trunk,
     )
 
 
-@router.get(
-    "/vlan-management/vlans", response_model=VlanMgmtListResponse
-)
+# ═══════════════════════════════════════════════════════
+# VLAN Management — VLAN CRUD
+# ═══════════════════════════════════════════════════════
+
+
+@router.get("/vlan-management/vlans", response_model=VlanMgmtListResponse)
 def vlan_mgmt_list_vlans(
     search: str = Query("", max_length=100),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
     q = db.query(CiscoVlan)
-
     if search.strip():
         term = f"%{search.strip()}%"
         filters = [CiscoVlan.name.ilike(term)]
@@ -1185,30 +1416,44 @@ def vlan_mgmt_list_vlans(
         except ValueError:
             pass
         q = q.filter(or_(*filters))
-
     rows = q.order_by(CiscoVlan.vlan_id.asc()).all()
-
-    vlans = []
-    for r in rows:
-        vlans.append(
-            VlanMgmtRead(
-                id=r.id,
-                vlan_id=r.vlan_id,
-                name=r.name,
-                status=r.status,
-                port_count=_port_count_for_vlan(db, r.vlan_id),
-                created_at=r.created_at,
-                updated_at=r.updated_at,
-            )
+    vlans = [
+        VlanMgmtRead(
+            id=r.id, vlan_id=r.vlan_id, name=r.name, status=r.status,
+            port_count=_port_count_for_vlan(db, r.vlan_id),
+            created_at=r.created_at, updated_at=r.updated_at,
         )
+        for r in rows
+    ]
+    return VlanMgmtListResponse(success=True, vlans=vlans, total=len(vlans))
 
-    return VlanMgmtListResponse(
-        success=True, vlans=vlans, total=len(vlans)
-    )
 
+@router.get("/vlan-management/vlans/all", response_model=VlanMgmtListResponse)
+def vlan_mgmt_list_all_vlans(
+    search: str = Query("", max_length=100),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(CiscoVlan)
+    if search.strip():
+        term = f"%{search.strip()}%"
+        filters = [CiscoVlan.name.ilike(term)]
+        try:
+            filters.append(CiscoVlan.vlan_id == int(search.strip()))
+        except ValueError:
+            pass
+        q = q.filter(or_(*filters))
+    rows = q.order_by(CiscoVlan.vlan_id.asc()).all()
+    vlans = [
+        VlanMgmtRead(
+            id=r.id, vlan_id=r.vlan_id, name=r.name, status=r.status,
+            port_count=_port_count_for_vlan(db, r.vlan_id),
+            created_at=r.created_at, updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
+    return VlanMgmtListResponse(success=True, vlans=vlans, total=len(vlans))
 
-# app/routes/cisco_routes.py
-# Replace the vlan_mgmt_create_vlan endpoint
 
 @router.post(
     "/vlan-management/vlans",
@@ -1220,83 +1465,53 @@ def vlan_mgmt_create_vlan(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    """
-    Create a VLAN in cisco_vlans (management table) AND inject it into
-    cisco_vlan_snapshots for every known switch so it appears immediately
-    in the Switch VLANs card without waiting for a full sync.
-    """
     existing = (
-        db.query(CiscoVlan)
-        .filter(CiscoVlan.vlan_id == body.vlan_id)
-        .first()
+        db.query(CiscoVlan).filter(CiscoVlan.vlan_id == body.vlan_id).first()
     )
     if existing:
         raise HTTPException(
-            status_code=409,
-            detail=f"VLAN {body.vlan_id} already exists.",
+            status_code=409, detail=f"VLAN {body.vlan_id} already exists."
         )
-
     now = datetime.utcnow()
-
-    # ── 1. Insert into management table (cisco_vlans) ─────────────
     vlan = CiscoVlan(
-        vlan_id    = body.vlan_id,
-        name       = body.name.strip(),
-        status     = "active",
-        created_at = now,
-        updated_at = now,
+        vlan_id=body.vlan_id, name=body.name.strip(),
+        status="active", created_at=now, updated_at=now,
     )
     db.add(vlan)
 
-    # ── 2. Inject into cisco_vlan_snapshots for every switch ──────
-    #    so the Switch VLANs card shows it straight away.
-    #    If a snapshot row already exists for this switch+vlan we
-    #    update it; otherwise we create a new one.
     switches = db.query(CiscoSwitch).all()
     for sw in switches:
         snapshot = (
             db.query(CiscoVlanSnapshot)
             .filter(
                 CiscoVlanSnapshot.switch_id == sw.id,
-                CiscoVlanSnapshot.vlan_id   == body.vlan_id,
+                CiscoVlanSnapshot.vlan_id == body.vlan_id,
             )
             .first()
         )
         if snapshot:
-            # Update in case name/status changed
-            snapshot.name         = body.name.strip()
-            snapshot.status       = "active"
+            snapshot.name = body.name.strip()
+            snapshot.status = "active"
             snapshot.last_seen_at = now
         else:
-            db.add(
-                CiscoVlanSnapshot(
-                    switch_id    = sw.id,
-                    vlan_id      = body.vlan_id,
-                    name         = body.name.strip(),
-                    status       = "active",
-                    ports        = "[]",       # no ports yet
-                    last_seen_at = now,
-                    created_at   = now,
-                )
-            )
+            db.add(CiscoVlanSnapshot(
+                switch_id=sw.id, vlan_id=body.vlan_id,
+                name=body.name.strip(), status="active",
+                ports="[]", last_seen_at=now, created_at=now,
+            ))
 
     db.commit()
     db.refresh(vlan)
-
     logger.info(
         "Created VLAN %d (%s) by %s — injected into %d switch snapshot(s)",
         vlan.vlan_id, vlan.name, current_user.username, len(switches),
     )
-
     return VlanMgmtRead(
-        id         = vlan.id,
-        vlan_id    = vlan.vlan_id,
-        name       = vlan.name,
-        status     = vlan.status,
-        port_count = 0,
-        created_at = vlan.created_at,
-        updated_at = vlan.updated_at,
+        id=vlan.id, vlan_id=vlan.vlan_id, name=vlan.name,
+        status=vlan.status, port_count=0,
+        created_at=vlan.created_at, updated_at=vlan.updated_at,
     )
+
 
 @router.delete(
     "/vlan-management/vlans/{vlan_db_id}",
@@ -1307,23 +1522,17 @@ def vlan_mgmt_delete_vlan(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    vlan = (
-        db.query(CiscoVlan)
-        .filter(CiscoVlan.id == vlan_db_id)
-        .first()
-    )
+    vlan = db.query(CiscoVlan).filter(CiscoVlan.id == vlan_db_id).first()
     if not vlan:
         raise HTTPException(status_code=404, detail="VLAN not found.")
     if vlan.vlan_id == 1:
         raise HTTPException(
-            status_code=400,
-            detail="Cannot delete the default VLAN (1).",
+            status_code=400, detail="Cannot delete the default VLAN (1)."
         )
 
     vid = vlan.vlan_id
     affected = 0
 
-    # Cascade: access ports → VLAN 1
     rows = (
         db.query(CiscoPortAssignment)
         .filter(
@@ -1337,13 +1546,7 @@ def vlan_mgmt_delete_vlan(
         pa.updated_at = datetime.utcnow()
         affected += 1
 
-    # Cascade: trunk ports
-    trunk_rows = (
-        db.query(CiscoPortAssignment)
-        .filter(CiscoPortAssignment.mode == "trunk")
-        .all()
-    )
-    for pa in trunk_rows:
+    for pa in db.query(CiscoPortAssignment).filter(CiscoPortAssignment.mode == "trunk").all():
         changed = False
         if pa.trunk_native_vlan == vid:
             pa.trunk_native_vlan = 1
@@ -1365,19 +1568,15 @@ def vlan_mgmt_delete_vlan(
     db.commit()
     logger.info(
         "Deleted VLAN %d, affected %d ports — by %s",
-        vid,
-        affected,
-        current_user.username,
+        vid, affected, current_user.username,
     )
     return VlanMgmtDeleteResponse(
-        success=True,
-        message=f"VLAN {vid} deleted.",
-        affected_ports=affected,
+        success=True, message=f"VLAN {vid} deleted.", affected_ports=affected,
     )
 
 
 # ═══════════════════════════════════════════════════════
-# VLAN-Management — Port Assignment CRUD
+# VLAN Management — Port Assignments
 # ═══════════════════════════════════════════════════════
 
 
@@ -1391,7 +1590,6 @@ def vlan_mgmt_list_ports(
     current_user: TokenUser = Depends(get_current_user),
 ):
     q = db.query(CiscoPortAssignment)
-
     if search.strip():
         term = f"%{search.strip()}%"
         q = q.filter(
@@ -1401,7 +1599,6 @@ def vlan_mgmt_list_ports(
                 CiscoPortAssignment.description.ilike(term),
             )
         )
-
     rows = (
         q.order_by(
             CiscoPortAssignment.switch_name.asc(),
@@ -1409,9 +1606,8 @@ def vlan_mgmt_list_ports(
         )
         .all()
     )
-    ports = [_pa_to_read(r) for r in rows]
     return PortAssignmentListResponse(
-        success=True, ports=ports, total=len(ports)
+        success=True, ports=[_pa_to_read(r) for r in rows], total=len(rows)
     )
 
 
@@ -1426,7 +1622,6 @@ def vlan_mgmt_create_port(
     current_user: TokenUser = Depends(require_admin),
 ):
     sw = get_switch_or_404(db, body.switch_id)
-
     existing = (
         db.query(CiscoPortAssignment)
         .filter(
@@ -1438,29 +1633,19 @@ def vlan_mgmt_create_port(
     if existing:
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"Port {body.port_id} already assigned "
-                f"on switch {sw.name}."
-            ),
+            detail=f"Port {body.port_id} already assigned on switch {sw.name}.",
         )
-
     now = datetime.utcnow()
     pa = CiscoPortAssignment(
         switch_id=body.switch_id,
         port_id=body.port_id.strip(),
         switch_name=sw.name,
         mode=body.mode,
-        access_vlan=(
-            body.access_vlan if body.mode == "access" else 1
-        ),
+        access_vlan=body.access_vlan if body.mode == "access" else 1,
         trunk_allowed_vlans=(
-            json.dumps(body.trunk_allowed_vlans)
-            if body.mode == "trunk"
-            else "[]"
+            json.dumps(body.trunk_allowed_vlans) if body.mode == "trunk" else "[]"
         ),
-        trunk_native_vlan=(
-            body.trunk_native_vlan if body.mode == "trunk" else 1
-        ),
+        trunk_native_vlan=body.trunk_native_vlan if body.mode == "trunk" else 1,
         status=body.status,
         description=body.description.strip(),
         created_at=now,
@@ -1471,9 +1656,7 @@ def vlan_mgmt_create_port(
     db.refresh(pa)
     logger.info(
         "Created port assignment %s on %s by %s",
-        pa.port_id,
-        sw.name,
-        current_user.username,
+        pa.port_id, sw.name, current_user.username,
     )
     return _pa_to_read(pa)
 
@@ -1494,429 +1677,122 @@ def vlan_mgmt_update_port(
         .first()
     )
     if not pa:
-        raise HTTPException(
-            status_code=404, detail="Port assignment not found."
-        )
+        raise HTTPException(status_code=404, detail="Port assignment not found.")
 
     pa.mode = body.mode
     if body.mode == "access":
-        pa.access_vlan = (
-            body.access_vlan if body.access_vlan is not None else 1
-        )
+        pa.access_vlan = body.access_vlan if body.access_vlan is not None else 1
         pa.trunk_allowed_vlans = "[]"
         pa.trunk_native_vlan = 1
     else:
         pa.access_vlan = 1
-        pa.trunk_allowed_vlans = json.dumps(
-            body.trunk_allowed_vlans or []
-        )
-        pa.trunk_native_vlan = (
-            body.trunk_native_vlan
-            if body.trunk_native_vlan is not None
-            else 1
-        )
+        pa.trunk_allowed_vlans = json.dumps(body.trunk_allowed_vlans or [])
+        pa.trunk_native_vlan = body.trunk_native_vlan if body.trunk_native_vlan is not None else 1
 
     pa.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(pa)
-    logger.info(
-        "Updated port %s (id=%d) by %s",
-        pa.port_id,
-        pa.id,
-        current_user.username,
-    )
+    logger.info("Updated port %s (id=%d) by %s", pa.port_id, pa.id, current_user.username)
     return _pa_to_read(pa)
 
 
-@router.post(
-    "/switches/{switch_id}/sync-ports",
-    response_model=PortStatusResponse,
-)
-def sync_ports(
-    switch_id: int,
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    """
-    Fetch live port data from the Cisco switch and upsert it into
-    cisco_port_snapshots so that the paginated DB endpoint can serve it.
-    Returns the full (non-paginated) list for immediate use.
-    """
-    sw = get_switch_or_404(db, switch_id)
-    service = CiscoConnectionService(sw)
- 
-    try:
-        ok, proto, raw_ports, error = service.get_all_port_status(timeout=25)
-    except Exception as e:
-        return PortStatusResponse(
-            success=False, switch_id=switch_id,
-            error=f"{type(e).__name__}: {e}",
-        )
- 
-    if not ok:
-        return PortStatusResponse(
-            success=False, switch_id=switch_id,
-            protocol_used=proto, error=error,
-        )
- 
-    locks = {
-        lock.port_label
-        for lock in db.query(CiscoPortLock)
-        .filter(CiscoPortLock.switch_id == switch_id)
-        .all()
-    }
- 
-    now = datetime.utcnow()
-    saved_ports = []
- 
-    for p in raw_ports:
-        label = p["port_label"]
- 
-        snapshot = (
-            db.query(CiscoPortSnapshot)
-            .filter(
-                CiscoPortSnapshot.switch_id == switch_id,
-                CiscoPortSnapshot.port_label == label,
-            )
-            .first()
-        )
- 
-        if snapshot:
-            snapshot.port_number  = p.get("port_number", 0)
-            snapshot.description  = p.get("description", "")
-            snapshot.status       = p["status"]
-            snapshot.vlan         = p.get("vlan", "")
-            snapshot.duplex       = p.get("duplex", "")
-            snapshot.speed        = p.get("speed", "")
-            snapshot.port_type    = p.get("port_type", "")
-            snapshot.mac_address  = p.get("mac_address")
-            snapshot.last_seen_at = now
-        else:
-            snapshot = CiscoPortSnapshot(
-                switch_id=switch_id,
-                port_label=label,
-                port_number=p.get("port_number", 0),
-                description=p.get("description", ""),
-                status=p["status"],
-                vlan=p.get("vlan", ""),
-                duplex=p.get("duplex", ""),
-                speed=p.get("speed", ""),
-                port_type=p.get("port_type", ""),
-                mac_address=p.get("mac_address"),
-                last_seen_at=now,
-                created_at=now,
-            )
-            db.add(snapshot)
- 
-        saved_ports.append(
-            CiscoPortInfo(
-                port_label=label,
-                port_number=p.get("port_number", 0),
-                description=p.get("description", ""),
-                status=p["status"],
-                vlan=p.get("vlan", ""),
-                duplex=p.get("duplex", ""),
-                speed=p.get("speed", ""),
-                port_type=p.get("port_type", ""),
-                mac_address=p.get("mac_address"),
-                locked=label in locks,
-            )
-        )
- 
-    db.commit()
- 
-    saved_ports.sort(
-        key=lambda x: (x.port_label.split("/")[0], x.port_number)
-    )
- 
-    logger.info(
-        "Synced %d ports for switch %d (%s) by %s",
-        len(saved_ports), switch_id, sw.name, current_user.username,
-    )
- 
-    return PortStatusResponse(
-        success=True,
-        switch_id=switch_id,
-        port_count=len(saved_ports),
-        ports=saved_ports,
-        protocol_used=proto,
-    )
- 
- 
-# app/routes/cisco_routes.py
-# Only the get_ports_db endpoint needs changes — everything else stays identical
+# ═══════════════════════════════════════════════════════
+# Switch VLANs (merged snapshot + management)
+# ═══════════════════════════════════════════════════════
+
 
 @router.get(
-    "/switches/{switch_id}/ports-db",
-    response_model=PortStatusPageResponse,
-)
-def get_ports_db(
-    switch_id: int,
-    page: int      = Query(1,    ge=1),
-    page_size: int = Query(48,   ge=1, le=200),
-    search: str    = Query("",   max_length=200),
-    filter_by: str = Query("all", max_length=50),
-    db: Session    = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    """
-    Return a paginated list of ports from cisco_port_snapshots.
-    Ports are grouped by interface type prefix (e.g. GigabitEthernet,
-    FastEthernet, TenGigabitEthernet) and sorted numerically within
-    each group — so you get Gi1…Gi48, then Fa1…Fa48, not interleaved.
-    """
-    get_switch_or_404(db, switch_id)
-
-    locks = {
-        lock.port_label
-        for lock in db.query(CiscoPortLock)
-        .filter(CiscoPortLock.switch_id == switch_id)
-        .all()
-    }
-
-    q = db.query(CiscoPortSnapshot).filter(
-        CiscoPortSnapshot.switch_id == switch_id
-    )
-
-    # ── Search ────────────────────────────────────────────────────
-    if search.strip():
-        term = f"%{search.strip()}%"
-        q = q.filter(
-            or_(
-                CiscoPortSnapshot.port_label.ilike(term),
-                CiscoPortSnapshot.description.ilike(term),
-                CiscoPortSnapshot.mac_address.ilike(term),
-                CiscoPortSnapshot.vlan.ilike(term),
-            )
-        )
-
-    # ── Filter ────────────────────────────────────────────────────
-    if filter_by == "active":
-        q = q.filter(
-            or_(
-                CiscoPortSnapshot.status.ilike("connected"),
-                CiscoPortSnapshot.status.ilike("up"),
-            )
-        )
-    elif filter_by == "inactive":
-        q = q.filter(
-            ~CiscoPortSnapshot.status.ilike("connected"),
-            ~CiscoPortSnapshot.status.ilike("up"),
-            ~CiscoPortSnapshot.status.ilike("%err%"),
-            ~CiscoPortSnapshot.status.ilike("%disabled%"),
-        )
-    elif filter_by == "locked":
-        if locks:
-            q = q.filter(CiscoPortSnapshot.port_label.in_(locks))
-        else:
-            # No locked ports → return empty result but still with pagination
-            return PortStatusPageResponse(
-                success=True,
-                switch_id=switch_id,
-                port_count=0,
-                ports=[],
-                page=page,
-                page_size=page_size,
-                total_pages=1,
-                stats=PortStats(
-                    active=0, inactive=0, error=0,
-                    locked=0, unlocked=0,
-                ),
-            )
-    elif filter_by == "unlocked":
-        if locks:
-            q = q.filter(~CiscoPortSnapshot.port_label.in_(locks))
-
-    # ── Fetch all matching rows for stats + custom sort ───────────
-    total    = q.count()
-    all_rows = q.all()
-
-    # ── Stats across ALL filtered rows ────────────────────────────
-    active_count = inactive_count = error_count = 0
-    locked_count = unlocked_count = 0
-
-    for s in all_rows:
-        sl = (s.status or "").lower()
-        if sl in ("connected", "up"):
-            active_count += 1
-        elif "err" in sl or "disabled" in sl:
-            error_count += 1
-        else:
-            inactive_count += 1
-
-        if s.port_label in locks:
-            locked_count += 1
-        else:
-            unlocked_count += 1
-
-    # ── Sort: group by interface-type prefix, then by port number ─
-    #
-    # Strategy:
-    #   1. Extract the alphabetic prefix from port_label
-    #      e.g. "GigabitEthernet1/0/3"  → prefix = "GigabitEthernet"
-    #           "Gi1/0/3"               → prefix = "Gi"
-    #           "FastEthernet0/1"       → prefix = "FastEthernet"
-    #           "Te1/1/1"               → prefix = "Te"
-    #           "Loopback0"             → prefix = "Loopback"
-    #   2. Assign a canonical order to known prefixes so that
-    #      GigabitEthernet / Gi come before FastEthernet / Fa, etc.
-    #   3. Within the same prefix group sort by the numeric portion
-    #      of port_label in natural order (1/0/1 < 1/0/2 < 1/0/10).
-    #
-    # This guarantees Gi1…Gi48 are consecutive, then Fa1…Fa48, etc.
-
-    # Canonical prefix priority (lower = earlier in the list)
-    PREFIX_ORDER: dict[str, int] = {
-        # Ten-Gigabit variants
-        "tengigabitethernet": 0,
-        "te":                 0,
-        # Gigabit variants
-        "gigabitethernet":    1,
-        "gi":                 1,
-        # Fast-Ethernet variants
-        "fastethernet":       2,
-        "fa":                 2,
-        # Ethernet
-        "ethernet":           3,
-        "et":                 3,
-        # Management / VLAN / Loopback / Tunnel — push to the end
-        "vlan":               10,
-        "loopback":           11,
-        "tunnel":             12,
-        "management":         13,
-        "mgmt":               13,
-        "port-channel":       14,
-        "po":                 14,
-    }
-    DEFAULT_PREFIX_ORDER = 9  # unknown types go between physical and virtual
-
-    import re
-
-    def _port_sort_key(snapshot: CiscoPortSnapshot):
-        label = snapshot.port_label or ""
-
-        # Split label into leading alpha prefix and the rest
-        # e.g. "GigabitEthernet1/0/3" → ("GigabitEthernet", "1/0/3")
-        #      "Gi1/0/48"             → ("Gi", "1/0/48")
-        match = re.match(r'^([A-Za-z\-]+)(.*)', label)
-        if match:
-            alpha_prefix = match.group(1).lower().rstrip("/")
-            numeric_part = match.group(2).lstrip("/")
-        else:
-            alpha_prefix = label.lower()
-            numeric_part = ""
-
-        prefix_rank = PREFIX_ORDER.get(alpha_prefix, DEFAULT_PREFIX_ORDER)
-
-        # Natural-sort the numeric portion: split on "/" and "." then
-        # convert each segment to int so "1/0/10" > "1/0/9"
-        def _to_int(s: str) -> int:
-            try:
-                return int(s)
-            except ValueError:
-                return 0
-
-        numeric_rank = tuple(
-            _to_int(seg)
-            for seg in re.split(r'[/.]', numeric_part)
-            if seg != ""
-        )
-
-        return (prefix_rank, numeric_rank, label)
-
-    all_rows.sort(key=_port_sort_key)
-
-    # ── Paginate over the sorted list ─────────────────────────────
-    # Always return at least 1 total_page even when there are 0 rows
-    total_pages = max(1, ceil(total / page_size)) if page_size > 0 else 1
-    start       = (page - 1) * page_size
-    page_rows   = all_rows[start: start + page_size]
-
-    ports = [
-        CiscoPortInfo(
-            port_label  = s.port_label,
-            port_number = s.port_number,
-            description = s.description or "",
-            status      = s.status,
-            vlan        = s.vlan or "",
-            duplex      = s.duplex or "",
-            speed       = s.speed or "",
-            port_type   = s.port_type or "",
-            mac_address = s.mac_address,
-            locked      = s.port_label in locks,
-        )
-        for s in page_rows
-    ]
-
-    return PortStatusPageResponse(
-        success     = True,
-        switch_id   = switch_id,
-        port_count  = total,
-        ports       = ports,
-        page        = page,
-        page_size   = page_size,
-        total_pages = total_pages,
-        stats       = PortStats(
-            active   = active_count,
-            inactive = inactive_count,
-            error    = error_count,
-            locked   = locked_count,
-            unlocked = unlocked_count,
-        ),
-    )
-@router.get(
-    "/vlan-management/vlans/all",
+    "/switches/{switch_id}/vlans-all",
     response_model=VlanMgmtListResponse,
 )
-def vlan_mgmt_list_all_vlans(
+def get_switch_all_vlans(
+    switch_id: int,
     search: str = Query("", max_length=100),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """Return all VLANs with optional search — used by Configure Port modal."""
-    q = db.query(CiscoVlan)
+    get_switch_or_404(db, switch_id)
+
+    snap_q = db.query(CiscoVlanSnapshot).filter(
+        CiscoVlanSnapshot.switch_id == switch_id
+    )
     if search.strip():
         term = f"%{search.strip()}%"
-        filters = [CiscoVlan.name.ilike(term)]
+        snap_filters = [
+            CiscoVlanSnapshot.name.ilike(term),
+            CiscoVlanSnapshot.status.ilike(term),
+        ]
         try:
-            filters.append(CiscoVlan.vlan_id == int(search.strip()))
+            snap_filters.append(CiscoVlanSnapshot.vlan_id == int(search.strip()))
         except ValueError:
             pass
-        q = q.filter(or_(*filters))
+        snap_q = snap_q.filter(or_(*snap_filters))
 
-    rows = q.order_by(CiscoVlan.vlan_id.asc()).all()
-    vlans = [
-        VlanMgmtRead(
-            id=r.id,
-            vlan_id=r.vlan_id,
-            name=r.name,
-            status=r.status,
-            port_count=_port_count_for_vlan(db, r.vlan_id),
-            created_at=r.created_at,
-            updated_at=r.updated_at,
+    snapshots = snap_q.order_by(CiscoVlanSnapshot.vlan_id.asc()).all()
+
+    total_snapshots_for_switch = (
+        db.query(CiscoVlanSnapshot)
+        .filter(CiscoVlanSnapshot.switch_id == switch_id)
+        .count()
+    )
+    has_snapshot_vlans = total_snapshots_for_switch > 0
+
+    seen_vlan_ids: set[int] = set()
+    vlans: list[VlanMgmtRead] = []
+
+    for s in snapshots:
+        seen_vlan_ids.add(s.vlan_id)
+        vlans.append(
+            VlanMgmtRead(
+                id=s.vlan_id, vlan_id=s.vlan_id, name=s.name, status=s.status,
+                port_count=_port_count_for_vlan(db, s.vlan_id),
+                created_at=s.created_at, updated_at=s.last_seen_at,
+            )
         )
-        for r in rows
-    ]
-    return VlanMgmtListResponse(success=True, vlans=vlans, total=len(vlans))
-# app/routes/cisco_routes.py - Add this new endpoint
 
-@router.get(
-    "/overview",
-    response_model=OverviewResponse,
-)
+    mgmt_q = db.query(CiscoVlan)
+    if search.strip():
+        term = f"%{search.strip()}%"
+        mgmt_filters = [CiscoVlan.name.ilike(term)]
+        try:
+            mgmt_filters.append(CiscoVlan.vlan_id == int(search.strip()))
+        except ValueError:
+            pass
+        mgmt_q = mgmt_q.filter(or_(*mgmt_filters))
+
+    for v in mgmt_q.order_by(CiscoVlan.vlan_id.asc()).all():
+        if v.vlan_id in seen_vlan_ids:
+            continue
+        vlans.append(
+            VlanMgmtRead(
+                id=v.id, vlan_id=v.vlan_id, name=v.name, status=v.status,
+                port_count=_port_count_for_vlan(db, v.vlan_id),
+                created_at=v.created_at, updated_at=v.updated_at,
+            )
+        )
+
+    vlans.sort(key=lambda x: x.vlan_id)
+    return VlanMgmtListResponse(
+        success=True, vlans=vlans, total=len(vlans),
+        has_snapshot_vlans=has_snapshot_vlans,
+    )
+
+
+# ═══════════════════════════════════════════════════════
+# Overview
+# ═══════════════════════════════════════════════════════
+
+
+@router.get("/overview", response_model=OverviewResponse)
 def get_overview(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Return a fully DB-backed overview — no live switch calls.
-    All data comes from what was previously synced/tested.
-    """
     switches = db.query(CiscoSwitch).order_by(CiscoSwitch.id.asc()).all()
 
-    total_switches   = len(switches)
-    active_switches  = sum(1 for s in switches if s.status == "active")
-    error_switches   = sum(1 for s in switches if s.status == "error")
+    total_switches = len(switches)
+    active_switches = sum(1 for s in switches if s.status == "active")
+    error_switches = sum(1 for s in switches if s.status == "error")
     inactive_switches = sum(1 for s in switches if s.status == "inactive")
 
     response_times = [
@@ -1929,14 +1805,12 @@ def get_overview(
         if response_times else None
     )
 
-    # Protocol distribution from health_protocol_used
     proto_counts: dict[str, int] = {}
     for sw in switches:
         proto = sw.health_protocol_used or "none"
         proto_counts[proto] = proto_counts.get(proto, 0) + 1
 
-    # VLAN stats from cisco_vlans table
-    total_vlans  = db.query(CiscoVlan).count()
+    total_vlans = db.query(CiscoVlan).count()
     active_vlans = db.query(CiscoVlan).filter(CiscoVlan.status == "active").count()
     access_ports = (
         db.query(CiscoPortAssignment)
@@ -1949,53 +1823,47 @@ def get_overview(
         .count()
     )
 
-    # Port summary across ALL synced snapshots
     all_snapshots = db.query(CiscoPortSnapshot).all()
-    total_ports    = len(all_snapshots)
+    total_ports = len(all_snapshots)
     connected_ports = sum(
         1 for p in all_snapshots
         if (p.status or "").lower() in ("connected", "up")
     )
     locked_labels = {
-        lock.port_label
-        for lock in db.query(CiscoPortLock).all()
+        lock.port_label for lock in db.query(CiscoPortLock).all()
     }
     locked_ports = sum(
-        1 for p in all_snapshots
-        if p.port_label in locked_labels
+        1 for p in all_snapshots if p.port_label in locked_labels
     )
 
-    # Per-switch summary cards
     switch_summaries = []
     for sw in switches:
-        # Count ports for this switch from snapshots
-        sw_snapshots = db.query(CiscoPortSnapshot).filter(
-            CiscoPortSnapshot.switch_id == sw.id
-        ).all()
-        sw_total     = len(sw_snapshots)
+        sw_snapshots = (
+            db.query(CiscoPortSnapshot)
+            .filter(CiscoPortSnapshot.switch_id == sw.id)
+            .all()
+        )
+        sw_total = len(sw_snapshots)
         sw_connected = sum(
             1 for p in sw_snapshots
             if (p.status or "").lower() in ("connected", "up")
         )
         sw_locked = sum(
-            1 for p in sw_snapshots
-            if p.port_label in locked_labels
+            1 for p in sw_snapshots if p.port_label in locked_labels
         )
-        # VLAN snapshot count for this switch
-        sw_vlan_count = db.query(CiscoVlanSnapshot).filter(
-            CiscoVlanSnapshot.switch_id == sw.id
-        ).count()
-        # Interface snapshot count
-        sw_iface_count = db.query(CiscoInterfaceSnapshot).filter(
-            CiscoInterfaceSnapshot.switch_id == sw.id
-        ).count()
-
+        sw_vlan_count = (
+            db.query(CiscoVlanSnapshot)
+            .filter(CiscoVlanSnapshot.switch_id == sw.id)
+            .count()
+        )
+        sw_iface_count = (
+            db.query(CiscoInterfaceSnapshot)
+            .filter(CiscoInterfaceSnapshot.switch_id == sw.id)
+            .count()
+        )
         switch_summaries.append(
             SwitchOverviewSummary(
-                id=sw.id,
-                name=sw.name,
-                host=sw.host,
-                status=sw.status,
+                id=sw.id, name=sw.name, host=sw.host, status=sw.status,
                 protocol_preference=sw.protocol_preference,
                 health_protocol_used=sw.health_protocol_used,
                 last_error=sw.last_error,
@@ -2036,4 +1904,46 @@ def get_overview(
         locked_ports=locked_ports,
         switches=switch_summaries,
         recently_checked=recently_checked,
+    )
+@router.get(
+    "/switches/{switch_id}/port-config-db",
+    response_model=PortConfigResponse,
+)
+def get_port_config_db(
+    switch_id: int,
+    port_label: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return the most recent saved config snapshot for a port from the DB.
+    Falls back to a clear error if no snapshot exists yet.
+    """
+    get_switch_or_404(db, switch_id)
+
+    row = (
+        db.query(CiscoPortConfigHistory)
+        .filter(
+            CiscoPortConfigHistory.switch_id == switch_id,
+            CiscoPortConfigHistory.port_label == port_label,
+        )
+        .order_by(CiscoPortConfigHistory.saved_at.desc())
+        .first()
+    )
+
+    if not row:
+        return PortConfigResponse(
+            success=False,
+            port_label=port_label,
+            error=(
+                "No config snapshot found in the database for this port. "
+                "A snapshot is saved automatically the first time you apply "
+                "a configuration change to this port."
+            ),
+        )
+
+    return PortConfigResponse(
+        success=True,
+        port_label=port_label,
+        config=row.config_text,
     )

@@ -55,3 +55,4 @@ export type NavSection =
   | "switch-management"
   | "port-management"
   | "vlan-management";
+  | "cisco-configs";

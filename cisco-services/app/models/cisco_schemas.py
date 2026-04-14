@@ -241,6 +241,7 @@ class VlanMgmtListResponse(BaseModel):
     success: bool = True
     vlans: List[VlanMgmtRead] = []
     total: int = 0
+    has_snapshot_vlans: bool = False  # ← add this field
 
 
 class VlanMgmtDeleteResponse(BaseModel):
@@ -411,3 +412,115 @@ class OverviewResponse(BaseModel):
     # Per-switch details
     switches: List[SwitchOverviewSummary] = []
     recently_checked: List[SwitchOverviewSummary] = []
+# app/models/cisco_schemas.py
+# Update VlanChangeRequest to include optional port_status field
+
+class VlanChangeRequest(BaseModel):
+    port_label:   str
+    new_vlan:     str
+    vlan_type:    str = "Access"
+    description:  str = ""
+    port_status:  Optional[str] = None   # "up" | "down" | None (leave unchanged)
+# app/models/cisco_schemas.py
+# Update VlanMgmtListResponse to carry the flag
+# app/models/cisco_schemas.py
+# Add these classes (append to existing file)
+
+# ═══════════════════════════════════════════════════════
+# Saved Config Templates
+# ═══════════════════════════════════════════════════════
+
+class ConfigArgDef(BaseModel):
+    name: str
+    label: str = ""
+    placeholder: str = ""
+    default: str = ""
+
+
+class SavedConfigCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: str = ""
+    template: str = Field(..., min_length=1)
+    args: List[ConfigArgDef] = []
+
+
+class SavedConfigUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    template: Optional[str] = None
+    args: Optional[List[ConfigArgDef]] = None
+
+
+class SavedConfigRead(BaseModel):
+    id: int
+    name: str
+    description: str
+    template: str
+    args: List[ConfigArgDef] = []
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SavedConfigListResponse(BaseModel):
+    success: bool = True
+    configs: List[SavedConfigRead] = []
+    total: int = 0
+
+
+class SavedConfigDeleteResponse(BaseModel):
+    success: bool
+    message: str
+
+
+class ExecuteConfigRequest(BaseModel):
+    switch_id: int
+    command: str = Field(..., min_length=1)
+
+
+class ExecuteConfigResponse(BaseModel):
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+    protocol_used: Optional[str] = None
+    execution_time_ms: Optional[float] = None
+
+# app/models/cisco_schemas.py
+# — append / update these sections in your existing file —
+
+# ═══════════════════════════════════════════════════════
+# Port Config History  (NEW)
+# ═══════════════════════════════════════════════════════
+
+class PortConfigHistoryRead(BaseModel):
+    id: int
+    switch_id: int
+    port_label: str
+    config_text: str
+    saved_by: Optional[str] = None
+    saved_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PortConfigHistoryResponse(BaseModel):
+    """Returned by GET /switches/{id}/port-config-history?port_label=..."""
+    success: bool = True
+    history: List[PortConfigHistoryRead] = []
+    total: int = 0
+
+
+class PortConfigHistoryHasResponse(BaseModel):
+    """
+    Returned by GET /switches/{id}/port-config-history/has-history
+    Lists only the port_labels that have at least one history entry.
+    Used by the frontend to decide which rows should show the
+    'Last Config' button.
+    """
+    success: bool = True
+    port_labels: List[str] = []
+    

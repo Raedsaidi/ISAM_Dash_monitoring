@@ -5,6 +5,8 @@ from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from app.api.v1.endpoints.cisco import router as cisco_router
+from app.api.v1.endpoints.cisco_config_routes import router as cisco_config_router  # ← add this
 
 from app.api.v1.endpoints.cisco import router as cisco_router
 from app.core.config import settings
@@ -242,6 +244,7 @@ def create_app() -> FastAPI:
     Base.metadata.create_all(bind=engine)
     seed_default_vlan()
     app.include_router(cisco_router, prefix="/api/v1")
+    app.include_router(cisco_config_router, prefix="/api/v1")
 
     @app.get("/health", tags=["Health"])
     def health():
