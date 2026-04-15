@@ -102,14 +102,14 @@ interface SwitchVlanResponse {
   has_snapshot_vlans: boolean;
 }
 
-// ─── NEW: Port Config History ─────────────────────────────────────────────────
+// ─── Port Config History ──────────────────────────────────────────────────────
 
 interface PortConfigHistory {
   id: number;
   switch_id: number;
   port_label: string;
   config_text: string;
-  saved_at: string; // ISO datetime
+  saved_at: string;
   saved_by?: string;
 }
 
@@ -117,6 +117,178 @@ interface PortConfigHistoryResponse {
   success: boolean;
   history: PortConfigHistory[];
   total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+const HISTORY_PAGE_SIZE = 4;
+function HistoryPagination({
+  page,
+  totalPages,
+  total,
+  pageSize,
+  onChange,
+  loading,
+}: {
+  page: number;
+  totalPages: number;
+  total: number;
+  pageSize: number;
+  onChange: (p: number) => void;
+  loading: boolean;
+}) {
+  const safeTotalPages = Math.max(1, totalPages);
+  const safePage = Math.min(Math.max(1, page), safeTotalPages);
+
+  const start = (safePage - 1) * pageSize + 1;
+  const end = Math.min(safePage * pageSize, total);
+
+  return (
+    <div
+      className="flex items-center justify-between px-4 py-2.5 border-t
+                 border-slate-200 bg-slate-50 shrink-0"
+    >
+      {/* Count info */}
+      <p className="text-xs text-slate-500">
+        {total === 0
+          ? "No snapshots"
+          : `${start}–${end} of ${total} snapshot${total !== 1 ? "s" : ""}`}
+      </p>
+
+      {/* Page buttons */}
+      <div className="flex items-center gap-1">
+        {/* First */}
+        <button
+          onClick={() => onChange(1)}
+          disabled={safePage <= 1 || loading}
+          className="p-1.5 rounded-lg border border-slate-300 hover:bg-white
+                     disabled:opacity-40 disabled:cursor-not-allowed
+                     transition-colors"
+          title="First page"
+        >
+          <ChevronLeft size={14} className="text-slate-600" />
+        </button>
+
+        {/* Prev */}
+        <button
+          onClick={() => onChange(safePage - 1)}
+          disabled={safePage <= 1 || loading}
+          className="p-1.5 rounded-lg border border-slate-300 hover:bg-white
+                     disabled:opacity-40 disabled:cursor-not-allowed
+                     transition-colors"
+          title="Previous page"
+        >
+          <ChevronLeft size={14} className="text-slate-600" />
+        </button>
+
+        {/* Page numbers */}
+        {Array.from({ length: safeTotalPages }, (_, i) => i + 1)
+          .filter((p) => {
+            // Show first, last, current and neighbors
+            if (safeTotalPages <= 5) return true;
+            return (
+              p === 1 || p === safeTotalPages || Math.abs(p - safePage) <= 1
+            );
+          })
+          .reduce<(number | "…")[]>((acc, p, i, arr) => {
+            // Insert ellipsis for gaps
+            if (i > 0 && typeof arr[i - 1] === "number") {
+              const prev = arr[i - 1] as number;
+              if (p - prev > 1) acc.push("…");
+            }
+            acc.push(p);
+            return acc;
+          }, [])
+          .map((item, i) =>
+            item === "…" ? (
+              <span
+                key={`ellipsis-${i}`}
+                className="w-7 text-center text-xs text-slate-400"
+              >
+                …
+              </span>
+            ) : (
+              <button
+                key={item}
+                onClick={() => onChange(item as number)}
+                disabled={loading}
+                className={cn(
+                  "w-7 h-7 rounded-lg text-xs font-medium transition-colors border",
+                  item === safePage
+                    ? "bg-amber-600 text-white border-amber-600"
+                    : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50",
+                )}
+              >
+                {item}
+              </button>
+            ),
+          )}
+
+        {/* Next */}
+        <button
+          onClick={() => onChange(safePage + 1)}
+          disabled={safePage >= safeTotalPages || loading}
+          className="p-1.5 rounded-lg border border-slate-300 hover:bg-white
+                     disabled:opacity-40 disabled:cursor-not-allowed
+                     transition-colors"
+          title="Next page"
+        >
+          <ChevronRightIcon size={14} className="text-slate-600" />
+        </button>
+
+        {/* Last */}
+        <button
+          onClick={() => onChange(safeTotalPages)}
+          disabled={safePage >= safeTotalPages || loading}
+          className="p-1.5 rounded-lg border border-slate-300 hover:bg-white
+                     disabled:opacity-40 disabled:cursor-not-allowed
+                     transition-colors"
+          title="Last page"
+        >
+          <ChevronRightIcon size={14} className="text-slate-600" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── saved_by label helpers ───────────────────────────────────────────────────
+
+/**
+ * Maps the raw saved_by string (written by the backend) to a human-readable
+ * label and a Tailwind colour scheme so callers only need to call one function.
+ */
+function getSavedByMeta(savedBy: string): {
+  label: string;
+  cls: string;
+  icon: "refresh" | "clock" | "user";
+} {
+  switch (savedBy) {
+    case "startup":
+      return {
+        label: "App Startup",
+        cls: "bg-blue-900/60 text-blue-300 border border-blue-700",
+        icon: "refresh",
+      };
+    case "periodic":
+      return {
+        label: "Scheduled",
+        cls: "bg-purple-900/60 text-purple-300 border border-purple-700",
+        icon: "clock",
+      };
+    case "background-sync":
+      return {
+        label: "Background",
+        cls: "bg-slate-700 text-slate-300 border border-slate-600",
+        icon: "refresh",
+      };
+    default:
+      return {
+        label: savedBy,
+        cls: "bg-green-900/60 text-green-300 border border-green-700",
+        icon: "user",
+      };
+  }
 }
 
 // ─── Frontend lock store ──────────────────────────────────────────────────────
@@ -295,6 +467,28 @@ function LockBadge({ locked }: { locked: boolean }) {
   );
 }
 
+// ─── SavedBy Badge ────────────────────────────────────────────────────────────
+
+/**
+ * Colour-coded pill that shows WHERE a config snapshot came from.
+ * Used inside both RunningConfigModal and LastConfigModal.
+ */
+function SavedByBadge({ savedBy }: { savedBy: string }) {
+  const { label, cls, icon } = getSavedByMeta(savedBy);
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold",
+        cls,
+      )}
+    >
+      {icon === "refresh" && <RefreshCw size={9} />}
+      {icon === "clock" && <Clock size={9} />}
+      {label}
+    </span>
+  );
+}
+
 // ─── Pagination ───────────────────────────────────────────────────────────────
 
 function Pagination({
@@ -359,7 +553,7 @@ function Pagination({
 
 // ─── Running Config Modal ─────────────────────────────────────────────────────
 
-// ─── Running Config Modal ─────────────────────────────────────────────────────
+// Replace the entire RunningConfigModal component
 
 function RunningConfigModal({
   open,
@@ -380,27 +574,127 @@ function RunningConfigModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [savedBy, setSavedBy] = useState<string | null>(null);
+  const [source, setSource] = useState<"db" | "live" | null>(null);
 
+  // ── Step 1: try DB, Step 2: if empty auto-fetch live ──────────────────
+  const loadConfig = useCallback(
+    async (portLabel: string) => {
+      setConfig(null);
+      setError(null);
+      setSavedAt(null);
+      setSavedBy(null);
+      setSource(null);
+      setLoading(true);
+
+      try {
+        // ── Step 1: check DB first ──────────────────────────────────────
+        const encodedLabel = encodeURIComponent(portLabel);
+        let dbData: PortConfigHistoryResponse | null = null;
+
+        try {
+          dbData = await apiFetch<PortConfigHistoryResponse>(
+            `${PREFIX}/switches/${switchId}/port-config-history` +
+              `?port_label=${encodedLabel}&limit=1`,
+            token,
+          );
+        } catch (dbErr: any) {
+          // DB call failed — fall through to live fetch
+          logger.debug?.("DB fetch failed, will try live:", dbErr);
+        }
+
+        if (dbData?.success && dbData.history.length > 0) {
+          // ── Found in DB ───────────────────────────────────────────────
+          const entry = dbData.history[0];
+          setConfig(entry.config_text);
+          setSavedAt(entry.saved_at);
+          setSavedBy(entry.saved_by ?? null);
+          setSource("db");
+          return;
+        }
+
+        // ── Step 2: nothing in DB → auto-fetch live from switch ─────────
+        toast.info(
+          `No snapshot in DB for ${portLabel} — fetching live from switch…`,
+          { duration: 3000 },
+        );
+
+        const liveData = await apiFetch<{
+          success: boolean;
+          config?: string;
+          error?: string;
+          protocol_used?: string;
+        }>(
+          `${PREFIX}/switches/${switchId}/port-config-db/sync` +
+            `?port_label=${encodedLabel}`,
+          token,
+          { method: "POST" },
+        );
+
+        if (liveData.success && liveData.config) {
+          setConfig(liveData.config);
+          setSavedAt(new Date().toISOString());
+          setSavedBy("on-demand");
+          setSource("live");
+          toast.success(`Config fetched and saved for ${portLabel}`);
+        } else {
+          setError(
+            liveData.error ||
+              "Could not fetch config from switch. " +
+                "Check SSH connectivity.",
+          );
+        }
+      } catch (err: any) {
+        setError(err.message || "Unexpected error loading config.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [switchId, token],
+  );
+
+  // ── Manual "Sync from Switch" button ────────────────────────────────────
+  const handleManualSync = useCallback(async () => {
+    if (!port) return;
+    setLoading(true);
+    setError(null);
+
+    try {
+      const encodedLabel = encodeURIComponent(port.label);
+      const data = await apiFetch<{
+        success: boolean;
+        config?: string;
+        error?: string;
+      }>(
+        `${PREFIX}/switches/${switchId}/port-config-db/sync` +
+          `?port_label=${encodedLabel}`,
+        token,
+        { method: "POST" },
+      );
+
+      if (data.success && data.config) {
+        setConfig(data.config);
+        setSavedAt(new Date().toISOString());
+        setSavedBy("manual-sync");
+        setSource("live");
+        toast.success("Config synced from switch and saved to DB");
+      } else {
+        setError(data.error || "Sync failed — no config returned.");
+      }
+    } catch (err: any) {
+      setError(err.message || "Sync failed.");
+    } finally {
+      setLoading(false);
+    }
+  }, [port, switchId, token]);
+
+  // ── Load when modal opens ────────────────────────────────────────────────
   useEffect(() => {
     if (!open || !port) return;
-    setConfig(null);
-    setError(null);
-    setSavedAt(null);
-    setLoading(true);
-    const encodedLabel = encodeURIComponent(port.label);
-    // ← now hits the DB endpoint instead of the live switch
-    apiFetch<{ success: boolean; config?: string; error?: string }>(
-      `${PREFIX}/switches/${switchId}/port-config-db?port_label=${encodedLabel}`,
-      token,
-    )
-      .then((data) => {
-        if (data.success && data.config) setConfig(data.config);
-        else setError(data.error || "No config returned");
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [open, port, switchId, token]);
+    loadConfig(port.label);
+  }, [open, port, loadConfig]);
 
+  // ── Keyboard close ───────────────────────────────────────────────────────
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -409,14 +703,12 @@ function RunningConfigModal({
     return () => document.removeEventListener("keydown", h);
   }, [onClose]);
 
+  // ── Download ─────────────────────────────────────────────────────────────
   const handleDownload = () => {
     if (!config || !port) return;
     const safeLabel = port.label.replace(/[^a-zA-Z0-9_\-]/g, "_");
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-")
-      .slice(0, 19);
-    downloadTextFile(`config_${safeLabel}_${timestamp}.txt`, config);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    downloadTextFile(`config_${safeLabel}_${ts}.txt`, config);
     toast.success("Config downloaded");
   };
 
@@ -429,35 +721,79 @@ function RunningConfigModal({
     >
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div
-        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden max-h-[85vh] flex flex-col"
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl mx-4
+                   overflow-hidden max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-900 shrink-0">
+        {/* ── Header ──────────────────────────────────────────────────── */}
+        <div
+          className="flex items-center justify-between px-6 py-4 border-b
+                        border-slate-200 bg-slate-900 shrink-0"
+        >
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-green-500/20 flex items-center justify-center">
+            <div
+              className="h-8 w-8 rounded-lg bg-green-500/20 flex items-center
+                            justify-center"
+            >
               <Terminal size={16} className="text-green-400" />
             </div>
             <div>
               <h3 className="text-base font-semibold text-white">
-                Last Saved Config
+                Running Config
               </h3>
               <p className="text-xs text-slate-400">
-                {switchName} — {port.label} — snapshot from database
+                {switchName} — {port.label}
+                {source === "db" && (
+                  <span
+                    className="ml-2 inline-flex items-center gap-1
+                                   px-1.5 py-0.5 rounded bg-green-900/60
+                                   text-green-300 text-[10px] border
+                                   border-green-700"
+                  >
+                    <Clock size={9} /> from database
+                  </span>
+                )}
+                {source === "live" && (
+                  <span
+                    className="ml-2 inline-flex items-center gap-1
+                                   px-1.5 py-0.5 rounded bg-blue-900/60
+                                   text-blue-300 text-[10px] border
+                                   border-blue-700"
+                  >
+                    <RefreshCw size={9} /> fetched live
+                  </span>
+                )}
               </p>
             </div>
           </div>
+
           <div className="flex items-center gap-2">
+            {/* Manual re-sync button */}
+            <button
+              onClick={handleManualSync}
+              disabled={loading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                         bg-blue-600 hover:bg-blue-700 disabled:opacity-60
+                         disabled:cursor-not-allowed text-white text-xs
+                         font-medium transition-colors"
+              title="Fetch live config from switch and save to DB"
+            >
+              <RefreshCw size={13} className={loading ? "animate-spin" : ""} />
+              {loading ? "Loading…" : "Sync from Switch"}
+            </button>
+
             {config && !loading && (
               <button
                 onClick={handleDownload}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600 hover:bg-green-700 text-white text-xs font-medium transition-colors"
-                title="Download config as .txt"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                           bg-green-600 hover:bg-green-700 text-white text-xs
+                           font-medium transition-colors"
               >
                 <Download size={13} />
                 Download .txt
               </button>
             )}
+
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg hover:bg-slate-700 transition-colors"
@@ -467,40 +803,143 @@ function RunningConfigModal({
           </div>
         </div>
 
-        {/* Body */}
+        {/* ── Snapshot metadata bar ────────────────────────────────────── */}
+        {config && !loading && savedAt && (
+          <div
+            className="flex items-center gap-2 px-6 py-2 bg-slate-800
+                          border-b border-slate-700 shrink-0"
+          >
+            <Clock size={12} className="text-slate-400 shrink-0" />
+            <p className="text-xs text-slate-400">
+              {source === "db" ? "Snapshot saved" : "Fetched"}{" "}
+              <span className="text-green-400 font-medium">
+                {new Date(savedAt).toLocaleString()}
+              </span>
+              {savedBy && (
+                <span className="ml-2 text-slate-500">
+                  · by{" "}
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 px-1.5 py-0.5 " +
+                        "rounded text-[10px] font-semibold",
+                      savedBy === "startup"
+                        ? "bg-blue-900/60 text-blue-300 border border-blue-700"
+                        : savedBy === "periodic"
+                          ? "bg-purple-900/60 text-purple-300 border border-purple-700"
+                          : savedBy === "on-demand" || savedBy === "manual-sync"
+                            ? "bg-green-900/60 text-green-300 border border-green-700"
+                            : "bg-slate-700 text-slate-300 border border-slate-600",
+                    )}
+                  >
+                    {savedBy === "startup" && (
+                      <>
+                        <RefreshCw size={9} /> App Startup
+                      </>
+                    )}
+                    {savedBy === "periodic" && (
+                      <>
+                        <Clock size={9} /> Scheduled
+                      </>
+                    )}
+                    {(savedBy === "on-demand" || savedBy === "manual-sync") && (
+                      <>
+                        <RefreshCw size={9} /> On Demand
+                      </>
+                    )}
+                    {savedBy !== "startup" &&
+                      savedBy !== "periodic" &&
+                      savedBy !== "on-demand" &&
+                      savedBy !== "manual-sync" &&
+                      savedBy}
+                  </span>
+                </span>
+              )}
+            </p>
+          </div>
+        )}
+
+        {/* ── Body ────────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto bg-slate-950 p-6">
+          {/* Loading state */}
           {loading && (
-            <div className="flex flex-col items-center justify-center py-12 text-slate-400">
+            <div
+              className="flex flex-col items-center justify-center
+                            py-12 text-slate-400"
+            >
               <Loader2 size={28} className="animate-spin mb-3 text-green-400" />
-              <p className="text-sm">Loading saved config from database…</p>
+              <p className="text-sm font-medium text-slate-300">
+                {source === null
+                  ? "Checking database…"
+                  : "Fetching live config from switch…"}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {source === null
+                  ? "Will auto-fetch from switch if not found in DB"
+                  : `Connecting to ${switchName} via SSH…`}
+              </p>
             </div>
           )}
+
+          {/* Error state */}
           {error && !loading && (
-            <div className="flex items-start gap-3 p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
+            <div
+              className="flex items-start gap-3 p-4 bg-red-900/30
+                            border border-red-700/50 rounded-lg"
+            >
               <AlertCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
-              <div>
+              <div className="flex-1">
                 <p className="text-sm font-medium text-red-300">
-                  No saved config found
+                  Could not load config
                 </p>
                 <p className="text-xs text-red-400 mt-1">{error}</p>
+                <button
+                  onClick={handleManualSync}
+                  disabled={loading}
+                  className="mt-3 flex items-center gap-1.5 px-3 py-1.5
+                             rounded-lg bg-blue-600 hover:bg-blue-700
+                             text-white text-xs font-medium transition-colors
+                             disabled:opacity-60"
+                >
+                  <RefreshCw size={12} />
+                  Try Again
+                </button>
               </div>
             </div>
           )}
+
+          {/* Config display */}
           {config && !loading && (
-            <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
+            <pre
+              className="text-xs text-green-300 font-mono
+                            whitespace-pre-wrap leading-relaxed"
+            >
               {config}
             </pre>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50 shrink-0">
+        {/* ── Footer ──────────────────────────────────────────────────── */}
+        <div
+          className="flex items-center justify-between px-6 py-3
+                        border-t border-slate-200 bg-slate-50 shrink-0"
+        >
           <p className="text-xs text-slate-400">
-            Loaded from database — snapshot captured before last config change
+            {loading && "Loading config — please wait…"}
+            {!loading &&
+              config &&
+              source === "db" &&
+              "Loaded from database — click 'Sync from Switch' to refresh"}
+            {!loading &&
+              config &&
+              source === "live" &&
+              "Fetched live from switch and saved to database"}
+            {!loading && !config && !error && "Preparing…"}
           </p>
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+            className="px-4 py-2 text-sm font-medium text-slate-700
+                       bg-slate-100 rounded-lg hover:bg-slate-200
+                       transition-colors"
           >
             Close
           </button>
@@ -534,29 +973,78 @@ function LastConfigModal({
     null,
   );
 
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+
+  // ── Fetch one page of history ──────────────────────────────────────────
+  const fetchPage = useCallback(
+    async (targetPage: number, portLabel: string) => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const params = new URLSearchParams({
+          port_label: portLabel,
+          page: String(targetPage),
+          page_size: String(HISTORY_PAGE_SIZE),
+        });
+
+        const data = await apiFetch<PortConfigHistoryResponse>(
+          `${PREFIX}/switches/${switchId}/port-config-history?${params}`,
+          token,
+        );
+
+        if (!data.success) {
+          setError("Failed to load history.");
+          return;
+        }
+
+        setHistory(data.history);
+        setPage(data.page);
+        setTotalPages(data.total_pages);
+        setTotal(data.total);
+
+        // Auto-select first entry on first page load
+        if (targetPage === 1 && data.history.length > 0) {
+          setSelectedEntry(data.history[0]);
+        } else if (data.history.length > 0 && selectedEntry === null) {
+          setSelectedEntry(data.history[0]);
+        }
+      } catch (err: any) {
+        setError(err.message || "Failed to load history.");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [switchId, token, selectedEntry],
+  );
+
+  // ── Load page 1 when modal opens ──────────────────────────────────────
   useEffect(() => {
     if (!open || !port) return;
+    // Reset state on open
     setHistory([]);
-    setError(null);
     setSelectedEntry(null);
-    setLoading(true);
-    const encodedLabel = encodeURIComponent(port.label);
-    apiFetch<PortConfigHistoryResponse>(
-      `${PREFIX}/switches/${switchId}/port-config-history?port_label=${encodedLabel}`,
-      token,
-    )
-      .then((data) => {
-        if (data.success) {
-          setHistory(data.history);
-          if (data.history.length > 0) setSelectedEntry(data.history[0]);
-        } else {
-          setError("Failed to load history");
-        }
-      })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [open, port, switchId, token]);
+    setError(null);
+    setPage(1);
+    setTotalPages(1);
+    setTotal(0);
+    fetchPage(1, port.label);
+  }, [open, port]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Page change ────────────────────────────────────────────────────────
+  const handlePageChange = useCallback(
+    (newPage: number) => {
+      if (!port || newPage === page || loading) return;
+      // Keep the currently selected entry visible while loading
+      fetchPage(newPage, port.label);
+    },
+    [port, page, loading, fetchPage],
+  );
+
+  // ── Keyboard close ─────────────────────────────────────────────────────
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -565,11 +1053,12 @@ function LastConfigModal({
     return () => document.removeEventListener("keydown", h);
   }, [onClose]);
 
+  // ── Download selected entry ────────────────────────────────────────────
   const handleDownload = (entry: PortConfigHistory) => {
     const safeLabel = entry.port_label.replace(/[^a-zA-Z0-9_\-]/g, "_");
-    const timestamp = entry.saved_at.replace(/[:.]/g, "-").slice(0, 19);
+    const ts = entry.saved_at.replace(/[:.]/g, "-").slice(0, 19);
     downloadTextFile(
-      `config_history_${safeLabel}_${timestamp}.txt`,
+      `config_history_${safeLabel}_${ts}.txt`,
       entry.config_text,
     );
     toast.success("Config snapshot downloaded");
@@ -584,13 +1073,20 @@ function LastConfigModal({
     >
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div
-        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 overflow-hidden max-h-[88vh] flex flex-col"
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl
+                   mx-4 overflow-hidden max-h-[88vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-900 shrink-0">
+        {/* ── Header ──────────────────────────────────────────────────── */}
+        <div
+          className="flex items-center justify-between px-6 py-4 border-b
+                     border-slate-200 bg-slate-900 shrink-0"
+        >
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-amber-500/20 flex items-center justify-center">
+            <div
+              className="h-8 w-8 rounded-lg bg-amber-500/20 flex items-center
+                         justify-center"
+            >
               <History size={16} className="text-amber-400" />
             </div>
             <div>
@@ -598,7 +1094,16 @@ function LastConfigModal({
                 Config History
               </h3>
               <p className="text-xs text-slate-400">
-                {switchName} — {port.label} — snapshots saved before each change
+                {switchName} — {port.label}
+                {total > 0 && (
+                  <span
+                    className="ml-2 inline-flex items-center px-1.5 py-0.5
+                                   rounded bg-amber-900/50 text-amber-300
+                                   text-[10px] border border-amber-700"
+                  >
+                    {total} snapshot{total !== 1 ? "s" : ""}
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -610,121 +1115,183 @@ function LastConfigModal({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex flex-1 overflow-hidden">
-          {/* Sidebar: list of history entries */}
-          <div className="w-56 shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col overflow-y-auto">
-            {loading && (
-              <div className="flex flex-col items-center justify-center py-10 text-slate-400">
-                <Loader2
-                  size={20}
-                  className="animate-spin mb-2 text-amber-400"
-                />
-                <p className="text-xs">Loading history…</p>
-              </div>
-            )}
-            {error && !loading && (
-              <div className="p-4 text-xs text-red-600">
-                <AlertCircle size={14} className="inline mr-1" />
-                {error}
-              </div>
-            )}
-            {!loading && !error && history.length === 0 && (
-              <div className="flex flex-col items-center justify-center py-10 px-4 text-center text-slate-400">
-                <Clock size={24} className="mb-2 opacity-50" />
-                <p className="text-xs font-medium text-slate-500">
-                  No history yet
-                </p>
-                <p className="text-xs mt-1">
-                  Snapshots are saved automatically before each configuration
-                  change.
-                </p>
-              </div>
-            )}
-            {!loading &&
-              history.map((entry, i) => {
-                const isSelected = selectedEntry?.id === entry.id;
-                const date = new Date(entry.saved_at);
-                return (
-                  <button
-                    key={entry.id}
-                    onClick={() => setSelectedEntry(entry)}
-                    className={cn(
-                      "w-full text-left px-4 py-3 border-b border-slate-200 transition-colors",
-                      isSelected
-                        ? "bg-amber-50 border-l-2 border-l-amber-500"
-                        : "hover:bg-white border-l-2 border-l-transparent",
-                    )}
-                  >
-                    <div className="flex items-center gap-1.5 mb-0.5">
-                      {i === 0 && (
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700">
+        {/* ── Body ────────────────────────────────────────────────────── */}
+        <div className="flex flex-1 overflow-hidden min-h-0">
+          {/* ── Sidebar: snapshot list ─────────────────────────────────── */}
+          <div
+            className="w-56 shrink-0 border-r border-slate-200 bg-slate-50
+                       flex flex-col overflow-hidden"
+          >
+            {/* Sidebar scroll area */}
+            <div className="flex-1 overflow-y-auto">
+              {/* Loading skeleton */}
+              {loading && (
+                <div className="space-y-px">
+                  {Array.from({ length: HISTORY_PAGE_SIZE }).map((_, i) => (
+                    <div
+                      key={i}
+                      className="h-16 bg-slate-100 animate-pulse border-b
+                                 border-slate-200"
+                    />
+                  ))}
+                </div>
+              )}
+
+              {/* Error */}
+              {error && !loading && (
+                <div className="p-4 text-xs text-red-600">
+                  <AlertCircle size={14} className="inline mr-1" />
+                  {error}
+                </div>
+              )}
+
+              {/* Empty state */}
+              {!loading && !error && history.length === 0 && (
+                <div
+                  className="flex flex-col items-center justify-center py-10
+                             px-4 text-center text-slate-400"
+                >
+                  <Clock size={24} className="mb-2 opacity-50" />
+                  <p className="text-xs font-medium text-slate-500">
+                    No history yet
+                  </p>
+                  <p className="text-xs mt-1">
+                    Snapshots are saved before each configuration change.
+                  </p>
+                </div>
+              )}
+
+              {/* Snapshot list */}
+              {!loading &&
+                history.map((entry, i) => {
+                  const isSelected = selectedEntry?.id === entry.id;
+                  const date = new Date(entry.saved_at);
+                  // Entry index across all pages for display
+                  const globalIndex = (page - 1) * HISTORY_PAGE_SIZE + i;
+
+                  return (
+                    <button
+                      key={entry.id}
+                      onClick={() => setSelectedEntry(entry)}
+                      className={cn(
+                        "w-full text-left px-4 py-3 border-b border-slate-200",
+                        "transition-colors border-l-2",
+                        isSelected
+                          ? "bg-amber-50 border-l-amber-500"
+                          : "hover:bg-white border-l-transparent",
+                      )}
+                    >
+                      {/* Latest badge only on absolute first entry */}
+                      {globalIndex === 0 && (
+                        <span
+                          className="inline-flex items-center px-1.5 py-0.5
+                                     rounded text-[10px] font-semibold
+                                     bg-amber-100 text-amber-700 mb-1"
+                        >
                           Latest
                         </span>
                       )}
-                    </div>
-                    <p className="text-xs font-medium text-slate-700">
-                      {date.toLocaleDateString()}
-                    </p>
-                    <p className="text-[11px] text-slate-500">
-                      {date.toLocaleTimeString()}
-                    </p>
-                    {entry.saved_by && (
-                      <p className="text-[11px] text-slate-400 mt-0.5 truncate">
-                        by {entry.saved_by}
+                      <p className="text-xs font-medium text-slate-700">
+                        {date.toLocaleDateString()}
                       </p>
-                    )}
-                  </button>
-                );
-              })}
+                      <p className="text-[11px] text-slate-500">
+                        {date.toLocaleTimeString()}
+                      </p>
+                      {entry.saved_by && (
+                        <p className="text-[11px] text-slate-400 mt-0.5 truncate">
+                          by {entry.saved_by}
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+            </div>
+
+            {/* ── Sidebar pagination ───────────────────────────────────── */}
+            {totalPages > 1 && (
+              <HistoryPagination
+                page={page}
+                totalPages={totalPages}
+                total={total}
+                pageSize={HISTORY_PAGE_SIZE}
+                onChange={handlePageChange}
+                loading={loading}
+              />
+            )}
           </div>
 
-          {/* Main: config preview */}
+          {/* ── Main: config preview ───────────────────────────────────── */}
           <div className="flex-1 flex flex-col overflow-hidden bg-slate-950">
             {selectedEntry ? (
               <>
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 bg-slate-900 shrink-0">
-                  <p className="text-xs text-slate-400">
-                    Snapshot from{" "}
-                    <span className="text-amber-400 font-medium">
-                      {new Date(selectedEntry.saved_at).toLocaleString()}
-                    </span>
-                    {selectedEntry.saved_by && (
-                      <span className="ml-2 text-slate-500">
-                        · by {selectedEntry.saved_by}
+                {/* Config header bar */}
+                <div
+                  className="flex items-center justify-between px-4 py-2.5
+                             border-b border-slate-800 bg-slate-900 shrink-0"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Clock size={12} className="text-slate-400 shrink-0" />
+                    <p className="text-xs text-slate-400 truncate">
+                      Snapshot from{" "}
+                      <span className="text-amber-400 font-medium">
+                        {new Date(selectedEntry.saved_at).toLocaleString()}
                       </span>
-                    )}
-                  </p>
+                      {selectedEntry.saved_by && (
+                        <span className="ml-2 text-slate-500">
+                          · by {selectedEntry.saved_by}
+                        </span>
+                      )}
+                    </p>
+                  </div>
                   <button
                     onClick={() => handleDownload(selectedEntry)}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-medium transition-colors"
+                    className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5
+                               rounded-lg bg-amber-600 hover:bg-amber-700
+                               text-white text-xs font-medium transition-colors
+                               ml-3"
                   >
                     <Download size={12} />
                     Download
                   </button>
                 </div>
+
+                {/* Config text */}
                 <div className="flex-1 overflow-y-auto p-5">
-                  <pre className="text-xs text-amber-200 font-mono whitespace-pre-wrap leading-relaxed">
+                  <pre
+                    className="text-xs text-amber-200 font-mono
+                               whitespace-pre-wrap leading-relaxed"
+                  >
                     {selectedEntry.config_text}
                   </pre>
                 </div>
               </>
-            ) : !loading && history.length > 0 ? (
-              <div className="flex items-center justify-center h-full text-slate-500 text-sm">
-                Select a snapshot from the list
+            ) : !loading ? (
+              <div
+                className="flex flex-col items-center justify-center h-full
+                           text-slate-500 gap-2"
+              >
+                <History size={32} className="opacity-30" />
+                <p className="text-sm">Select a snapshot from the list</p>
               </div>
             ) : null}
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between px-6 py-3 border-t border-slate-200 bg-slate-50 shrink-0">
+        {/* ── Footer ──────────────────────────────────────────────────── */}
+        <div
+          className="flex items-center justify-between px-6 py-3 border-t
+                     border-slate-200 bg-slate-50 shrink-0"
+        >
           <p className="text-xs text-slate-400">
-            {history.length} snapshot{history.length !== 1 ? "s" : ""} stored
+            {total > 0
+              ? `Page ${page} of ${totalPages} · ${total} total snapshot${total !== 1 ? "s" : ""} · saved before each configuration change`
+              : "No snapshots saved yet"}
           </p>
           <button
             onClick={onClose}
-            className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+            className="px-4 py-2 text-sm font-medium text-slate-700
+                       bg-slate-100 rounded-lg hover:bg-slate-200
+                       transition-colors"
           >
             Close
           </button>
@@ -772,7 +1339,6 @@ function ConfigurePortModal({
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // ── VLAN state ─────────────────────────────────────────────────────────────
   const [vlanSearch, setVlanSearch] = useState("");
   const [allVlans, setAllVlans] = useState<VlanOption[]>([]);
   const [filteredVlans, setFilteredVlans] = useState<VlanOption[]>([]);
@@ -820,6 +1386,7 @@ function ConfigurePortModal({
           }
         })
         .catch(() => {
+          // Fallback to global VLAN management list
           const fallbackParams = new URLSearchParams();
           if (search.trim()) fallbackParams.set("search", search.trim());
 
@@ -889,7 +1456,7 @@ function ConfigurePortModal({
     [],
   );
 
-  if (!open || !port || port.locked) return null;
+  if (!open || !port) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -928,6 +1495,8 @@ function ConfigurePortModal({
       next.has(vid) ? next.delete(vid) : next.add(vid);
       return next;
     });
+
+  // ── Sub-components (defined inline so they close over mode) ──────────────
 
   const VlanSourceBadge = () => {
     if (vlansLoading || vlanSource === null) return null;
@@ -1059,6 +1628,7 @@ function ConfigurePortModal({
         onClick={onClose}
       />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden max-h-[92vh] flex flex-col">
+        {/* ── Header ── */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-slate-100 shrink-0">
           <div className="flex items-center gap-3">
             <div className="h-9 w-9 rounded-xl bg-blue-100 flex items-center justify-center shadow-sm">
@@ -1071,6 +1641,11 @@ function ConfigurePortModal({
               <p className="text-xs text-slate-500">
                 {switchName} <span className="mx-1 text-slate-300">·</span>
                 <span className="font-mono text-slate-600">{port.label}</span>
+                {port.locked && (
+                  <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-100 text-red-600 text-[10px] font-medium">
+                    <Lock size={9} /> Locked
+                  </span>
+                )}
               </p>
             </div>
           </div>
@@ -1094,6 +1669,7 @@ function ConfigurePortModal({
               </div>
             )}
 
+            {/* Description */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1.5">
                 Description
@@ -1107,6 +1683,7 @@ function ConfigurePortModal({
               />
             </div>
 
+            {/* Admin status */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-2">
                 Port Admin Status
@@ -1151,6 +1728,7 @@ function ConfigurePortModal({
               </div>
             </div>
 
+            {/* Port mode */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-2">
                 Port Mode
@@ -1181,6 +1759,7 @@ function ConfigurePortModal({
               </div>
             </div>
 
+            {/* VLAN selection */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-sm font-semibold text-slate-700">
@@ -1367,6 +1946,7 @@ function ConfigurePortModal({
             </div>
           </div>
 
+          {/* ── Footer ── */}
           <div className="shrink-0 flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50">
             <div className="text-xs text-slate-500">
               {mode === "access" && accessVlan !== null && (
@@ -1428,28 +2008,32 @@ function PortGrid({
   ports,
   onToggleLock,
   isAdmin,
+  isSuperAdmin,
 }: {
   ports: Port[];
   onToggleLock: (label: string) => void;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
 }) {
   return (
     <div className="grid grid-cols-8 sm:grid-cols-12 md:grid-cols-16 lg:grid-cols-24 gap-1.5">
       {ports.map((p) => {
         const d = STATUS_CFG[p.status];
-        const isDisabled = p.locked;
+        const canClick = isSuperAdmin ? true : isAdmin && !p.locked;
 
         return (
           <button
             key={p.id}
             type="button"
-            onClick={() => !isDisabled && isAdmin && onToggleLock(p.label)}
-            disabled={isDisabled}
-            aria-disabled={isDisabled}
+            onClick={() => canClick && onToggleLock(p.label)}
+            disabled={!canClick}
+            aria-disabled={!canClick}
             title={
               p.locked
-                ? `Port ${p.number} — Locked & disabled`
-                : isAdmin
+                ? isSuperAdmin
+                  ? `Port ${p.number} — Locked · Click to unlock`
+                  : `Port ${p.number} — Locked & disabled`
+                : isAdmin || isSuperAdmin
                   ? `Port ${p.number} — ${p.status} · Click to lock`
                   : `Port ${p.number} — ${p.status}`
             }
@@ -1458,8 +2042,10 @@ function PortGrid({
               "text-xs font-medium transition-all duration-150",
               "focus:outline-none focus:ring-2 focus:ring-offset-1",
               p.locked
-                ? "border-red-400 bg-red-100 opacity-50 cursor-not-allowed select-none focus:ring-red-300"
-                : isAdmin
+                ? isSuperAdmin
+                  ? "border-red-400 bg-red-100 cursor-pointer hover:scale-110 hover:shadow-md focus:ring-red-400"
+                  : "border-red-400 bg-red-100 opacity-50 cursor-not-allowed select-none focus:ring-red-300"
+                : canClick
                   ? cn(
                       "cursor-pointer hover:scale-110 hover:shadow-md focus:ring-red-500",
                       p.status === "active"
@@ -1514,6 +2100,7 @@ function PortTable({
   onViewConfig,
   onViewHistory,
   isAdmin,
+  isSuperAdmin,
   portsWithHistory,
 }: {
   ports: Port[];
@@ -1522,6 +2109,7 @@ function PortTable({
   onViewConfig: (port: Port) => void;
   onViewHistory: (port: Port) => void;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
   portsWithHistory: Set<string>;
 }) {
   return (
@@ -1557,157 +2145,178 @@ function PortTable({
               </td>
             </tr>
           ) : (
-            ports.map((p) => (
-              <tr
-                key={p.id}
-                className={cn(
-                  "transition-colors",
-                  p.locked ? "bg-red-50/70 opacity-75" : "hover:bg-slate-50",
-                )}
-              >
-                <td
-                  className={cn(
-                    "px-3 py-2.5 font-mono font-bold",
-                    p.locked ? "text-red-500" : "text-slate-900",
-                  )}
-                >
-                  {p.number}
-                </td>
-                <td className="px-3 py-2.5 font-mono text-xs text-slate-600">
-                  <span className="flex items-center gap-1.5">
-                    {p.locked && (
-                      <Lock size={10} className="text-red-500 shrink-0" />
-                    )}
-                    {p.label}
-                  </span>
-                </td>
-                <td className="px-3 py-2.5">
-                  <PortStatusBadge status={p.status} />
-                </td>
-                <td className="px-3 py-2.5">
-                  <LockBadge locked={p.locked} />
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-2.5",
-                    p.locked ? "text-slate-400" : "text-slate-600",
-                  )}
-                >
-                  {p.speed}
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-2.5",
-                    p.locked ? "text-slate-400" : "text-slate-600",
-                  )}
-                >
-                  {p.vlan}
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-2.5 font-mono text-xs",
-                    p.locked ? "text-slate-400" : "text-slate-500",
-                  )}
-                >
-                  {p.macAddress ?? "—"}
-                </td>
-                <td
-                  className={cn(
-                    "px-3 py-2.5",
-                    p.locked ? "text-slate-400 italic" : "text-slate-500",
-                  )}
-                >
-                  {p.description || "—"}
-                </td>
-                <td className="px-3 py-2.5">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {isAdmin && (
-                      <button
-                        type="button"
-                        onClick={() => onToggleLock(p.label)}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-                          "text-xs font-medium transition-colors",
-                          "focus:outline-none focus:ring-2 focus:ring-offset-1",
-                          p.locked
-                            ? "bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500"
-                            : "bg-red-100 text-red-700 hover:bg-red-200 focus:ring-red-500",
-                        )}
-                      >
-                        {p.locked ? (
-                          <>
-                            <Unlock size={12} /> Unlock
-                          </>
-                        ) : (
-                          <>
-                            <Lock size={12} /> Lock
-                          </>
-                        )}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => !p.locked && onConfigure(p)}
-                      disabled={p.locked}
-                      aria-disabled={p.locked}
-                      title={
-                        p.locked
-                          ? "Port is locked — unlock it first"
-                          : "Configure port"
-                      }
-                      className={cn(
-                        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-                        "text-xs font-medium transition-colors",
-                        "focus:outline-none focus:ring-2 focus:ring-offset-1",
-                        p.locked
-                          ? "bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed pointer-events-none opacity-50"
-                          : "bg-blue-100 text-blue-700 hover:bg-blue-200 focus:ring-blue-500",
-                      )}
-                    >
-                      <Settings2 size={12} /> Configure
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => !p.locked && onViewConfig(p)}
-                      disabled={p.locked}
-                      aria-disabled={p.locked}
-                      title={
-                        p.locked
-                          ? "Port is locked — unlock it first"
-                          : "View running config"
-                      }
-                      className={cn(
-                        "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-                        "text-xs font-medium transition-colors",
-                        "focus:outline-none focus:ring-2 focus:ring-offset-1",
-                        p.locked
-                          ? "bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed pointer-events-none opacity-50"
-                          : "bg-slate-800 text-slate-100 hover:bg-slate-900 focus:ring-slate-500",
-                      )}
-                    >
-                      <Terminal size={12} /> Config
-                    </button>
+            ports.map((p) => {
+              const rowDimmed = p.locked && !isSuperAdmin;
+              const actionButtonsEnabled = isSuperAdmin || !p.locked;
 
-                    {/* ── Last Config History button — only visible when history exists ── */}
-                    {portsWithHistory.has(p.label) && !p.locked && (
+              return (
+                <tr
+                  key={p.id}
+                  className={cn(
+                    "transition-colors",
+                    rowDimmed ? "bg-red-50/70 opacity-75" : "hover:bg-slate-50",
+                  )}
+                >
+                  <td
+                    className={cn(
+                      "px-3 py-2.5 font-mono font-bold",
+                      p.locked && !isSuperAdmin
+                        ? "text-red-500"
+                        : p.locked && isSuperAdmin
+                          ? "text-red-600"
+                          : "text-slate-900",
+                    )}
+                  >
+                    {p.number}
+                  </td>
+                  <td className="px-3 py-2.5 font-mono text-xs text-slate-600">
+                    <span className="flex items-center gap-1.5">
+                      {p.locked && (
+                        <Lock size={10} className="text-red-500 shrink-0" />
+                      )}
+                      {p.label}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <PortStatusBadge status={p.status} />
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <LockBadge locked={p.locked} />
+                  </td>
+                  <td
+                    className={cn(
+                      "px-3 py-2.5",
+                      rowDimmed ? "text-slate-400" : "text-slate-600",
+                    )}
+                  >
+                    {p.speed}
+                  </td>
+                  <td
+                    className={cn(
+                      "px-3 py-2.5",
+                      rowDimmed ? "text-slate-400" : "text-slate-600",
+                    )}
+                  >
+                    {p.vlan}
+                  </td>
+                  <td
+                    className={cn(
+                      "px-3 py-2.5 font-mono text-xs",
+                      rowDimmed ? "text-slate-400" : "text-slate-500",
+                    )}
+                  >
+                    {p.macAddress ?? "—"}
+                  </td>
+                  <td
+                    className={cn(
+                      "px-3 py-2.5",
+                      rowDimmed ? "text-slate-400 italic" : "text-slate-500",
+                    )}
+                  >
+                    {p.description || "—"}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Lock / Unlock */}
+                      {(isAdmin || isSuperAdmin) && (
+                        <button
+                          type="button"
+                          onClick={() => onToggleLock(p.label)}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+                            "text-xs font-medium transition-colors",
+                            "focus:outline-none focus:ring-2 focus:ring-offset-1",
+                            p.locked
+                              ? "bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500"
+                              : "bg-red-100 text-red-700 hover:bg-red-200 focus:ring-red-500",
+                          )}
+                        >
+                          {p.locked ? (
+                            <>
+                              <Unlock size={12} /> Unlock
+                            </>
+                          ) : (
+                            <>
+                              <Lock size={12} /> Lock
+                            </>
+                          )}
+                        </button>
+                      )}
+
+                      {/* Configure */}
                       <button
                         type="button"
-                        onClick={() => onViewHistory(p)}
-                        title="View config snapshot before last change"
+                        onClick={() => actionButtonsEnabled && onConfigure(p)}
+                        disabled={!actionButtonsEnabled}
+                        title={
+                          !actionButtonsEnabled
+                            ? "Port is locked — unlock it first"
+                            : "Configure port"
+                        }
                         className={cn(
                           "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
                           "text-xs font-medium transition-colors",
                           "focus:outline-none focus:ring-2 focus:ring-offset-1",
-                          "bg-amber-100 text-amber-700 hover:bg-amber-200 focus:ring-amber-500",
+                          !actionButtonsEnabled
+                            ? "bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed pointer-events-none opacity-50"
+                            : "bg-blue-100 text-blue-700 hover:bg-blue-200 focus:ring-blue-500",
                         )}
                       >
-                        <History size={12} /> Last Config
+                        <Settings2 size={12} /> Configure
                       </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))
+
+                      {/* Running Config */}
+                      <button
+                        type="button"
+                        onClick={() => actionButtonsEnabled && onViewConfig(p)}
+                        disabled={!actionButtonsEnabled}
+                        title={
+                          !actionButtonsEnabled
+                            ? "Port is locked — unlock it first"
+                            : "View running config"
+                        }
+                        className={cn(
+                          "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+                          "text-xs font-medium transition-colors",
+                          "focus:outline-none focus:ring-2 focus:ring-offset-1",
+                          !actionButtonsEnabled
+                            ? "bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed pointer-events-none opacity-50"
+                            : "bg-slate-800 text-slate-100 hover:bg-slate-900 focus:ring-slate-500",
+                        )}
+                      >
+                        <Terminal size={12} /> Config
+                      </button>
+
+                      {/* Config History */}
+                      {portsWithHistory.has(p.label) && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            actionButtonsEnabled && onViewHistory(p)
+                          }
+                          disabled={!actionButtonsEnabled}
+                          title={
+                            !actionButtonsEnabled
+                              ? "Port is locked — unlock it first"
+                              : "View config history"
+                          }
+                          className={cn(
+                            "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+                            "text-xs font-medium transition-colors",
+                            "focus:outline-none focus:ring-2 focus:ring-offset-1",
+                            !actionButtonsEnabled
+                              ? "bg-slate-100 text-slate-300 border border-slate-200 cursor-not-allowed pointer-events-none opacity-50"
+                              : "bg-amber-100 text-amber-700 hover:bg-amber-200 focus:ring-amber-500",
+                          )}
+                        >
+                          <History size={12} /> Last Config
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -1722,6 +2331,7 @@ function SwitchPortDetail({
   pageCache,
   currentPage,
   isAdmin,
+  isSuperAdmin,
   token,
   onBack,
   onSync,
@@ -1736,6 +2346,7 @@ function SwitchPortDetail({
   pageCache: PortPageCache;
   currentPage: number;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
   token: string | null;
   onBack: () => void;
   onSync: () => void;
@@ -1758,15 +2369,14 @@ function SwitchPortDetail({
       return "table";
     }
   });
+
   const [runningConfigPort, setRunningConfigPort] = useState<Port | null>(null);
   const [historyPort, setHistoryPort] = useState<Port | null>(null);
-
-  // Track which port labels have config history for this switch
   const [portsWithHistory, setPortsWithHistory] = useState<Set<string>>(
     new Set(),
   );
 
-  // Load the set of ports that have history
+  // Fetch which ports have history entries (to show/hide the "Last Config" button)
   useEffect(() => {
     if (!sw.id || !token) return;
     apiFetch<{ success: boolean; port_labels: string[] }>(
@@ -1774,13 +2384,9 @@ function SwitchPortDetail({
       token,
     )
       .then((data) => {
-        if (data.success) {
-          setPortsWithHistory(new Set(data.port_labels));
-        }
+        if (data.success) setPortsWithHistory(new Set(data.port_labels));
       })
-      .catch(() => {
-        // Silently ignore — feature degrades gracefully
-      });
+      .catch(() => {});
   }, [sw.id, token]);
 
   const portSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1830,15 +2436,21 @@ function SwitchPortDetail({
   const allCurrentLocked =
     currentPorts.length > 0 && currentPorts.every((p) => p.locked);
 
-  const handleViewConfig = useCallback((port: Port) => {
-    if (port.locked) return;
-    setRunningConfigPort(port);
-  }, []);
+  const handleViewConfig = useCallback(
+    (port: Port) => {
+      if (!isSuperAdmin && port.locked) return;
+      setRunningConfigPort(port);
+    },
+    [isSuperAdmin],
+  );
 
-  const handleViewHistory = useCallback((port: Port) => {
-    if (port.locked) return;
-    setHistoryPort(port);
-  }, []);
+  const handleViewHistory = useCallback(
+    (port: Port) => {
+      if (!isSuperAdmin && port.locked) return;
+      setHistoryPort(port);
+    },
+    [isSuperAdmin],
+  );
 
   return (
     <div className="space-y-6">
@@ -1879,7 +2491,7 @@ function SwitchPortDetail({
               />
               {pageCache.syncing ? "Syncing…" : "Sync from Switch"}
             </button>
-            {isAdmin && (
+            {(isAdmin || isSuperAdmin) && (
               <>
                 <button
                   onClick={onUnlockAll}
@@ -1908,18 +2520,10 @@ function SwitchPortDetail({
             color: "text-slate-900",
           },
           { label: "Active", value: stats.active, color: "text-green-700" },
-          {
-            label: "Inactive",
-            value: stats.inactive,
-            color: "text-slate-500",
-          },
+          { label: "Inactive", value: stats.inactive, color: "text-slate-500" },
           { label: "Error", value: stats.error, color: "text-orange-600" },
           { label: "Locked", value: stats.locked, color: "text-red-700" },
-          {
-            label: "Unlocked",
-            value: stats.unlocked,
-            color: "text-green-700",
-          },
+          { label: "Unlocked", value: stats.unlocked, color: "text-green-700" },
           {
             label: "Page",
             value: `${currentPage}/${pageCache.totalPages}`,
@@ -1946,7 +2550,7 @@ function SwitchPortDetail({
         </div>
       )}
 
-      {allCurrentLocked && !loadingPage && (
+      {allCurrentLocked && !loadingPage && !isSuperAdmin && (
         <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-300 rounded-lg text-sm text-red-700">
           <Lock size={16} className="shrink-0" />
           All ports on this page are <strong className="mx-1">
@@ -1954,6 +2558,14 @@ function SwitchPortDetail({
           </strong>{" "}
           and disabled. Use <strong className="mx-1">Unlock All</strong> or
           unlock individual ports to enable them.
+        </div>
+      )}
+
+      {allCurrentLocked && !loadingPage && isSuperAdmin && (
+        <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-lg text-sm text-amber-700">
+          <Lock size={16} className="shrink-0" />
+          All ports on this page are <strong className="mx-1">locked</strong>.
+          As Super Admin you can still interact with them.
         </div>
       )}
 
@@ -1972,7 +2584,7 @@ function SwitchPortDetail({
           />
           <input
             type="text"
-            placeholder="Search by port label, MAC, description, VLAN… (backend search)"
+            placeholder="Search by port label, MAC, description, VLAN…"
             value={search}
             onChange={(e) => handleSearchChange(e.target.value)}
             className="w-full pl-9 pr-9 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -2042,6 +2654,7 @@ function SwitchPortDetail({
                 ports={currentPorts}
                 onToggleLock={onToggleLock}
                 isAdmin={isAdmin}
+                isSuperAdmin={isSuperAdmin}
               />
             )}
           </div>
@@ -2053,6 +2666,7 @@ function SwitchPortDetail({
             onViewConfig={handleViewConfig}
             onViewHistory={handleViewHistory}
             isAdmin={isAdmin}
+            isSuperAdmin={isSuperAdmin}
             portsWithHistory={portsWithHistory}
           />
         )}
@@ -2077,8 +2691,10 @@ function SwitchPortDetail({
           <span className="w-2.5 h-2.5 rounded-full bg-red-500" /> Error
         </span>
         <span className="flex items-center gap-1">
-          <Lock size={10} className="text-red-500" /> Locked (disabled — unlock
-          to interact)
+          <Lock size={10} className="text-red-500" />{" "}
+          {isSuperAdmin
+            ? "Locked (Super Admin can still interact)"
+            : "Locked (disabled — unlock to interact)"}
         </span>
         <span className="flex items-center gap-1">
           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">
@@ -2086,8 +2702,16 @@ function SwitchPortDetail({
           </span>{" "}
           Config history available
         </span>
+        {/* Saved-by legend */}
+        <span className="flex items-center gap-1.5">
+          <SavedByBadge savedBy="startup" /> startup capture
+        </span>
+        <span className="flex items-center gap-1.5">
+          <SavedByBadge savedBy="periodic" /> scheduled capture
+        </span>
       </div>
 
+      {/* Modals */}
       <RunningConfigModal
         open={!!runningConfigPort}
         onClose={() => setRunningConfigPort(null)}
@@ -2109,13 +2733,14 @@ function SwitchPortDetail({
   );
 }
 
-// ─── Expanded Switch Panel (accordion) ───────────────────────────────────────
+// ─── Expanded Switch Panel ────────────────────────────────────────────────────
 
 function ExpandedSwitchPanel({
   sw,
   cache,
   currentPage,
   isAdmin,
+  isSuperAdmin,
   onPageChange,
   onToggleLock,
   onSync,
@@ -2126,6 +2751,7 @@ function ExpandedSwitchPanel({
   cache: PortPageCache;
   currentPage: number;
   isAdmin: boolean;
+  isSuperAdmin: boolean;
   onPageChange: (p: number) => void;
   onToggleLock: (label: string) => void;
   onSync: () => void;
@@ -2185,7 +2811,7 @@ function ExpandedSwitchPanel({
           Port Overview — Page {currentPage} of {Math.max(1, cache.totalPages)}
           {allLocked ? " · ALL LOCKED" : ""}
         </p>
-        {isAdmin && (
+        {(isAdmin || isSuperAdmin) && (
           <div className="flex items-center gap-2">
             <button
               onClick={onUnlockAll}
@@ -2205,7 +2831,7 @@ function ExpandedSwitchPanel({
         )}
       </div>
 
-      {allLocked && (
+      {allLocked && !isSuperAdmin && (
         <div className="flex items-center gap-2 p-2.5 bg-red-50 border border-red-300 rounded-lg text-xs text-red-700">
           <Lock size={12} className="shrink-0" />
           All ports are locked and disabled. Click{" "}
@@ -2214,8 +2840,21 @@ function ExpandedSwitchPanel({
         </div>
       )}
 
+      {allLocked && isSuperAdmin && (
+        <div className="flex items-center gap-2 p-2.5 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-700">
+          <Lock size={12} className="shrink-0" />
+          All ports are locked. You can still click them to unlock as Super
+          Admin.
+        </div>
+      )}
+
       <div key={`panel-grid-${sw.id}-${currentPage}`}>
-        <PortGrid ports={ports} onToggleLock={onToggleLock} isAdmin={isAdmin} />
+        <PortGrid
+          ports={ports}
+          onToggleLock={onToggleLock}
+          isAdmin={isAdmin}
+          isSuperAdmin={isSuperAdmin}
+        />
       </div>
 
       {cache.totalPages > 1 && (
@@ -2234,14 +2873,11 @@ function ExpandedSwitchPanel({
 export default function CiscoPortManagementSection() {
   const { accessToken } = useAuth();
   const jwt = useMemo(() => parseJwt(accessToken), [accessToken]);
-  const isAdmin = jwt?.role === "ADMIN" || jwt?.role === "SUPER_ADMIN";
+
+  const isSuperAdmin = jwt?.role === "SUPER_ADMIN";
+  const isAdmin = isSuperAdmin || jwt?.role === "ADMIN";
 
   const [unlockedSet, setUnlockedSet] = useState<Set<string>>(getUnlockedSet);
-
-  const setAndPersistUnlocked = useCallback((next: Set<string>) => {
-    setUnlockedSet(next);
-    saveUnlockedSet(next);
-  }, []);
 
   const [switches, setSwitches] = useState<CiscoSwitch[]>([]);
   const [switchesLoading, setSwitchesLoading] = useState(true);
@@ -2270,7 +2906,7 @@ export default function CiscoPortManagementSection() {
     switchId: number;
   } | null>(null);
 
-  // ── Recompute locked flag in all cached pages when unlockedSet changes ────
+  // ── Recompute locked flag whenever unlockedSet changes ────────────────────
   useEffect(() => {
     setCacheMap((prev) => {
       const next: Record<number, PortPageCache> = {};
@@ -2290,7 +2926,6 @@ export default function CiscoPortManagementSection() {
   }, [unlockedSet, setCacheMap]);
 
   // ── Load switches ─────────────────────────────────────────────────────────
-
   useEffect(() => {
     if (!accessToken) return;
     setSwitchesLoading(true);
@@ -2301,7 +2936,6 @@ export default function CiscoPortManagementSection() {
   }, [accessToken]);
 
   // ── Load DB page ──────────────────────────────────────────────────────────
-
   const loadDbPage = useCallback(
     async (
       switchId: number,
@@ -2392,8 +3026,7 @@ export default function CiscoPortManagementSection() {
     [accessToken, setCacheMap],
   );
 
-  // ── Sync ports ────────────────────────────────────────────────────────────
-
+  // ── Sync ports from switch ────────────────────────────────────────────────
   const syncPorts = useCallback(
     async (switchId: number) => {
       setCacheMap((prev) => ({
@@ -2408,7 +3041,9 @@ export default function CiscoPortManagementSection() {
         await apiFetch(
           `${PREFIX}/switches/${switchId}/sync-ports`,
           accessToken,
-          { method: "POST" },
+          {
+            method: "POST",
+          },
         );
         setCacheMap((prev) => ({
           ...prev,
@@ -2433,7 +3068,6 @@ export default function CiscoPortManagementSection() {
   );
 
   // ── Select / expand ───────────────────────────────────────────────────────
-
   const selectSwitch = useCallback(
     (id: number) => {
       setSelectedId(id);
@@ -2452,7 +3086,6 @@ export default function CiscoPortManagementSection() {
   );
 
   // ── Search / filter ───────────────────────────────────────────────────────
-
   const handleSearchFilterChange = useCallback(
     (switchId: number, search: string, filter: PortFilter) => {
       loadDbPage(switchId, 1, search, filter);
@@ -2460,8 +3093,7 @@ export default function CiscoPortManagementSection() {
     [loadDbPage],
   );
 
-  // ── Frontend toggle lock (single port) ────────────────────────────────────
-
+  // ── Toggle lock (single port) ─────────────────────────────────────────────
   const handleToggleLock = useCallback(
     (switchId: number, portLabel: string) => {
       if (!isAdmin) {
@@ -2485,8 +3117,7 @@ export default function CiscoPortManagementSection() {
     [isAdmin],
   );
 
-  // ── Frontend lock all ports for a switch ──────────────────────────────────
-
+  // ── Lock all ──────────────────────────────────────────────────────────────
   const handleLockAll = useCallback(
     (switchId: number) => {
       if (!isAdmin) return;
@@ -2503,8 +3134,7 @@ export default function CiscoPortManagementSection() {
     [isAdmin],
   );
 
-  // ── Frontend unlock all ports for a switch ────────────────────────────────
-
+  // ── Unlock all ────────────────────────────────────────────────────────────
   const handleUnlockAll = useCallback(
     (switchId: number) => {
       if (!isAdmin) return;
@@ -2513,12 +3143,9 @@ export default function CiscoPortManagementSection() {
       const allLabels = Object.values(cache.pages)
         .flat()
         .map((p) => p.label);
-
       setUnlockedSet((prev) => {
         const next = new Set(prev);
-        for (const label of allLabels) {
-          next.add(portKey(switchId, label));
-        }
+        for (const label of allLabels) next.add(portKey(switchId, label));
         saveUnlockedSet(next);
         return next;
       });
@@ -2528,7 +3155,6 @@ export default function CiscoPortManagementSection() {
   );
 
   // ── Configure port ────────────────────────────────────────────────────────
-
   const handleConfigure = useCallback(
     async (
       portLabel: string,
@@ -2585,16 +3211,18 @@ export default function CiscoPortManagementSection() {
     [accessToken, pageMap, loadDbPage, setCacheMap],
   );
 
-  const handleConfigureRequest = useCallback((port: Port, switchId: number) => {
-    if (port.locked) {
-      toast.error(`Port ${port.label} is locked. Unlock it first.`);
-      return;
-    }
-    setConfigurePort({ port, switchId });
-  }, []);
+  const handleConfigureRequest = useCallback(
+    (port: Port, switchId: number) => {
+      if (!isSuperAdmin && port.locked) {
+        toast.error(`Port ${port.label} is locked. Unlock it first.`);
+        return;
+      }
+      setConfigurePort({ port, switchId });
+    },
+    [isSuperAdmin],
+  );
 
   // ── Derived ───────────────────────────────────────────────────────────────
-
   const selectedSwitch =
     selectedId !== null ? switches.find((s) => s.id === selectedId) : null;
   const selectedCache =
@@ -2602,7 +3230,6 @@ export default function CiscoPortManagementSection() {
   const selectedPage = selectedId !== null ? (pageMap[selectedId] ?? 1) : 1;
 
   // ── Detail view ───────────────────────────────────────────────────────────
-
   if (selectedSwitch && selectedCache) {
     return (
       <>
@@ -2611,6 +3238,7 @@ export default function CiscoPortManagementSection() {
           pageCache={selectedCache}
           currentPage={selectedPage}
           isAdmin={isAdmin}
+          isSuperAdmin={isSuperAdmin}
           token={accessToken}
           onBack={() => setSelectedId(null)}
           onSync={() => syncPorts(selectedSwitch.id)}
@@ -2636,7 +3264,7 @@ export default function CiscoPortManagementSection() {
           open={
             !!configurePort &&
             configurePort.switchId === selectedSwitch.id &&
-            !configurePort.port.locked
+            (isSuperAdmin || !configurePort.port.locked)
           }
           onClose={() => setConfigurePort(null)}
           port={configurePort?.port ?? null}
@@ -2652,7 +3280,6 @@ export default function CiscoPortManagementSection() {
   }
 
   // ── List view ─────────────────────────────────────────────────────────────
-
   const allPorts = Object.values(cacheMap).flatMap((c) =>
     Object.values(c.pages).flat(),
   );
@@ -2678,36 +3305,51 @@ export default function CiscoPortManagementSection() {
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-          <p className="text-sm text-slate-500">Total Switches</p>
-          <p className="text-2xl font-bold text-slate-900 mt-1">
-            {switches.length}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-green-200 p-4 shadow-sm">
-          <p className="text-sm text-green-600">Active Ports</p>
-          <p className="text-2xl font-bold text-green-700 mt-1">
-            {totalActive || "—"}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-red-200 p-4 shadow-sm">
-          <p className="text-sm text-red-600">Locked Ports</p>
-          <p className="text-2xl font-bold text-red-700 mt-1">
-            {totalLocked || "—"}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-blue-200 p-4 shadow-sm">
-          <p className="text-sm text-blue-600">Access Ports</p>
-          <p className="text-2xl font-bold text-blue-700 mt-1">
-            {totalPortsLoaded > 0 ? totalAccess : "—"}
-          </p>
-        </div>
-        <div className="bg-white rounded-xl border border-purple-200 p-4 shadow-sm">
-          <p className="text-sm text-purple-600">Trunk Ports</p>
-          <p className="text-2xl font-bold text-purple-700 mt-1">
-            {totalPortsLoaded > 0 ? totalTrunk : "—"}
-          </p>
-        </div>
+        {[
+          {
+            label: "Total Switches",
+            value: switches.length,
+            border: "border-slate-200",
+            text: "text-slate-900",
+            head: "text-slate-500",
+          },
+          {
+            label: "Active Ports",
+            value: totalActive || "—",
+            border: "border-green-200",
+            text: "text-green-700",
+            head: "text-green-600",
+          },
+          {
+            label: "Locked Ports",
+            value: totalLocked || "—",
+            border: "border-red-200",
+            text: "text-red-700",
+            head: "text-red-600",
+          },
+          {
+            label: "Access Ports",
+            value: totalPortsLoaded > 0 ? totalAccess : "—",
+            border: "border-blue-200",
+            text: "text-blue-700",
+            head: "text-blue-600",
+          },
+          {
+            label: "Trunk Ports",
+            value: totalPortsLoaded > 0 ? totalTrunk : "—",
+            border: "border-purple-200",
+            text: "text-purple-700",
+            head: "text-purple-600",
+          },
+        ].map((s) => (
+          <div
+            key={s.label}
+            className={`bg-white rounded-xl border ${s.border} p-4 shadow-sm`}
+          >
+            <p className={`text-sm ${s.head}`}>{s.label}</p>
+            <p className={`text-2xl font-bold ${s.text} mt-1`}>{s.value}</p>
+          </div>
+        ))}
       </div>
 
       {switchesLoading && (
@@ -2794,6 +3436,7 @@ export default function CiscoPortManagementSection() {
                     cache={cache}
                     currentPage={currentPage}
                     isAdmin={isAdmin}
+                    isSuperAdmin={isSuperAdmin}
                     onPageChange={(p) => loadDbPage(sw.id, p)}
                     onToggleLock={(label) => handleToggleLock(sw.id, label)}
                     onSync={() => syncPorts(sw.id)}

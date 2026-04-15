@@ -1947,3 +1947,74 @@ def get_port_config_db(
         port_label=port_label,
         config=row.config_text,
     )
+@router.get(
+    "/switches/{switch_id}/port-config-history/has-history",
+    response_model=PortConfigHistoryHasResponse,
+)
+def get_ports_with_history(
+    switch_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return distinct port labels that have at least one saved config snapshot.
+    Must be declared BEFORE /port-config-history to avoid route conflict.
+    """
+    rows = (
+        db.query(CiscoPortConfigHistory.port_label)
+        .filter(CiscoPortConfigHistory.switch_id == switch_id)
+        .distinct()
+        .all()
+    )
+    return PortConfigHistoryHasResponse(
+        success=True,
+        port_labels=[r.port_label for r in rows],
+    )
+
+
+@router.get(
+    "/switches/{switch_id}/port-config-history",
+    response_model=PortConfigHistoryResponse,
+)
+def get_port_config_history(
+    switch_id: int,
+    port_label: str = Query(..., description="Port label e.g. GigabitEthernet0/1"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=50, description="Items per page"),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Return paginated config snapshots for a port, newest first.
+    Each snapshot was captured automatically before a configuration
+    change was applied via the Configure button.
+    """
+    get_switch_or_404(db, switch_id)
+
+    base_q = (
+        db.query(CiscoPortConfigHistory)
+        .filter(
+            CiscoPortConfigHistory.switch_id  == switch_id,
+            CiscoPortConfigHistory.port_label == port_label,
+        )
+    )
+
+    total = base_q.count()
+    total_pages = max(1, ceil(total / page_size))
+
+    rows = (
+        base_q
+        .order_by(CiscoPortConfigHistory.saved_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return PortConfigHistoryResponse(
+        success=True,
+        history=[PortConfigHistoryRead.model_validate(r) for r in rows],
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )

@@ -495,7 +495,12 @@ class ExecuteConfigResponse(BaseModel):
 # Port Config History  (NEW)
 # ═══════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════
+# Port Config History
+# ═══════════════════════════════════════════════════════
+
 class PortConfigHistoryRead(BaseModel):
+    """One row from cisco_port_config_history."""
     id: int
     switch_id: int
     port_label: str
@@ -508,19 +513,26 @@ class PortConfigHistoryRead(BaseModel):
 
 
 class PortConfigHistoryResponse(BaseModel):
-    """Returned by GET /switches/{id}/port-config-history?port_label=..."""
+    """
+    Paginated response for
+    GET /switches/{id}/port-config-history?port_label=...&page=1&page_size=10
+    """
     success: bool = True
     history: List[PortConfigHistoryRead] = []
+    # Pagination
     total: int = 0
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 1
 
 
 class PortConfigHistoryHasResponse(BaseModel):
     """
     Returned by GET /switches/{id}/port-config-history/has-history
-    Lists only the port_labels that have at least one history entry.
-    Used by the frontend to decide which rows should show the
-    'Last Config' button.
+
+    The frontend uses this to decide which port rows in the table
+    should show the amber 'Last Config' button — only ports that
+    actually have at least one saved snapshot.
     """
     success: bool = True
     port_labels: List[str] = []
-    
