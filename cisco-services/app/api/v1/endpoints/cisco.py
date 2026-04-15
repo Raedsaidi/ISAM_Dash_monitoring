@@ -7,6 +7,7 @@ REST endpoints for Cisco switch management.
 
 import json
 import logging
+import re
 import time as _time
 from datetime import datetime
 from typing import Optional
@@ -26,7 +27,7 @@ from app.models.cisco_switch import (
     CiscoPortSnapshot,
     CiscoInterfaceSnapshot,
     CiscoVlanSnapshot,
-    CiscoPortConfigHistory,   # ← now imported
+    CiscoPortConfigHistory,
 )
 from app.models.cisco_schemas import (
     SwitchCreate,
@@ -63,9 +64,9 @@ from app.models.cisco_schemas import (
     PortStats,
     SwitchOverviewSummary,
     OverviewResponse,
-    PortConfigHistoryRead,        # ← now imported
-    PortConfigHistoryResponse,    # ← now imported
-    PortConfigHistoryHasResponse, # ← now imported
+    PortConfigHistoryRead,
+    PortConfigHistoryResponse,
+    PortConfigHistoryHasResponse,
 )
 from app.services.cisco_client import (
     CiscoConnectionService,
@@ -74,6 +75,7 @@ from app.services.cisco_client import (
     parse_interfaces,
     parse_vlans,
     parse_running_config_vlan,
+    expand_interface_name,
 )
 
 router = APIRouter(prefix="/cisco", tags=["Cisco"])
@@ -146,11 +148,6 @@ def _save_port_config_snapshot(
     config_text: str,
     saved_by: Optional[str] = None,
 ) -> CiscoPortConfigHistory:
-    """
-    Persist the current running config for a port.
-    Call this inside change-vlan / configure-port handlers before pushing changes.
-    This is a plain synchronous function — no async needed for SQLAlchemy sync sessions.
-    """
     entry = CiscoPortConfigHistory(
         switch_id=switch_id,
         port_label=port_label,
@@ -319,7 +316,40 @@ def test_connection(
 
 # ═══════════════════════════════════════════════════════
 # Execute Command
+#
+# Special handling for interface shutdown / no shutdown:
+# We detect the pattern and route through _ssh_config_commands
+# so the session properly enters "conf t" before the interface block.
 # ═══════════════════════════════════════════════════════
+
+_IFACE_SHUTDOWN_RE = re.compile(
+    r"^\s*interface\s+\S+.*\n\s*(no\s+shutdown|shutdown)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _is_interface_shutdown_command(command: str) -> bool:
+    """Return True when the command block is an interface up/down operation."""
+    return bool(_IFACE_SHUTDOWN_RE.search(command))
+
+
+def _parse_interface_shutdown_commands(command: str) -> list[str]:
+    """
+    Extract the individual IOS config lines from the raw command string.
+    E.g.:
+        "interface GigabitEthernet1/0/10\n no shutdown\n end"
+    Returns:
+        ["interface GigabitEthernet1/0/10", "no shutdown"]
+    (We deliberately exclude "end" — _ssh_config_commands appends it.)
+    """
+    lines = []
+    for line in command.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == "end":
+            continue          # _ssh_config_commands sends 'end' itself
+        if stripped:
+            lines.append(stripped)
+    return lines
 
 
 @router.post("/switches/{switch_id}/execute", response_model=CommandResponse)
@@ -330,19 +360,104 @@ def execute_command(
     current_user: TokenUser = Depends(require_admin),
 ):
     sw = get_switch_or_404(db, switch_id)
-    if not body.command.strip():
+    raw_command = body.command.strip()
+    if not raw_command:
         raise HTTPException(status_code=400, detail="Command must not be empty.")
+
     service = CiscoConnectionService(sw)
     start = _time.time()
+
+    # ── Route interface shutdown/no-shutdown through _ssh_config_commands ──
+    if _is_interface_shutdown_command(raw_command):
+        config_lines = _parse_interface_shutdown_commands(raw_command)
+        logger.info(
+            "[EXECUTE] Detected interface shutdown/no-shutdown — "
+            "routing through _ssh_config_commands: %s",
+            config_lines,
+        )
+
+        # Build a human-readable trace of what we're about to do so the
+        # frontend output modal shows the full session flow.
+        session_trace_header = (
+            "--- Session flow ---\n"
+            "  [1] connect to switch\n"
+            "  [2] enable\n"
+            "  [3] terminal length 0\n"
+            "  [4] conf t          ← entering config mode\n"
+            + "".join(f"  [5] {ln}\n" for ln in config_lines)
+            + "  [6] end\n"
+            "--- Executing … ---\n\n"
+        )
+
+        ok, raw_output, err = service._ssh_config_commands(config_lines, timeout=30)
+
+        elapsed = round((_time.time() - start) * 1000, 1)
+
+        if ok:
+            full_output = session_trace_header + raw_output
+            return CommandResponse(
+                success=True,
+                command=raw_command,
+                output=full_output,
+                error=None,
+                protocol_used="ssh",
+                execution_time_ms=elapsed,
+            )
+        else:
+            # Try Telnet fallback if SSH-cfg failed and preference allows it
+            if sw.protocol_preference != "ssh":
+                logger.info(
+                    "[EXECUTE] _ssh_config_commands failed, trying Telnet fallback…"
+                )
+                script_lines = ["conf t"] + config_lines + ["end"]
+                script = "\n".join(script_lines)
+                tel_ok, tel_out, tel_err = service.execute_telnet_command(
+                    script, enable=True, timeout=30
+                )
+                elapsed = round((_time.time() - start) * 1000, 1)
+                if tel_ok:
+                    full_output = (
+                        session_trace_header
+                        + "[fallback] Used Telnet after SSH failed.\n\n"
+                        + tel_out
+                    )
+                    return CommandResponse(
+                        success=True,
+                        command=raw_command,
+                        output=full_output,
+                        error=None,
+                        protocol_used="telnet",
+                        execution_time_ms=elapsed,
+                    )
+                combined_err = f"SSH error: {err}\nTelnet error: {tel_err}"
+                return CommandResponse(
+                    success=False,
+                    command=raw_command,
+                    output=session_trace_header,
+                    error=combined_err,
+                    protocol_used=None,
+                    execution_time_ms=elapsed,
+                )
+
+            return CommandResponse(
+                success=False,
+                command=raw_command,
+                output=session_trace_header,
+                error=err,
+                protocol_used=None,
+                execution_time_ms=elapsed,
+            )
+
+    # ── All other commands — use the existing strategy ──────────────────────
     ok, proto, output, error = service.execute_command_preference(
-        command=body.command.strip(),
+        command=raw_command,
         enable=body.enable_mode,
         timeout=30,
     )
     elapsed = round((_time.time() - start) * 1000, 1)
     return CommandResponse(
         success=ok,
-        command=body.command.strip(),
+        command=raw_command,
         output=output if ok else None,
         error=error if not ok else None,
         protocol_used=proto,
@@ -950,6 +1065,7 @@ def change_port_vlan(
     current_user: TokenUser = Depends(require_admin),
 ):
     sw = get_switch_or_404(db, switch_id)
+
     lock = (
         db.query(CiscoPortLock)
         .filter(
@@ -966,9 +1082,10 @@ def change_port_vlan(
 
     service = CiscoConnectionService(sw)
 
-    # Save config snapshot before making changes
     try:
-        cfg_ok, _, cfg_out, _ = service.get_port_running_config(body.port_label)
+        cfg_ok, _, cfg_out, _ = service.get_port_running_config(
+            body.port_label, timeout=15
+        )
         if cfg_ok and cfg_out:
             _save_port_config_snapshot(
                 db=db,
@@ -977,8 +1094,11 @@ def change_port_vlan(
                 config_text=cfg_out,
                 saved_by=current_user.username,
             )
-    except Exception as e:
-        logger.warning("Could not save config snapshot for %s: %s", body.port_label, e)
+    except Exception as exc:
+        logger.warning(
+            "[CONFIG-HISTORY] Could not save snapshot for %s: %s",
+            body.port_label, exc,
+        )
 
     try:
         ok, proto, output, error = service.change_vlan(
@@ -988,31 +1108,41 @@ def change_port_vlan(
             description=body.description,
             timeout=30,
         )
-    except Exception as e:
-        return VlanChangeResponse(success=False, error=f"{type(e).__name__}: {e}")
+    except Exception as exc:
+        return VlanChangeResponse(
+            success=False, error=f"{type(exc).__name__}: {exc}"
+        )
 
     if not ok:
-        return VlanChangeResponse(success=False, protocol_used=proto, error=error)
+        return VlanChangeResponse(
+            success=False, protocol_used=proto, error=error
+        )
 
     if body.port_status is not None:
-        shutdown_cmd = "shutdown" if body.port_status == "down" else "no shutdown"
-        commands = f"interface {body.port_label}\n {shutdown_cmd}\n end"
         try:
-            status_ok, _, status_out, status_err = service.execute_command_preference(
-                command=commands, enable=True, timeout=15,
+            status_ok, status_proto, status_out, status_err = service.apply_port_status(
+                port_label=body.port_label,
+                port_status=body.port_status,
+                timeout=20,
             )
             if not status_ok:
                 logger.warning(
-                    "Port status command failed for %s: %s", body.port_label, status_err
+                    "Port status change failed for %s: %s",
+                    body.port_label, status_err,
                 )
             else:
                 output = (output or "") + "\n" + (status_out or "")
-        except Exception as e:
-            logger.warning("Could not apply port status for %s: %s", body.port_label, e)
+        except Exception as exc:
+            logger.warning(
+                "Could not apply port status for %s: %s",
+                body.port_label, exc,
+            )
 
     current_vlan = None
     try:
-        cfg_ok, _, cfg_out, _ = service.get_port_running_config(body.port_label)
+        cfg_ok, _, cfg_out, _ = service.get_port_running_config(
+            body.port_label, timeout=15
+        )
         if cfg_ok:
             current_vlan = parse_running_config_vlan(cfg_out)
     except Exception:
@@ -1025,7 +1155,6 @@ def change_port_vlan(
         protocol_used=proto,
         error=None,
     )
-
 
 # ═══════════════════════════════════════════════════════
 # Sync Ports
@@ -1123,11 +1252,6 @@ def sync_ports(
     db.commit()
     saved_ports.sort(key=lambda x: (x.port_label.split("/")[0], x.port_number))
 
-    logger.info(
-        "Synced %d ports for switch %d (%s) by %s",
-        len(saved_ports), switch_id, sw.name, current_user.username,
-    )
-
     return PortStatusResponse(
         success=True,
         switch_id=switch_id,
@@ -1155,8 +1279,6 @@ def get_ports_db(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    import re
-
     get_switch_or_404(db, switch_id)
 
     locks = {
@@ -1321,12 +1443,6 @@ def get_ports_with_history(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Return the distinct port labels that have at least one saved config
-    snapshot for this switch.
-    MUST be before /port-config-history so FastAPI doesn't try to match
-    'has-history' as the port_label query param.
-    """
     rows = (
         db.query(CiscoPortConfigHistory.port_label)
         .filter(CiscoPortConfigHistory.switch_id == switch_id)
@@ -1346,25 +1462,39 @@ def get_ports_with_history(
 def get_port_config_history(
     switch_id: int,
     port_label: str = Query(..., description="Port label, e.g. GigabitEthernet0/1"),
-    limit: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=50, description="Items per page"),
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """Return the saved config snapshots for a port, newest first."""
-    rows = (
+    get_switch_or_404(db, switch_id)
+
+    base_q = (
         db.query(CiscoPortConfigHistory)
         .filter(
             CiscoPortConfigHistory.switch_id == switch_id,
             CiscoPortConfigHistory.port_label == port_label,
         )
+    )
+
+    total = base_q.count()
+    total_pages = max(1, ceil(total / page_size))
+
+    rows = (
+        base_q
         .order_by(CiscoPortConfigHistory.saved_at.desc())
-        .limit(limit)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
+
     return PortConfigHistoryResponse(
         success=True,
         history=[PortConfigHistoryRead.model_validate(r) for r in rows],
-        total=len(rows),
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
     )
 
 
@@ -1502,10 +1632,6 @@ def vlan_mgmt_create_vlan(
 
     db.commit()
     db.refresh(vlan)
-    logger.info(
-        "Created VLAN %d (%s) by %s — injected into %d switch snapshot(s)",
-        vlan.vlan_id, vlan.name, current_user.username, len(switches),
-    )
     return VlanMgmtRead(
         id=vlan.id, vlan_id=vlan.vlan_id, name=vlan.name,
         status=vlan.status, port_count=0,
@@ -1566,10 +1692,6 @@ def vlan_mgmt_delete_vlan(
 
     db.delete(vlan)
     db.commit()
-    logger.info(
-        "Deleted VLAN %d, affected %d ports — by %s",
-        vid, affected, current_user.username,
-    )
     return VlanMgmtDeleteResponse(
         success=True, message=f"VLAN {vid} deleted.", affected_ports=affected,
     )
@@ -1654,10 +1776,6 @@ def vlan_mgmt_create_port(
     db.add(pa)
     db.commit()
     db.refresh(pa)
-    logger.info(
-        "Created port assignment %s on %s by %s",
-        pa.port_id, sw.name, current_user.username,
-    )
     return _pa_to_read(pa)
 
 
@@ -1692,7 +1810,6 @@ def vlan_mgmt_update_port(
     pa.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(pa)
-    logger.info("Updated port %s (id=%d) by %s", pa.port_id, pa.id, current_user.username)
     return _pa_to_read(pa)
 
 
@@ -1905,6 +2022,8 @@ def get_overview(
         switches=switch_summaries,
         recently_checked=recently_checked,
     )
+
+
 @router.get(
     "/switches/{switch_id}/port-config-db",
     response_model=PortConfigResponse,
@@ -1915,10 +2034,6 @@ def get_port_config_db(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(get_current_user),
 ):
-    """
-    Return the most recent saved config snapshot for a port from the DB.
-    Falls back to a clear error if no snapshot exists yet.
-    """
     get_switch_or_404(db, switch_id)
 
     row = (
@@ -1946,75 +2061,4 @@ def get_port_config_db(
         success=True,
         port_label=port_label,
         config=row.config_text,
-    )
-@router.get(
-    "/switches/{switch_id}/port-config-history/has-history",
-    response_model=PortConfigHistoryHasResponse,
-)
-def get_ports_with_history(
-    switch_id: int,
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    """
-    Return distinct port labels that have at least one saved config snapshot.
-    Must be declared BEFORE /port-config-history to avoid route conflict.
-    """
-    rows = (
-        db.query(CiscoPortConfigHistory.port_label)
-        .filter(CiscoPortConfigHistory.switch_id == switch_id)
-        .distinct()
-        .all()
-    )
-    return PortConfigHistoryHasResponse(
-        success=True,
-        port_labels=[r.port_label for r in rows],
-    )
-
-
-@router.get(
-    "/switches/{switch_id}/port-config-history",
-    response_model=PortConfigHistoryResponse,
-)
-def get_port_config_history(
-    switch_id: int,
-    port_label: str = Query(..., description="Port label e.g. GigabitEthernet0/1"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(10, ge=1, le=50, description="Items per page"),
-    db: Session = Depends(get_db),
-    current_user: TokenUser = Depends(get_current_user),
-):
-    """
-    Return paginated config snapshots for a port, newest first.
-    Each snapshot was captured automatically before a configuration
-    change was applied via the Configure button.
-    """
-    get_switch_or_404(db, switch_id)
-
-    base_q = (
-        db.query(CiscoPortConfigHistory)
-        .filter(
-            CiscoPortConfigHistory.switch_id  == switch_id,
-            CiscoPortConfigHistory.port_label == port_label,
-        )
-    )
-
-    total = base_q.count()
-    total_pages = max(1, ceil(total / page_size))
-
-    rows = (
-        base_q
-        .order_by(CiscoPortConfigHistory.saved_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-
-    return PortConfigHistoryResponse(
-        success=True,
-        history=[PortConfigHistoryRead.model_validate(r) for r in rows],
-        total=total,
-        page=page,
-        page_size=page_size,
-        total_pages=total_pages,
     )

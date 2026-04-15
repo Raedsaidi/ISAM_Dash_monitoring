@@ -25,6 +25,7 @@ import {
   CheckCircle,
   Activity,
   Info,
+  Ban,
 } from "lucide-react";
 import { cn } from "../../utils/cn";
 import { useAuth } from "../../context/AuthContext";
@@ -329,6 +330,7 @@ function InterfaceOutputModal({
   output,
   error,
   loading,
+  success,
 }: {
   open: boolean;
   onClose: () => void;
@@ -336,6 +338,7 @@ function InterfaceOutputModal({
   output: string | null;
   error: string | null;
   loading: boolean;
+  success: boolean | null;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -358,10 +361,26 @@ function InterfaceOutputModal({
         className="relative bg-white rounded-2xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 bg-slate-900 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-green-500/20 flex items-center justify-center">
-              <Terminal size={16} className="text-green-400" />
+            <div
+              className={cn(
+                "h-8 w-8 rounded-lg flex items-center justify-center",
+                loading
+                  ? "bg-blue-500/20"
+                  : success === false
+                    ? "bg-red-500/20"
+                    : "bg-green-500/20",
+              )}
+            >
+              {loading ? (
+                <Loader2 size={16} className="text-blue-400 animate-spin" />
+              ) : success === false ? (
+                <AlertCircle size={16} className="text-red-400" />
+              ) : (
+                <Terminal size={16} className="text-green-400" />
+              )}
             </div>
             <h3 className="text-base font-semibold text-white">{title}</h3>
           </div>
@@ -373,24 +392,45 @@ function InterfaceOutputModal({
           </button>
         </div>
 
+        {/* Body */}
         <div className="flex-1 overflow-y-auto bg-slate-950 p-6">
           {loading && (
             <div className="flex flex-col items-center justify-center py-12 text-slate-400">
-              <Loader2 size={28} className="animate-spin mb-3 text-green-400" />
-              <p className="text-sm">Applying command to switch…</p>
+              <Loader2 size={28} className="animate-spin mb-3 text-blue-400" />
+              <p className="text-sm font-mono text-slate-300">
+                Entering config mode on switch…
+              </p>
+              <p className="text-xs text-slate-500 mt-2 font-mono">
+                connect → enable → conf t → interface → shutdown/no shutdown →
+                end
+              </p>
             </div>
           )}
+
           {error && !loading && (
-            <div className="flex items-start gap-3 p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
-              <AlertCircle size={18} className="text-red-400 shrink-0 mt-0.5" />
-              <div>
-                <p className="text-sm font-medium text-red-300">
-                  Command failed
-                </p>
-                <p className="text-xs text-red-400 mt-1">{error}</p>
+            <>
+              <div className="flex items-start gap-3 p-4 bg-red-900/30 border border-red-700/50 rounded-lg mb-4">
+                <AlertCircle
+                  size={18}
+                  className="text-red-400 shrink-0 mt-0.5"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-red-300 mb-1">
+                    Command failed — buttons have been disabled for this
+                    interface
+                  </p>
+                  <p className="text-xs text-red-400">{error}</p>
+                </div>
               </div>
-            </div>
+              <div className="mt-3 p-3 bg-amber-900/20 border border-amber-700/40 rounded-lg">
+                <p className="text-xs text-amber-400 font-mono">
+                  ⚠ The interface buttons are now locked. Click "Refresh" to
+                  re-sync from the switch and re-enable them.
+                </p>
+              </div>
+            </>
           )}
+
           {output && !loading && (
             <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
               {output}
@@ -398,6 +438,7 @@ function InterfaceOutputModal({
           )}
         </div>
 
+        {/* Footer */}
         <div className="shrink-0 flex justify-end px-6 py-3 border-t border-slate-200 bg-slate-50">
           <button
             onClick={onClose}
@@ -554,44 +595,6 @@ function AddVlanModal({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Interface Status Badge                                             */
-/* ------------------------------------------------------------------ */
-
-function InterfaceStatusBadge({
-  status,
-  protocol,
-}: {
-  status: string;
-  protocol: string;
-}) {
-  const isUp =
-    status.toLowerCase().includes("up") &&
-    protocol.toLowerCase().includes("up");
-  const isAdminDown =
-    status.toLowerCase().includes("admin") ||
-    status.toLowerCase() === "administratively down";
-  const isDown = !isUp;
-
-  if (isUp)
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-700 uppercase tracking-wide">
-        <span className="w-1.5 h-1.5 rounded-full bg-green-500" /> UP
-      </span>
-    );
-  if (isAdminDown)
-    return (
-      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700 uppercase tracking-wide">
-        <span className="w-1.5 h-1.5 rounded-full bg-red-500" /> Admin Down
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500 uppercase tracking-wide">
-      <span className="w-1.5 h-1.5 rounded-full bg-slate-400" /> DOWN
-    </span>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -616,10 +619,15 @@ export default function CiscoVlanManagementSection() {
   const [actioningInterfaces, setActioningInterfaces] = useState<Set<string>>(
     new Set(),
   );
-  // Optimistic local override: name → "up" | "down" (admin action applied)
+  // Optimistic local override: name → "up" | "down"
   const [localStatusOverride, setLocalStatusOverride] = useState<
     Record<string, "up" | "down">
   >({});
+
+  // Interfaces that failed their last action — buttons stay disabled until refresh
+  const [failedInterfaces, setFailedInterfaces] = useState<Set<string>>(
+    new Set(),
+  );
 
   // Confirm dialog state
   const [confirmState, setConfirmState] = useState<{
@@ -635,7 +643,15 @@ export default function CiscoVlanManagementSection() {
     output: string | null;
     error: string | null;
     loading: boolean;
-  }>({ open: false, title: "", output: null, error: null, loading: false });
+    success: boolean | null;
+  }>({
+    open: false,
+    title: "",
+    output: null,
+    error: null,
+    loading: false,
+    success: null,
+  });
 
   // ── Switch VLANs snapshot state ───────────────────────────────────
   const [vlansData, setVlansData] = useState<VlansPageResponse | null>(null);
@@ -767,10 +783,13 @@ export default function CiscoVlanManagementSection() {
         output: null,
         error: null,
         loading: true,
+        success: null,
       });
 
       const shutdownCmd = action === "down" ? "shutdown" : "no shutdown";
-      const command = `interface ${ifaceName}\n ${shutdownCmd}\n end`;
+      // Send multiline command — backend detects the interface+shutdown pattern
+      // and automatically routes through conf t via _ssh_config_commands
+      const command = `interface ${ifaceName}\n${shutdownCmd}\nend`;
 
       try {
         const result = await apiFetch<InterfaceActionResult>(
@@ -786,7 +805,14 @@ export default function CiscoVlanManagementSection() {
         );
 
         if (result.success) {
-          // Optimistic update — flip the local status override
+          // Clear any previous failure for this interface
+          setFailedInterfaces((prev) => {
+            const next = new Set(prev);
+            next.delete(ifaceName);
+            return next;
+          });
+
+          // Optimistic update
           setLocalStatusOverride((prev) => ({ ...prev, [ifaceName]: action }));
 
           toast.success(
@@ -795,15 +821,16 @@ export default function CiscoVlanManagementSection() {
 
           setOutputModal({
             open: true,
-            title: `${action === "up" ? "✓ Enabled" : "✓ Disabled"} — ${ifaceName}`,
+            title: `✓ ${action === "up" ? "Enabled" : "Disabled"} — ${ifaceName}`,
             output:
               result.output ||
-              `Command applied:\n interface ${ifaceName}\n  ${shutdownCmd}\n end`,
+              `Session flow:\n  connect → enable → conf t → interface ${ifaceName} → ${shutdownCmd} → end\n\nCommand applied successfully.`,
             error: null,
             loading: false,
+            success: true,
           });
 
-          // Re-sync interfaces from switch after a short delay so DB reflects real state
+          // Re-sync interfaces from switch after a short delay
           setTimeout(async () => {
             if (selectedSwitchId) {
               await syncAndLoadInterfaces(
@@ -820,25 +847,37 @@ export default function CiscoVlanManagementSection() {
             }
           }, 2500);
         } else {
+          // Mark interface as failed — disable its buttons
+          setFailedInterfaces((prev) => new Set([...prev, ifaceName]));
+
           toast.error(
-            `Failed to ${action === "up" ? "enable" : "disable"} ${ifaceName}`,
+            `Failed to ${action === "up" ? "enable" : "disable"} ${ifaceName} — buttons disabled, click Refresh to re-enable`,
           );
           setOutputModal({
             open: true,
-            title: `Failed — ${ifaceName}`,
-            output: null,
+            title: `✗ Failed — ${ifaceName}`,
+            output: result.output || null,
             error: result.error || "Unknown error from switch",
             loading: false,
+            success: false,
           });
         }
       } catch (err: any) {
-        toast.error(err.message || "Command failed");
+        // Network / API error — also disable buttons
+        setFailedInterfaces((prev) => new Set([...prev, ifaceName]));
+
+        toast.error(
+          err.message
+            ? `${err.message} — buttons disabled, click Refresh to re-enable`
+            : "Command failed — buttons disabled, click Refresh to re-enable",
+        );
         setOutputModal({
           open: true,
-          title: `Error — ${ifaceName}`,
+          title: `✗ Error — ${ifaceName}`,
           output: null,
           error: err.message || "Unknown error",
           loading: false,
+          success: false,
         });
       } finally {
         setActioningInterfaces((prev) => {
@@ -942,18 +981,21 @@ export default function CiscoVlanManagementSection() {
     setInterfacesData(null);
     setVlansData(null);
     setLocalStatusOverride({});
+    // Clear failures when switching to a different switch
+    setFailedInterfaces(new Set());
     loadInterfacesFromDb(selectedSwitchId, 1, "");
     loadVlansFromDb(selectedSwitchId, 1, "");
     scheduleAutoSync(selectedSwitchId);
   }, [selectedSwitchId]); // eslint-disable-line
 
   /* ----------------------------------------------------------------
-   * Manual Refresh
+   * Manual Refresh — clears failed interfaces so buttons re-enable
    * ---------------------------------------------------------------- */
 
   const handleRefresh = useCallback(async () => {
     if (!selectedSwitchId) return;
     setLocalStatusOverride({});
+    setFailedInterfaces(new Set()); // re-enable all buttons
     await Promise.all([
       syncAndLoadInterfaces(selectedSwitchId, interfacesPage, interfacesSearch),
       syncAndLoadVlans(selectedSwitchId, vlansPage, vlansSearch),
@@ -1033,7 +1075,6 @@ export default function CiscoVlanManagementSection() {
   const getEffectiveStatus = (
     iface: InterfaceInfo,
   ): "up" | "down" | "admin-down" => {
-    // Check local optimistic override first
     const override = localStatusOverride[iface.name];
     if (override) return override;
     const s = iface.status.toLowerCase();
@@ -1146,6 +1187,20 @@ export default function CiscoVlanManagementSection() {
           </div>
         </div>
 
+        {/* Failed interfaces warning banner */}
+        {failedInterfaces.size > 0 && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            <Ban size={13} className="shrink-0 text-amber-600" />
+            <span>
+              <span className="font-semibold">{failedInterfaces.size}</span>{" "}
+              interface{failedInterfaces.size > 1 ? "s" : ""} had a failed
+              action and {failedInterfaces.size > 1 ? "their" : "its"} buttons
+              are disabled. Click <span className="font-semibold">Refresh</span>{" "}
+              to re-sync from the switch and re-enable them.
+            </span>
+          </div>
+        )}
+
         {isSyncing && (
           <div className="mt-3 flex items-center gap-2 text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
             <Loader2 size={13} className="animate-spin shrink-0" />
@@ -1240,6 +1295,12 @@ export default function CiscoVlanManagementSection() {
                   }{" "}
                   down
                 </div>
+                {failedInterfaces.size > 0 && (
+                  <div className="flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-full">
+                    <Ban size={10} />
+                    {failedInterfaces.size} locked
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1293,17 +1354,23 @@ export default function CiscoVlanManagementSection() {
                   const isUp = effectiveStatus === "up";
                   const isAdminDown = effectiveStatus === "admin-down";
                   const isActioning = actioningInterfaces.has(iface.name);
+                  const isFailed = failedInterfaces.has(iface.name);
+                  // Buttons are disabled if: currently actioning, already in target state, or previously failed
+                  const upDisabled = isActioning || isUp || isFailed;
+                  const downDisabled = isActioning || isAdminDown || isFailed;
 
                   return (
                     <div
                       key={idx}
                       className={cn(
                         "rounded-xl border transition-all",
-                        isUp
-                          ? "bg-white border-green-200 hover:border-green-300 hover:shadow-sm"
-                          : isAdminDown
-                            ? "bg-red-50/50 border-red-200 hover:border-red-300"
-                            : "bg-slate-50 border-slate-200 hover:border-slate-300",
+                        isFailed
+                          ? "bg-amber-50/60 border-amber-200"
+                          : isUp
+                            ? "bg-white border-green-200 hover:border-green-300 hover:shadow-sm"
+                            : isAdminDown
+                              ? "bg-red-50/50 border-red-200 hover:border-red-300"
+                              : "bg-slate-50 border-slate-200 hover:border-slate-300",
                       )}
                     >
                       {/* Main row */}
@@ -1312,11 +1379,13 @@ export default function CiscoVlanManagementSection() {
                         <div
                           className={cn(
                             "shrink-0 w-9 h-9 rounded-lg flex items-center justify-center",
-                            isUp
-                              ? "bg-green-100"
-                              : isAdminDown
-                                ? "bg-red-100"
-                                : "bg-slate-100",
+                            isFailed
+                              ? "bg-amber-100"
+                              : isUp
+                                ? "bg-green-100"
+                                : isAdminDown
+                                  ? "bg-red-100"
+                                  : "bg-slate-100",
                           )}
                         >
                           {isActioning ? (
@@ -1324,6 +1393,8 @@ export default function CiscoVlanManagementSection() {
                               size={18}
                               className="animate-spin text-blue-500"
                             />
+                          ) : isFailed ? (
+                            <Ban size={18} className="text-amber-500" />
                           ) : isUp ? (
                             <Wifi size={18} className="text-green-600" />
                           ) : (
@@ -1343,32 +1414,40 @@ export default function CiscoVlanManagementSection() {
                               {iface.name}
                             </span>
                             {/* Status badge */}
-                            <span
-                              className={cn(
-                                "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide",
-                                isUp
-                                  ? "bg-green-100 text-green-700"
-                                  : isAdminDown
-                                    ? "bg-red-100 text-red-700"
-                                    : "bg-slate-100 text-slate-500",
-                              )}
-                            >
+                            {!isFailed && (
                               <span
                                 className={cn(
-                                  "w-1.5 h-1.5 rounded-full",
+                                  "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide",
                                   isUp
-                                    ? "bg-green-500"
+                                    ? "bg-green-100 text-green-700"
                                     : isAdminDown
-                                      ? "bg-red-500"
-                                      : "bg-slate-400",
+                                      ? "bg-red-100 text-red-700"
+                                      : "bg-slate-100 text-slate-500",
                                 )}
-                              />
-                              {isUp
-                                ? "UP"
-                                : isAdminDown
-                                  ? "Admin Down"
-                                  : "DOWN"}
-                            </span>
+                              >
+                                <span
+                                  className={cn(
+                                    "w-1.5 h-1.5 rounded-full",
+                                    isUp
+                                      ? "bg-green-500"
+                                      : isAdminDown
+                                        ? "bg-red-500"
+                                        : "bg-slate-400",
+                                  )}
+                                />
+                                {isUp
+                                  ? "UP"
+                                  : isAdminDown
+                                    ? "Admin Down"
+                                    : "DOWN"}
+                              </span>
+                            )}
+                            {/* Failed badge */}
+                            {isFailed && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700 uppercase tracking-wide">
+                                <Ban size={9} /> Action failed
+                              </span>
+                            )}
                             {/* Optimistic override indicator */}
                             {localStatusOverride[iface.name] && (
                               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 border border-blue-200 rounded text-[10px] text-blue-600">
@@ -1397,6 +1476,11 @@ export default function CiscoVlanManagementSection() {
                               </>
                             )}
                           </div>
+                          {isFailed && (
+                            <p className="text-[10px] text-amber-600 mt-0.5 font-medium">
+                              Buttons disabled — click Refresh to re-enable
+                            </p>
+                          )}
                         </div>
 
                         {/* Action buttons */}
@@ -1404,25 +1488,29 @@ export default function CiscoVlanManagementSection() {
                           {/* Bring UP */}
                           <button
                             type="button"
-                            disabled={isActioning || isUp}
+                            disabled={upDisabled}
                             onClick={() =>
                               requestInterfaceAction(iface.name, "up")
                             }
                             title={
-                              isUp
-                                ? "Interface is already up"
-                                : `Bring ${iface.name} up (no shutdown)`
+                              isFailed
+                                ? "Action failed — click Refresh to re-enable"
+                                : isUp
+                                  ? "Interface is already up"
+                                  : `Bring ${iface.name} up (no shutdown via conf t)`
                             }
                             className={cn(
                               "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all",
                               "focus:outline-none focus:ring-2 focus:ring-offset-1",
-                              isUp || isActioning
+                              upDisabled
                                 ? "bg-slate-100 text-slate-300 cursor-not-allowed opacity-50"
                                 : "bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500 hover:shadow-sm",
                             )}
                           >
                             {isActioning ? (
                               <Loader2 size={12} className="animate-spin" />
+                            ) : isFailed ? (
+                              <Ban size={12} />
                             ) : (
                               <Power size={12} />
                             )}
@@ -1432,25 +1520,29 @@ export default function CiscoVlanManagementSection() {
                           {/* Bring DOWN */}
                           <button
                             type="button"
-                            disabled={isActioning || isAdminDown}
+                            disabled={downDisabled}
                             onClick={() =>
                               requestInterfaceAction(iface.name, "down")
                             }
                             title={
-                              isAdminDown
-                                ? "Interface is already admin-down"
-                                : `Shut down ${iface.name} (shutdown)`
+                              isFailed
+                                ? "Action failed — click Refresh to re-enable"
+                                : isAdminDown
+                                  ? "Interface is already admin-down"
+                                  : `Shut down ${iface.name} (shutdown via conf t)`
                             }
                             className={cn(
                               "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all",
                               "focus:outline-none focus:ring-2 focus:ring-offset-1",
-                              isAdminDown || isActioning
+                              downDisabled
                                 ? "bg-slate-100 text-slate-300 cursor-not-allowed opacity-50"
                                 : "bg-red-100 text-red-700 hover:bg-red-200 focus:ring-red-500 hover:shadow-sm",
                             )}
                           >
                             {isActioning ? (
                               <Loader2 size={12} className="animate-spin" />
+                            ) : isFailed ? (
+                              <Ban size={12} />
                             ) : (
                               <PowerOff size={12} />
                             )}
@@ -1491,9 +1583,7 @@ export default function CiscoVlanManagementSection() {
               <div className="flex items-center justify-between text-xs text-slate-600">
                 <div className="flex items-center gap-1.5">
                   <Info size={11} className="text-slate-400" />
-                  <span>
-                    Up/Down buttons send shutdown/no shutdown to the switch
-                  </span>
+                  <span>Buttons send commands via conf t on the switch</span>
                 </div>
                 <span>{interfacesData.total} interfaces</span>
               </div>
@@ -1695,8 +1785,8 @@ export default function CiscoVlanManagementSection() {
         }
         message={
           confirmState.action === "up"
-            ? `Send "no shutdown" to ${confirmState.ifaceName}? The interface will be brought up.`
-            : `Send "shutdown" to ${confirmState.ifaceName}? The interface will be administratively disabled.`
+            ? `Send "no shutdown" to ${confirmState.ifaceName}? The session will enter conf t first, then apply the command.`
+            : `Send "shutdown" to ${confirmState.ifaceName}? The session will enter conf t first, then apply the command.`
         }
         confirmLabel={
           confirmState.action === "up"
@@ -1718,6 +1808,7 @@ export default function CiscoVlanManagementSection() {
         output={outputModal.output}
         error={outputModal.error}
         loading={outputModal.loading}
+        success={outputModal.success}
       />
 
       {/* Add VLAN Modal */}
