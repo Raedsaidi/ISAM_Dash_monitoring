@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from enum import Enum
 from datetime import datetime
 from typing import List, Optional, Any, Dict, Literal
 
@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.models.isam_instance import ISAMInstance
 from app.models.config_history import ConfigHistory
 from app.models.wan_template import WanTemplate
+
 
 
 # -------- ISAM Instances --------
@@ -340,6 +341,7 @@ class LTPortItem(BaseModel):
     encap: str
     board: str
     locked: bool = False
+    config: Optional[PortConfigSummary] = None
 
 
 class LTPortsResponse(BaseModel):
@@ -436,3 +438,189 @@ class PortTemplateStatusResponse(BaseModel):
     last_applied_at: Optional[datetime] = None
     apply_count: int = 0
     message: str
+
+
+
+
+# ===== CUSTOM FUNCTIONS =====
+
+class CustomFunctionScope(str, Enum):
+    GLOBAL = "GLOBAL"
+    USER_INSTANCE = "USER_INSTANCE"
+
+
+class CustomFunctionBase(BaseModel):
+    name: str = Field(..., min_length=3, max_length=100)
+    command_template: str = Field(..., min_length=1, max_length=5000)
+    description: Optional[str] = Field(None, max_length=500)
+    project: Optional[str] = Field(None, max_length=100)
+
+
+class CustomFunctionCreate(CustomFunctionBase):
+    scope: CustomFunctionScope = CustomFunctionScope.GLOBAL
+    isam_instance_id: Optional[int] = None
+
+
+class CustomFunctionUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=3, max_length=100)
+    command_template: Optional[str] = None
+    description: Optional[str] = None
+    project: Optional[str] = None
+
+
+class CustomFunctionRead(CustomFunctionBase):
+    id: int
+    scope: CustomFunctionScope
+    isam_instance_id: Optional[int] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class CustomFunctionList(BaseModel):
+    functions: List[CustomFunctionRead]
+    total: int = 0
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 1
+
+
+class CustomFunctionExecuteRequest(BaseModel):
+    function_id: Optional[int] = None
+    command_template: Optional[str] = None
+    variables: Dict[str, str] = Field(default_factory=dict)
+    instance_id: int
+
+
+class CustomFunctionExecuteResponse(BaseModel):
+    success: bool
+    protocol_used: Optional[str] = None
+    executed_command: str
+    raw_output: str
+    variables_used: Dict[str, str]
+    message: str
+    function_id: Optional[int] = None
+    function_name: Optional[str] = None
+
+
+
+
+
+#--------------------- PORT CONFIG SCHEMAS --------------------
+class PortConfigSummary(BaseModel):
+    status: str = "UNKNOWN"
+    last_device_check_at: Optional[datetime] = None
+    last_device_check_success: bool = False
+    last_device_check_error: Optional[str] = None
+
+    last_template_id: Optional[int] = None
+    last_template_name: Optional[str] = None
+    last_project: Optional[str] = None
+    last_applied_by: Optional[str] = None
+    last_applied_at: Optional[datetime] = None
+    apply_count: int = 0
+
+    device_vlan_count: int = 0
+    expected_vlan_count: int = 0
+
+    ont_sernum: Optional[str] = None
+
+
+class PortConfigAppLastApply(BaseModel):
+    found: bool = False
+    template_id: Optional[int] = None
+    template_name: Optional[str] = None
+    project: Optional[str] = None
+    applied_by: Optional[str] = None
+    applied_at: Optional[datetime] = None
+    commands_executed: List[str] = []
+    raw_output: Optional[str] = None
+
+
+class PortConfigDeviceSnapshot(BaseModel):
+    status: str = "UNKNOWN"
+    last_device_check_at: Optional[datetime] = None
+    last_device_check_success: bool = False
+    last_device_check_error: Optional[str] = None
+
+    device_vlan_lines: List[str] = []
+    device_raw_output: Optional[str] = None
+    ont_sernum: Optional[str] = None
+
+
+class PortConfigDetailResponse(BaseModel):
+    success: bool
+    instance_id: int
+    port_id: str
+
+    app_last_apply: PortConfigAppLastApply
+    device_snapshot: PortConfigDeviceSnapshot
+
+
+
+
+
+class SFPPortRead(BaseModel):
+    """Lecture d'un SFP depuis la DB."""
+    sfp_id:        str
+    slot_id:       str
+    slot_short_id: str
+    sfp_index:     int
+    port_id:       str          # ex: "1/1/6/35"
+
+    status:        str          # no-error | cage-empty | sfp-no-a2-supp
+    is_empty:      bool
+    is_active:     bool
+    is_copper:     bool
+
+    part_number:   Optional[str] = None
+    wavelength:    Optional[str] = None
+    fiber_mode:    Optional[str] = None
+    standard:      Optional[str] = None
+
+    speed:         Optional[str] = None
+    direction:     Optional[str] = None
+    media:         Optional[str] = None
+    tx_wavelength: Optional[str] = None
+    rx_wavelength: Optional[str] = None
+
+    last_refresh_at: Optional[Any] = None
+
+    model_config = {"from_attributes": True}
+
+
+class SFPSlotSummary(BaseModel):
+    total:     int
+    active:    int
+    empty:     int
+    copper:    int
+    fiber:     int
+    speeds:    List[str]
+    standards: List[str]
+
+
+class TransceiverSlotResult(BaseModel):
+    slot_short_id: str
+    ok:            bool
+    error:         Optional[str] = None
+    sfp:           List[SFPPortRead]
+    summary:       SFPSlotSummary
+
+
+class TransceiverRefreshResponse(BaseModel):
+    success:   bool
+    protocol:  Optional[str] = None
+    message:   str
+    slots:     Dict[str, TransceiverSlotResult]
+
+
+class TransceiverPortResponse(BaseModel):
+    """Réponse pour un port_id spécifique."""
+    success:       bool
+    port_id:       str
+    instance_id:   int
+    sfp:           Optional[SFPPortRead] = None
+    message:       str

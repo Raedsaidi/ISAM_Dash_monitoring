@@ -1,16 +1,15 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, type ReactNode } from 'react';
 import {
   ChevronDown,
-  ChevronUp,
   ChevronRight,
   Loader2,
   AlertCircle,
   Zap,
   Radio,
-  Wifi,
   Cable,
   Search,
   X,
+  Signal,
 } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import { toast } from 'sonner';
@@ -37,6 +36,47 @@ interface LTSlotExpanderProps {
   isAdmin: boolean;
 }
 
+interface SFPInfo {
+  sfp_id: string;
+  slot_short_id: string;
+  sfp_index: number;
+  port_id: string;
+  status: string;
+  is_empty: boolean;
+  is_active: boolean;
+  is_copper: boolean;
+  part_number: string | null;
+  wavelength: string | null;
+  fiber_mode: string | null;
+  standard: string | null;
+  speed: string | null;
+  direction: string | null;
+  media: string | null;
+  tx_wavelength: string | null;
+  rx_wavelength: string | null;
+  last_refresh_at: string | null;
+}
+
+type ConfigFilter = 'all' | 'configured' | 'not_configured' | 'unknown';
+
+/**
+ * Résout le SFP pour n'importe quel port_id.
+ *
+ * ethernet  "1/1/7/1"   → sfpMap["1/1/7/1"]   ✅ direct
+ * ONT       "1/1/7/1/1" → sfpMap["1/1/7/1/1"] ❌ absent
+ *                       → sfpMap["1/1/7/1"]    ✅ fallback (4 segments)
+ */
+function resolveSFP(sfpMap: Record<string, SFPInfo>, portId: string): SFPInfo | null {
+  if (sfpMap[portId]) return sfpMap[portId];
+
+  const parts = portId.split('/');
+  if (parts.length === 5) {
+    const parent = parts.slice(0, 4).join('/');
+    if (sfpMap[parent]) return sfpMap[parent];
+  }
+  return null;
+}
+
 function PortSection({
   title,
   count,
@@ -45,76 +85,102 @@ function PortSection({
 }: {
   title: string;
   count: number;
-  icon: React.ReactNode;
-  children: React.ReactNode;
+  icon: ReactNode;
+  children: ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="rounded-2xl border border-slate-200/80 bg-white overflow-hidden shadow-[0_2px_10px_rgba(15,23,42,0.03)]">
+    <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className={cn(
-          'w-full flex items-center justify-between px-3.5 py-2.5 transition-colors',
-          expanded ? 'bg-slate-50/80' : 'bg-white hover:bg-slate-50/60',
-        )}
+        className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-50 transition-colors"
       >
         <div className="flex items-center gap-2">
           <ChevronRight
-            size={14}
-            className={cn(
-              'text-slate-400 transition-transform duration-200',
-              expanded && 'rotate-90',
-            )}
+            size={16}
+            className={cn('text-gray-400 transition-transform', expanded && 'rotate-90')}
           />
-          <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-800">
+          <div className="flex items-center gap-2 text-xs font-medium text-gray-700">
             {icon}
             {title}
           </div>
         </div>
-
-        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">
-          {count} port{count !== 1 ? 's' : ''}
-        </span>
+        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{count}</span>
       </button>
 
-      {expanded && (
-        <div className="border-t border-slate-100 bg-slate-50/30 p-2.5">
-          {children}
-        </div>
-      )}
+      {expanded && <div className="border-t border-gray-200 bg-gray-50 p-3">{children}</div>}
     </div>
   );
 }
 
-export default function LTSlotExpander({
-  slot,
-  instanceId,
-  accessToken,
-  isAdmin,
-}: LTSlotExpanderProps) {
+export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin }: LTSlotExpanderProps) {
   const [expanded, setExpanded] = useState(false);
   const [ports, setPorts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [sfpMap, setSfpMap] = useState<Record<string, SFPInfo>>({});
+  const [sfpLoading, setSfpLoading] = useState(false);
+  const [sfpSyncing, setSfpSyncing] = useState(false);
+
   const [portLocks, setPortLocks] = useState<Record<string, boolean>>({});
   const [searchQuery, setSearchQuery] = useState('');
   const [activeSearch, setActiveSearch] = useState('');
   const [portTypeFilter, setPortTypeFilter] = useState('');
   const [stateFilter, setStateFilter] = useState('');
+  const [configFilter, setConfigFilter] = useState<ConfigFilter>('all');
   const [totalCount, setTotalCount] = useState(0);
   const [hasLoaded, setHasLoaded] = useState(false);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
-  function getSlotIcon() {
-    const pt = slot.port_type.toLowerCase();
-    if (pt.includes('xdsl')) return <Zap size={16} className="text-blue-800" />;
-    if (pt.includes('pon') || pt.includes('ont'))
-      return <Radio size={16} className="text-blue-800" />;
-    if (pt.includes('ethernet'))
-      return <Cable size={16} className="text-blue-800" />;
-    return <Wifi size={16} className="text-blue-800" />;
+  const slotShort = slot.slot_id.replace('lt:', '').trim();
+
+  async function loadSFP() {
+    if (!accessToken) return;
+    setSfpLoading(true);
+    try {
+      const res = await fetch(
+        `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodeURIComponent(slotShort)}/sfp`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      if (!res.ok) return;
+
+      const list: SFPInfo[] = await res.json();
+      const map: Record<string, SFPInfo> = {};
+      for (const sfp of list) map[sfp.port_id] = sfp;
+      setSfpMap(map);
+    } catch {
+      // silencieux
+    } finally {
+      setSfpLoading(false);
+    }
+  }
+
+  async function syncSFP() {
+    if (!accessToken) return;
+    setSfpSyncing(true);
+    try {
+      const params = new URLSearchParams();
+      params.append('slot_short_ids', slotShort);
+
+      const res = await fetch(
+        `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/transceivers/refresh?${params}`,
+        { method: 'POST', headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
+
+      toast.success('SFP synced', { description: `Transceiver data refreshed for slot ${slotShort}` });
+      await loadSFP();
+    } catch (e: any) {
+      toast.error('SFP sync failed', { description: e?.message });
+    } finally {
+      setSfpSyncing(false);
+    }
   }
 
   const loadPorts = useCallback(
@@ -130,7 +196,9 @@ export default function LTSlotExpander({
 
         const qs = params.toString();
         const encodedSlot = encodeURIComponent(slot.slot_id);
-        const url = `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlot}/ports${qs ? `?${qs}` : ''}`;
+        const url = `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlot}/ports${
+          qs ? `?${qs}` : ''
+        }`;
 
         const res = await fetch(url, {
           headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
@@ -139,9 +207,7 @@ export default function LTSlotExpander({
         let data: any = null;
         try {
           data = await res.json();
-        } catch {
-          //
-        }
+        } catch {}
 
         if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
 
@@ -155,8 +221,9 @@ export default function LTSlotExpander({
         });
         setPortLocks(locks);
       } catch (err: any) {
-        setError(err.message || 'Failed to load ports');
-        toast.error('Failed to load ports');
+        const msg = 'Failed to load ports. Please try again.';
+        setError(msg);
+        toast.error('Failed to load ports', { description: msg });
       } finally {
         setLoading(false);
       }
@@ -165,7 +232,10 @@ export default function LTSlotExpander({
   );
 
   function handleToggle() {
-    if (!expanded && !hasLoaded) loadPorts();
+    if (!expanded && !hasLoaded) {
+      loadPorts();
+      loadSFP();
+    }
     setExpanded(!expanded);
   }
 
@@ -206,23 +276,50 @@ export default function LTSlotExpander({
     setActiveSearch('');
     setPortTypeFilter('');
     setStateFilter('');
+    setConfigFilter('all');
     loadPorts();
   }
 
-  const xdslPorts = ports.filter((p) => p.port_type === 'xdsl-line');
-  const ethPorts = ports.filter((p) => p.port_type === 'ethernet-line');
-  const ponPorts = ports.filter((p) => p.port_type === 'pon');
-  const ontPorts = ports.filter((p) => p.port_type === 'ont');
+  function getPortConfigStatus(p: any): string {
+    const cfg = p?.config;
+    if (typeof cfg === 'string') {
+      try {
+        return String(JSON.parse(cfg)?.status || 'UNKNOWN').toUpperCase();
+      } catch {
+        return 'UNKNOWN';
+      }
+    }
+    return String(cfg?.status || 'UNKNOWN').toUpperCase();
+  }
 
+  function matchConfigFilter(p: any): boolean {
+    const st = getPortConfigStatus(p);
+    if (configFilter === 'all') return true;
+    if (configFilter === 'configured') return ['VIA_APP', 'MANUAL', 'DRIFTED'].includes(st);
+    if (configFilter === 'not_configured') return st === 'NOT_CONFIGURED';
+    if (configFilter === 'unknown') return st === 'UNKNOWN';
+    return true;
+  }
+
+  const visiblePorts = ports.filter(matchConfigFilter);
+  const xdslPorts = visiblePorts.filter((p) => p.port_type === 'xdsl-line');
+  const ethPorts = visiblePorts.filter((p) => p.port_type === 'ethernet-line');
+  const ponPorts = visiblePorts.filter((p) => p.port_type === 'pon');
+  const ontPorts = visiblePorts.filter((p) => p.port_type === 'ont');
+  const mixedXdslEth = xdslPorts.length > 0 && ethPorts.length > 0;
+  const effectiveEthPorts = mixedXdslEth ? [] : ethPorts;
+
+  // Group PON + ONT
   const ponMap: Record<string, { pon: any; onts: any[] }> = {};
   ponPorts.forEach((pon) => {
-    if (!ponMap[pon.port_id]) ponMap[pon.port_id] = { pon, onts: [] };
+    ponMap[pon.port_id] = { pon, onts: [] };
   });
 
   ontPorts.forEach((ont) => {
     const parts = (ont.port_id || '').split('/');
     if (parts.length < 4) return;
     const parentId = parts.slice(0, 4).join('/');
+
     if (!ponMap[parentId]) {
       ponMap[parentId] = {
         pon: {
@@ -240,93 +337,94 @@ export default function LTSlotExpander({
 
   const ponGroups = Object.values(ponMap);
 
-  const adminUp = ['up'].includes(slot.admin_state.toLowerCase());
-  const portUp = ['up'].includes(slot.port_state.toLowerCase());
-  const hasFilters = !!activeSearch || !!portTypeFilter || !!stateFilter;
+  const adminUp = (slot.admin_state || '').toLowerCase() === 'up';
+  const portUp = (slot.port_state || '').toLowerCase() === 'up';
+  const hasFilters = !!activeSearch || !!portTypeFilter || !!stateFilter || configFilter !== 'all';
   const isTrulyEmpty = hasLoaded && totalCount === 0 && !hasFilters;
+
+  function getSlotIcon() {
+    const pt = (slot.port_type || '').toLowerCase();
+    if (pt.includes('xdsl')) return <Zap size={18} className="text-blue-600" />;
+    if (pt.includes('pon') || pt.includes('ont')) return <Radio size={18} className="text-purple-600" />;
+    if (pt.includes('ethernet')) return <Cable size={18} className="text-green-600" />;
+    return <Cable size={18} className="text-gray-600" />;
+  }
 
   return (
     <div
       className={cn(
-        'rounded-2xl border overflow-hidden transition-all duration-200 bg-white',
-        expanded
-          ? 'border-blue-200 shadow-[0_8px_30px_rgba(30,41,59,0.08)] ring-1 ring-blue-100'
-          : 'border-slate-200/80 shadow-[0_2px_10px_rgba(15,23,42,0.03)] hover:border-slate-300 hover:shadow-[0_6px_18px_rgba(15,23,42,0.06)]',
+        'rounded-lg border overflow-hidden transition-all bg-white',
+        expanded ? 'border-blue-200 shadow-md' : 'border-gray-200 hover:border-gray-300',
       )}
     >
+      {/* Header slot */}
       <button
         onClick={handleToggle}
-        className={cn(
-          'w-full px-4 py-3.5 text-left flex items-center gap-4 transition-colors focus:outline-none',
-          expanded
-            ? 'bg-gradient-to-r from-slate-50 to-white'
-            : 'bg-white hover:bg-slate-50/70',
-        )}
+        className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-gray-50 transition-colors"
       >
-        <div className="flex items-center justify-center w-11 h-11 rounded-xl bg-gradient-to-br from-blue-50 to-white border border-blue-100 shadow-sm shrink-0">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gray-100 border border-gray-200">
           {getSlotIcon()}
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap mb-1.5">
-            <span className="font-mono font-semibold text-slate-900 text-[15px] tracking-tight">
-              {slot.slot_id}
-            </span>
-            <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-500 bg-slate-100/80 px-2 py-0.5 rounded-full border border-slate-200">
-              {slot.board}
-            </span>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="font-mono font-semibold text-gray-900 text-sm">{slot.slot_id}</span>
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{slot.board}</span>
+
+            {Object.keys(sfpMap).length > 0 && (
+              <span className="text-xs text-cyan-600 bg-cyan-50 border border-cyan-200 px-2 py-0.5 rounded flex items-center gap-1">
+                <Signal size={10} />
+                {Object.keys(sfpMap).length} SFP
+              </span>
+            )}
           </div>
 
-          <div className="hidden sm:flex items-center gap-2 flex-wrap">
-            <MiniPill label="Admin" value={slot.admin_state} up={adminUp} />
-            <MiniPill label="Port" value={slot.port_state} up={portUp} />
+          <div className="flex items-center gap-2">
+            <StatePill label="Admin" value={slot.admin_state} up={adminUp} />
+            <StatePill label="Port" value={slot.port_state} up={portUp} />
           </div>
         </div>
 
-        <div className="text-slate-400 shrink-0 p-2 rounded-full bg-slate-100/70 border border-slate-200/70 transition-colors">
-          {expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-        </div>
+        <ChevronDown size={20} className={cn('text-gray-400 transition-transform', expanded && 'rotate-180')} />
       </button>
 
       {expanded && (
-        <div className="border-t border-slate-200 bg-white">
+        <div className="border-t border-gray-200">
+          {/* Barre filtres */}
           {!isTrulyEmpty && (
-            <div className="bg-gradient-to-r from-slate-50 to-white border-b border-slate-200 px-4 py-3">
+            <div className="bg-gray-50 border-b border-gray-200 px-4 py-3">
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="relative flex-1 min-w-[200px] max-w-sm">
-                  <Search
-                    size={14}
-                    className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"
-                  />
+                {/* Search */}
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
-                    placeholder="Search port ID..."
+                    placeholder="Search port ID or serial..."
                     value={searchQuery}
                     onChange={(e) => handleSearch(e.target.value)}
-                    className="w-full pl-8 pr-7 py-2 text-sm border border-slate-200 rounded-lg bg-white/90 focus:outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100 placeholder:text-slate-400 transition-all duration-150 shadow-sm"
+                    className="w-full pl-9 pr-8 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {searchQuery && (
                     <button
                       onClick={handleClearSearch}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                     >
-                      <X size={12} />
+                      <X size={14} />
                     </button>
                   )}
                 </div>
 
-                <div className="w-px h-6 bg-slate-300 mx-1 hidden sm:block" />
-
-                <div className="flex gap-1.5 flex-wrap">
-                  {['xdsl-line', 'ethernet-line', 'pon'].map((pt) => (
+                {/* Port type */}
+                <div className="flex gap-1.5">
+                  {['xdsl-line', 'ethernet-line', 'ont', 'pon'].map((pt) => (
                     <button
                       key={pt}
                       onClick={() => handlePortType(pt)}
                       className={cn(
-                        'px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] rounded-full border transition-all duration-150',
+                        'px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors',
                         portTypeFilter === pt
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                          : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:bg-slate-50',
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50',
                       )}
                     >
                       {pt}
@@ -334,18 +432,17 @@ export default function LTSlotExpander({
                   ))}
                 </div>
 
-                <div className="w-px h-6 bg-slate-300 mx-1 hidden lg:block" />
-
+                {/* State */}
                 <div className="flex gap-1.5">
                   {['up', 'down'].map((s) => (
                     <button
                       key={s}
                       onClick={() => handleState(s)}
                       className={cn(
-                        'px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] rounded-full border transition-all duration-150',
+                        'px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors capitalize',
                         stateFilter === s
-                          ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
-                          : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:bg-slate-50',
+                          ? 'bg-blue-600 text-white border-blue-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50',
                       )}
                     >
                       {s}
@@ -353,80 +450,101 @@ export default function LTSlotExpander({
                   ))}
                 </div>
 
-                {hasFilters && (
+                {/* Config filter */}
+                <div className="flex gap-1.5">
+                  {[
+                    { key: 'all', label: 'All' },
+                    { key: 'configured', label: 'Configured' },
+                    { key: 'not_configured', label: 'Not configured' },
+                    { key: 'unknown', label: 'Unknown' },
+                  ].map((it) => (
+                    <button
+                      key={it.key}
+                      onClick={() => setConfigFilter(it.key as ConfigFilter)}
+                      className={cn(
+                        'px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors',
+                        configFilter === it.key
+                          ? 'bg-indigo-600 text-white border-indigo-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50',
+                      )}
+                    >
+                      {it.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Sync SFP (admin) */}
+                {isAdmin && (
                   <button
-                    onClick={clearAll}
-                    className="text-[11px] text-blue-800 hover:text-blue-950 font-semibold underline ml-2"
+                    onClick={syncSFP}
+                    disabled={sfpSyncing || sfpLoading}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium',
+                      'rounded-lg border transition-colors',
+                      'bg-cyan-600 text-white border-cyan-600 hover:bg-cyan-700 disabled:opacity-50',
+                    )}
+                    title={`Sync SFP transceiver data for slot ${slotShort}`}
                   >
-                    Clear
+                    {sfpSyncing ? <Loader2 size={12} className="animate-spin" /> : <Signal size={12} />}
+                    {sfpSyncing ? 'Syncing…' : 'Sync SFP'}
+                  </button>
+                )}
+
+                {hasFilters && (
+                  <button onClick={clearAll} className="text-xs text-blue-600 hover:text-blue-700 font-medium underline">
+                    Clear filters
                   </button>
                 )}
 
                 {hasLoaded && (
-                  <span className="text-[11px] font-medium text-slate-500 ml-auto tabular-nums bg-white px-2.5 py-1 rounded-full border border-slate-200 shadow-sm">
-                    {hasFilters ? `${ports.length} / ${totalCount}` : ports.length} ports
+                  <span className="text-xs text-gray-500 ml-auto bg-white px-2 py-1 rounded border border-gray-200">
+                    {hasFilters ? `${visiblePorts.length} / ${totalCount}` : visiblePorts.length} ports
                   </span>
                 )}
               </div>
             </div>
           )}
 
-          <div className="p-4 bg-slate-50/30">
+          {/* Corps */}
+          <div className="p-4 bg-white">
             {loading && (
-              <div className="flex flex-col items-center justify-center py-10 gap-3">
-                <Loader2 size={24} className="animate-spin text-blue-900" />
-                <span className="text-sm text-slate-500 font-medium">
-                  Loading ports...
-                </span>
+              <div className="flex flex-col items-center justify-center py-8 gap-2">
+                <Loader2 size={24} className="animate-spin text-blue-600" />
+                <span className="text-sm text-gray-500">Loading ports...</span>
               </div>
             )}
 
             {error && !loading && (
-              <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl shadow-sm">
-                <AlertCircle size={20} className="text-red-600 mt-0.5 shrink-0" />
-                <div>
-                  <div className="text-sm font-bold text-red-800">Error</div>
-                  <div className="text-sm text-red-600 mt-1">{error}</div>
-                </div>
+              <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+                <div className="text-sm text-red-700">{error}</div>
               </div>
             )}
 
-            {!loading && !error && ports.length === 0 && (
-              <div className="text-center py-10">
+            {!loading && !error && visiblePorts.length === 0 && (
+              <div className="text-center py-8">
                 {hasFilters ? (
-                  <div className="space-y-2">
-                    <Search size={24} className="mx-auto text-slate-300" />
-                    <p className="text-sm text-slate-500 font-medium">
-                      No ports match your filters
-                    </p>
-                    <button
-                      onClick={clearAll}
-                      className="text-sm text-blue-900 font-semibold hover:underline"
-                    >
+                  <>
+                    <Search size={24} className="mx-auto mb-2 text-gray-300" />
+                    <p className="text-sm text-gray-500 mb-2">No ports match your filters</p>
+                    <button onClick={clearAll} className="text-sm text-blue-600 hover:text-blue-700 font-medium">
                       Clear filters
                     </button>
-                  </div>
+                  </>
                 ) : (
-                  <div className="space-y-2">
-                    <div className="mx-auto w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-3">
-                      <AlertCircle size={24} className="text-slate-300" />
-                    </div>
-                    <p className="text-sm text-slate-500 font-medium">
-                      No ports configured on this slot.
-                    </p>
-                  </div>
+                  <>
+                    <AlertCircle size={24} className="mx-auto mb-2 text-gray-300" />
+                    <p className="text-sm text-gray-500">No ports configured</p>
+                  </>
                 )}
               </div>
             )}
 
-            {!loading && !error && ports.length > 0 && (
-              <div className="space-y-4">
+            {!loading && !error && visiblePorts.length > 0 && (
+              <div className="space-y-3">
+                {/* XDSL */}
                 {xdslPorts.length > 0 && (
-                  <PortSection
-                    title="XDSL-LINE"
-                    count={xdslPorts.length}
-                    icon={<Zap size={14} />}
-                  >
+                  <PortSection title="XDSL Lines" count={xdslPorts.length} icon={<Zap size={14} />}>
                     <div className="space-y-2">
                       {xdslPorts.map((p) => (
                         <LTPortItem
@@ -437,20 +555,18 @@ export default function LTSlotExpander({
                           accessToken={accessToken}
                           isAdmin={isAdmin}
                           onLockToggle={() => handleLockToggle(p.port_id)}
+                          sfp={resolveSFP(sfpMap, p.port_id)}
                         />
                       ))}
                     </div>
                   </PortSection>
                 )}
 
-                {ethPorts.length > 0 && (
-                  <PortSection
-                    title="ETHERNET-LINE"
-                    count={ethPorts.length}
-                    icon={<Cable size={14} />}
-                  >
+                {/* Ethernet */}
+                {effectiveEthPorts.length > 0 && (
+                  <PortSection title="Ethernet Lines" count={effectiveEthPorts.length} icon={<Cable size={14} />}>
                     <div className="space-y-2">
-                      {ethPorts.map((p) => (
+                      {effectiveEthPorts.map((p) => (
                         <LTPortItem
                           key={p.port_id}
                           port={p}
@@ -459,24 +575,27 @@ export default function LTSlotExpander({
                           accessToken={accessToken}
                           isAdmin={isAdmin}
                           onLockToggle={() => handleLockToggle(p.port_id)}
+                          sfp={resolveSFP(sfpMap, p.port_id)}
                         />
                       ))}
                     </div>
                   </PortSection>
                 )}
 
+                {/* PON / ONT */}
                 {ponGroups.length > 0 && (
                   <PortSection
                     title="PON / ONT"
                     count={ponGroups.reduce((s, g) => s + 1 + g.onts.length, 0)}
                     icon={<Radio size={14} />}
                   >
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {ponGroups.map((group) => (
                         <PonGroupExpander
                           key={group.pon.port_id}
                           group={group}
                           portLocks={portLocks}
+                          sfpMap={sfpMap}
                           instanceId={instanceId}
                           accessToken={accessToken}
                           isAdmin={isAdmin}
@@ -498,6 +617,7 @@ export default function LTSlotExpander({
 function PonGroupExpander({
   group,
   portLocks,
+  sfpMap,
   instanceId,
   accessToken,
   isAdmin,
@@ -505,6 +625,7 @@ function PonGroupExpander({
 }: {
   group: { pon: any; onts: any[] };
   portLocks: Record<string, boolean>;
+  sfpMap: Record<string, SFPInfo>;
   instanceId: number;
   accessToken: string | null;
   isAdmin: boolean;
@@ -513,80 +634,79 @@ function PonGroupExpander({
   const [expanded, setExpanded] = useState(false);
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/70 overflow-hidden">
+    <div className="rounded-lg border border-gray-200 overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-100/80 transition-colors focus:outline-none"
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 transition-colors"
       >
-        <ChevronRight
-          size={14}
-          className={cn(
-            'text-slate-400 transition-transform duration-200',
-            expanded && 'rotate-90',
-          )}
-        />
-        <Radio size={14} className="text-blue-900" />
-        <span className="text-xs font-semibold text-slate-800 font-mono tracking-tight">
-          PON {group.pon.port_id}
-        </span>
-        <span className="text-[10px] text-slate-500 font-medium px-2 py-0.5 bg-white border border-slate-200 rounded-full shadow-sm">
+        <ChevronRight size={16} className={cn('text-gray-400 transition-transform', expanded && 'rotate-90')} />
+        <Radio size={14} className="text-purple-600" />
+        <span className="text-xs font-medium text-gray-700 font-mono">{group.pon.port_id}</span>
+        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded ml-auto">
           {group.onts.length} ONT{group.onts.length !== 1 ? 's' : ''}
         </span>
       </button>
 
       {expanded && (
-        <div className="border-t border-slate-200 bg-white p-3">
-          {group.onts.length === 0 ? (
-            <p className="text-xs text-slate-400 italic">No ONTs assigned.</p>
-          ) : (
-            <div className="space-y-2 border-l border-dashed border-slate-200 pl-3 ml-2">
-              {group.onts.map((ont) => (
+        <div className="border-t border-gray-200 bg-gray-50 p-2">
+          {(() => {
+            // ✅ SFP du port PON parent
+            const parentSfp = resolveSFP(sfpMap, group.pon.port_id);
+
+            return (
+              <div className="space-y-2">
+                {/* ✅ Afficher SFP sur PON */}
                 <LTPortItem
-                  key={ont.port_id}
-                  port={ont}
-                  isLocked={portLocks[ont.port_id] || false}
+                  key={group.pon.port_id}
+                  port={group.pon}
+                  isLocked={portLocks[group.pon.port_id] || false}
                   instanceId={instanceId}
                   accessToken={accessToken}
                   isAdmin={isAdmin}
-                  onLockToggle={() => onLockToggle(ont.port_id)}
+                  onLockToggle={() => onLockToggle(group.pon.port_id)}
+                  sfp={parentSfp}
                 />
-              ))}
-            </div>
-          )}
+
+                {/* ✅ ONT: juste empty/plugged (géré dans LTPortItem car port_type=ont) */}
+                {group.onts.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-2">No ONTs</p>
+                ) : (
+                  <div className="space-y-2">
+                    {group.onts.map((ont) => (
+                      <LTPortItem
+                        key={ont.port_id}
+                        port={ont}
+                        isLocked={portLocks[ont.port_id] || false}
+                        instanceId={instanceId}
+                        accessToken={accessToken}
+                        isAdmin={isAdmin}
+                        onLockToggle={() => onLockToggle(ont.port_id)}
+                        sfp={parentSfp} // ✅ même SFP → empty/plugged
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>
   );
 }
 
-function MiniPill({
-  label,
-  value,
-  up,
-}: {
-  label: string;
-  value: string;
-  up: boolean;
-}) {
+function StatePill({ label, value, up }: { label: string; value: string; up: boolean }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium shadow-sm',
-        up
-          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-          : 'border-slate-200 bg-slate-50 text-slate-500',
+        'inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs',
+        up ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600',
       )}
     >
-      <div
-        className={cn(
-          'w-1.5 h-1.5 rounded-full',
-          up ? 'bg-emerald-500' : 'bg-slate-300',
-        )}
-      />
-      <span className={up ? 'text-emerald-600' : 'text-slate-400'}>
-        {label}:
+      <div className={cn('w-1.5 h-1.5 rounded-full', up ? 'bg-green-500' : 'bg-gray-400')} />
+      <span className="capitalize">
+        {label}: {value}
       </span>
-      <span className="uppercase">{value}</span>
     </div>
   );
 }

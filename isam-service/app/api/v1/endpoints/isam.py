@@ -1,15 +1,17 @@
 from datetime import datetime ,date
 import logging
 import math
+import os
+import httpx
 from typing import List, Dict, Optional
-
+from enum import Enum 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request ,BackgroundTasks
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_ ,text
 from urllib.parse import unquote
 
-from app.core.db import get_db
+from app.core.db import get_db ,SessionLocal
 from app.core.security import require_admin, TokenUser, get_current_user, security
 from app.services.auth_client import fetch_current_user_profile
 from app.models.isam_instance import ISAMInstance
@@ -22,17 +24,30 @@ from app.services.isam_bootstrap import bootstrap_new_isam_instance
 from app.models.wan_template import WanTemplate, WanTemplateScope
 from app.models.wan_model import WanModel
 from app.models.template_project import TemplateProject
+from app.models.custom_function import CustomFunction
+from app.services.port_config_service import record_apply_success
+from app.services.port_config_service import sync_ports_for_instance
+from app.services.isam_transceiver import ISAMTransceiverService
+from app.models.port_config import PortConfig
 from app.models.isam_schemas import (
     ISAMInstanceCreate,
     ISAMInstanceUpdate,
     ISAMInstanceRead,
     ISAMInstanceList,
+    PortConfigAppLastApply,
+    PortConfigDetailResponse,
+    PortConfigDeviceSnapshot,
+    SFPPortRead,
+    SFPSlotSummary,
     TestConnectionResult,
     RunCommandRequest,
     RunCommandResponse,
     PortItem,
     PortsResponse,
     MemoryUsageResponse,
+    TransceiverPortResponse,
+    TransceiverRefreshResponse,
+    TransceiverSlotResult,
     WanTemplateCreate,
     WanTemplateUpdate,
     WanTemplateRead,
@@ -64,6 +79,14 @@ from app.models.isam_schemas import (
     TemplateProjectRead,
     TemplateProjectList,
     PortTemplateStatusResponse,
+    CustomFunctionCreate,
+    CustomFunctionUpdate,
+    CustomFunctionRead,
+    CustomFunctionList,
+    CustomFunctionExecuteRequest,
+    CustomFunctionExecuteResponse,
+    CustomFunctionScope,
+    PortConfigSummary,
 )
 from app.services.isam_connection import (
     ISAMConnectionService,
@@ -73,9 +96,18 @@ from app.services.isam_data import ISAMDataService
 from app.services.isam_lt_cache import (
     load_cached_lt_slots,
     load_cached_lt_ports,
+    refresh_lt_slots_snapshot,
+)
+from app.services.isam_sfp_cache import (
+    refresh_sfp_snapshot,
+    load_cached_sfp_slot,
+    load_cached_sfp_port,
 )
 
+
 router = APIRouter(prefix="/isam", tags=["ISAM"])
+
+AUTH_BASE_URL = (os.getenv("AUTH_BASE_URL") or os.getenv("AUTH_SERVICE_URL") or "").rstrip("/")
 
 logger = logging.getLogger(__name__)
 
@@ -192,9 +224,15 @@ def ensure_selected_port_allowed_for_user(
     selected_port: str,
     credentials: HTTPAuthorizationCredentials,
 ):
+    # ADMIN / SUPER_ADMIN => pas de contrôle
     if current_user.role != "USER":
         return
 
+    selected_port = (selected_port or "").strip()
+    if not selected_port:
+        raise HTTPException(status_code=400, detail="selected_port is required.")
+
+    # 1) Ports propres au user (comme avant)
     profile = fetch_current_user_profile(credentials.credentials)
     allowed_ports = get_allowed_port_values_from_profile(profile)
 
@@ -204,12 +242,39 @@ def ensure_selected_port_allowed_for_user(
             detail="No ports are assigned to this user.",
         )
 
-    if selected_port not in allowed_ports:
+    if selected_port in allowed_ports:
+        return  # OK (port du user)
+
+    # 2) Nouveau: si pas dans ses ports => autoriser seulement si ce port est shared
+    if not AUTH_BASE_URL:
+        # Sécurité: si on ne sait pas joindre AUTH, on refuse
+        raise HTTPException(status_code=503, detail="AUTH_BASE_URL is not configured.")
+
+    try:
+        url = f"{AUTH_BASE_URL}/api/v1/auth/ports/access"
+        r = httpx.get(
+            url,
+            params={"port_value": selected_port},
+            headers={"Authorization": f"Bearer {credentials.credentials}"},
+            timeout=5.0,
+        )
+        r.raise_for_status()
+        data = r.json() or {}
+        if data.get("allowed") is True:
+            return  # OK (port partagé)
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+    except httpx.HTTPStatusError as e:
         raise HTTPException(
-            status_code=403,
-            detail="Selected port is not assigned to this user.",
+            status_code=503,
+            detail=f"Auth service error ({e.response.status_code}): {e.response.text}",
         )
 
+    # 3) Sinon refus
+    raise HTTPException(
+        status_code=403,
+        detail="Selected port is not assigned to this user and not shared.",
+    )
 
 def log_config_history(
     db: Session,
@@ -1493,6 +1558,17 @@ def apply_live_template(
         raw_output=raw_output,
     )
 
+    if success:
+        record_apply_success(
+            db,
+            instance_id=inst.id,
+            port_id=selected_port,
+            template_id=template_id,
+            username=current_user.username,
+            template_commands=template_commands,
+        )
+        db.commit()
+
     return ApplyWanTemplateResponse(
         success=success,
         protocol_used=proto,
@@ -1604,6 +1680,17 @@ def apply_template_to_port(
         commands_executed=commands_executed,
         raw_output=raw_output,
     )
+
+    if success:
+        record_apply_success(
+            db,
+            instance_id=inst.id,
+            port_id=port_id,
+            template_id=tpl.id,
+            username=current_user.username,
+            template_commands=template_commands,
+        )
+        db.commit()
 
     return ApplyWanTemplateResponse(
         success=success,
@@ -1993,43 +2080,63 @@ def get_lt_slot_ports(
     current_user: TokenUser = Depends(get_current_user),
 ):
     slot_id = unquote(slot_id)
-    inst = get_instance_or_404(db, instance_id)
+    _ = get_instance_or_404(db, instance_id)
+
     cached = load_cached_lt_ports(db, instance_id, slot_id)
 
     all_ports = cached["ports"]
     total_all = len(all_ports)
     filtered_ports = list(all_ports)
 
+    # NEW: lookup sernum pour filtrer sur search
+    cfg_sernum_lookup: dict[str, str] = {}
+    if search:
+        all_port_ids = [p.get("port_id") for p in all_ports if p.get("port_id")]
+        if all_port_ids:
+            rows = (
+                db.query(PortConfig.port_id, PortConfig.ont_sernum)
+                .filter(
+                    PortConfig.isam_instance_id == instance_id,
+                    PortConfig.port_id.in_(all_port_ids),
+                )
+                .all()
+            )
+            cfg_sernum_lookup = {r.port_id: (r.ont_sernum or "") for r in rows}
+
+    # ---- filters ----
     if search:
         s = search.strip().lower()
         filtered_ports = [
             p for p in filtered_ports
-            if s in p.get("port_id", "").lower()
-            or s in p.get("port_type", "").lower()
-            or s in p.get("board", "").lower()
-            or s in p.get("admin_state", "").lower()
-            or s in p.get("port_state", "").lower()
-            or s in p.get("mode", "").lower()
-            or s in p.get("encap", "").lower()
+            if s in (p.get("port_id", "") or "").lower()
+            or s in (p.get("port_type", "") or "").lower()
+            or s in (p.get("board", "") or "").lower()
+            or s in (p.get("admin_state", "") or "").lower()
+            or s in (p.get("port_state", "") or "").lower()
+            or s in (p.get("mode", "") or "").lower()
+            or s in (p.get("encap", "") or "").lower()
+            or s in (cfg_sernum_lookup.get(p.get("port_id", "") or "", "").lower())
         ]
 
     if port_type:
         pt = port_type.strip().lower()
         filtered_ports = [
             p for p in filtered_ports
-            if pt in p.get("port_type", "").lower()
+            if pt in (p.get("port_type", "") or "").lower()
         ]
 
     if state:
         st = state.strip().lower()
         filtered_ports = [
             p for p in filtered_ports
-            if p.get("port_state", "").lower() == st
-            or p.get("admin_state", "").lower() == st
+            if (p.get("port_state", "") or "").lower() == st
+            or (p.get("admin_state", "") or "").lower() == st
         ]
 
-    port_ids = [p.get("port_id") for p in filtered_ports]
-    locks_dict = {}
+    # ---- locks ----
+    port_ids = [p.get("port_id") for p in filtered_ports if p.get("port_id")]
+    locks_dict: dict[str, PortLock] = {}
+
     if port_ids:
         locks = db.query(PortLock).filter(
             PortLock.isam_instance_id == instance_id,
@@ -2038,18 +2145,71 @@ def get_lt_slot_ports(
         for lock in locks:
             locks_dict[lock.port_id] = lock
 
-    ports_with_lock = []
+    # ---- ports_config + templates ----
+    cfg_map: dict[str, PortConfig] = {}
+    tpl_map: dict[int, WanTemplate] = {}
+
+    if port_ids:
+        cfg_rows = (
+            db.query(PortConfig)
+            .filter(
+                PortConfig.isam_instance_id == instance_id,
+                PortConfig.port_id.in_(port_ids),
+            )
+            .all()
+        )
+        cfg_map = {r.port_id: r for r in cfg_rows}
+
+        template_ids = [r.last_template_id for r in cfg_rows if r.last_template_id]
+        if template_ids:
+            tpls = (
+                db.query(WanTemplate)
+                .filter(WanTemplate.id.in_(template_ids))
+                .all()
+            )
+            tpl_map = {t.id: t for t in tpls}
+
+    ports_final: list[LTPortItem] = []
+
     for port in filtered_ports:
-        port_id = port.get("port_id")
+        port_id = port.get("port_id") or ""
         port["locked"] = port_id in locks_dict
-        ports_with_lock.append(LTPortItem(**port))
+
+        cfg = cfg_map.get(port_id)
+        if cfg:
+            tpl = tpl_map.get(cfg.last_template_id) if cfg.last_template_id else None
+
+            summary = PortConfigSummary(
+                status=cfg.status or "UNKNOWN",
+                last_device_check_at=cfg.last_device_check_at,
+                last_device_check_success=bool(cfg.last_device_check_success),
+                last_device_check_error=cfg.last_device_check_error,
+
+                last_template_id=cfg.last_template_id,
+                last_template_name=(tpl.name if tpl else None),
+                last_project=(tpl.project if tpl else None),
+                last_applied_by=cfg.last_applied_by,
+                last_applied_at=cfg.last_applied_at,
+                apply_count=cfg.apply_count or 0,
+
+                device_vlan_count=len(cfg.device_vlan_lines or []),
+                expected_vlan_count=len(cfg.expected_vlan_lines or []),
+
+                ont_sernum=cfg.ont_sernum,
+            )
+
+            port["config"] = summary.model_dump(mode="json")
+        else:
+            port["config"] = PortConfigSummary(status="UNKNOWN", ont_sernum=None).model_dump(mode="json")
+
+        ports_final.append(LTPortItem(**port))
 
     return LTPortsResponse(
         success=cached["last_refresh_success"],
         protocol_used=cached["protocol_used"],
-        port_count=len(ports_with_lock),
+        port_count=len(ports_final),
         total_count=total_all,
-        ports=ports_with_lock,
+        ports=ports_final,
         slot_id=cached["slot_id"],
         raw_output=cached["raw_output"],
         message="OK" if cached["last_refresh_success"] else
@@ -2064,7 +2224,6 @@ def get_lt_slot_ports(
         last_refresh_success=cached["last_refresh_success"],
         last_refresh_error=cached["last_refresh_error"],
     )
-
 # ========== PORT TEMPLATE STATUS ==========
 
 @router.get(
@@ -2287,3 +2446,704 @@ def unlock_port(
         locked_at=None,
         message=f"Port {port_id} is now unlocked",
     )
+
+
+
+
+# ========== FORCE SYNC LT SLOTS & PORTS ==========
+
+@router.post(
+    "/instances/{instance_id}/lt-slots/sync",
+    response_model=LTSlotsResponse,
+    summary="Force la synchronisation des LT Slots et Ports depuis l'équipement"
+)
+def force_sync_lt_slots(
+    instance_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    inst = get_instance_or_404(db, instance_id)
+
+    try:
+        logger.info(
+            "[LT-SYNC] Début synchronisation forcée pour instance #%s (%s)",
+            inst.id,
+            inst.name,
+        )
+
+        # Force le refresh complet
+        refresh_lt_slots_snapshot(db, inst, timeout=40)
+
+        # Recharge les données triées depuis le cache
+        cached = load_cached_lt_slots(db, instance_id)
+
+        logger.info(
+            "[LT-SYNC] Synchronisation terminée avec succès pour instance #%s : %d slots, %d ports",
+            inst.id,
+            cached["slot_count"],
+            sum(len(s.get("ports", [])) for s in cached.get("slots", [])),
+        )
+
+        return LTSlotsResponse(
+            success=True,
+            protocol_used=cached.get("protocol_used"),
+            slot_count=cached["slot_count"],
+            slots=[LTSlotItem(**slot) for slot in cached["slots"]],
+            raw_output=cached.get("raw_output", ""),
+            message="Synchronisation forcée réussie",
+            cached_at=cached.get("last_success_at"),
+            last_refresh_at=datetime.utcnow(),
+            last_refresh_success=True,
+            last_refresh_error=None,
+        )
+
+    except Exception as e:
+        logger.exception(
+            "[LT-SYNC] Erreur lors de la synchronisation forcée de l'instance #%s",
+            instance_id,
+        )
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur de synchronisation LT Slots : {str(e)}"
+        )
+    
+
+
+
+
+# ================================================================
+# ========  CUSTOM FUNCTIONS  ====================================
+# ================================================================
+
+def get_custom_function_or_404(db: Session, function_id: int) -> CustomFunction:
+    func = db.query(CustomFunction).filter(CustomFunction.id == function_id).first()
+    if not func:
+        raise HTTPException(status_code=404, detail="Custom function not found.")
+    return func
+
+
+def ensure_function_visible_to_user(
+    current_user: TokenUser,
+    func: CustomFunction,
+    instance_id: int | None = None,
+):
+    if is_admin_role(current_user.role):
+        return
+
+    if func.scope == CustomFunctionScope.GLOBAL.value:
+        return
+
+    if (
+        func.scope == CustomFunctionScope.USER_INSTANCE.value
+        and func.created_by == current_user.username
+        and (instance_id is None or func.isam_instance_id == instance_id)
+    ):
+        return
+
+    raise HTTPException(status_code=403, detail="You are not allowed to access this function.")
+
+
+def ensure_function_editable(current_user: TokenUser, func: CustomFunction):
+    if is_admin_role(current_user.role):
+        return
+
+    if (
+        func.scope == CustomFunctionScope.USER_INSTANCE.value
+        and func.created_by == current_user.username
+    ):
+        return
+
+    raise HTTPException(status_code=403, detail="You are not allowed to edit this function.")
+
+
+# --- CRUD Custom Functions ---
+
+@router.post("/custom-functions", response_model=CustomFunctionRead)
+def create_custom_function(
+    body: CustomFunctionCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    if body.scope == CustomFunctionScope.GLOBAL.value and not is_admin_role(current_user.role):
+        raise HTTPException(status_code=403, detail="Only ADMIN/SUPER_ADMIN can create global functions.")
+
+    if body.scope == CustomFunctionScope.USER_INSTANCE.value and body.isam_instance_id:
+        _ = get_instance_or_404(db, body.isam_instance_id)
+
+    func = CustomFunction(
+        name=body.name.strip(),
+        command_template=body.command_template.strip(),
+        description=body.description.strip() if body.description else None,
+        project=body.project.strip() if body.project else None,
+        scope=body.scope,
+        isam_instance_id=body.isam_instance_id,
+        created_by=current_user.username,
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+
+    db.add(func)
+    db.commit()
+    db.refresh(func)
+
+    client_ip = request.client.host if request.client else None
+    log_config_history(
+        db,
+        username=current_user.username,
+        action="CREATE_CUSTOM_FUNCTION",
+        isam_instance_id=func.isam_instance_id,
+        success=True,
+        message=f"Custom function '{func.name}' created",
+        ip_address=client_ip,
+    )
+
+    return func
+
+
+@router.get("/custom-functions", response_model=CustomFunctionList)
+def list_custom_functions(
+    search: Optional[str] = Query(None, min_length=1, max_length=200),
+    scope: Optional[str] = Query(None),
+    project: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    q = db.query(CustomFunction)
+
+    if scope:
+        q = q.filter(CustomFunction.scope == scope.upper())
+    if project:
+        q = q.filter(CustomFunction.project == project.strip())
+    if search:
+        pattern = f"%{search}%"
+        q = q.filter(
+            or_(
+                CustomFunction.name.ilike(pattern),
+                CustomFunction.command_template.ilike(pattern),
+                CustomFunction.description.ilike(pattern),
+            )
+        )
+
+    # Règles de visibilité
+    if not is_admin_role(current_user.role):
+        q = q.filter(
+            or_(
+                CustomFunction.scope == CustomFunctionScope.GLOBAL.value,
+                and_(
+                    CustomFunction.scope == CustomFunctionScope.USER_INSTANCE.value,
+                    CustomFunction.created_by == current_user.username,
+                ),
+            )
+        )
+
+    total = q.count()
+    total_pages = max(1, math.ceil(total / page_size))
+
+    functions = (
+        q.order_by(CustomFunction.updated_at.desc(), CustomFunction.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return CustomFunctionList(
+        functions=functions,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@router.get("/custom-functions/{function_id}", response_model=CustomFunctionRead)
+def get_custom_function(
+    function_id: int,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    func = get_custom_function_or_404(db, function_id)
+    ensure_function_visible_to_user(current_user, func)
+    return func
+
+
+@router.patch("/custom-functions/{function_id}", response_model=CustomFunctionRead)
+def update_custom_function(
+    function_id: int,
+    body: CustomFunctionUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    func = get_custom_function_or_404(db, function_id)
+    ensure_function_editable(current_user, func)
+
+    data = body.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        if value is not None:
+            setattr(func, field, value.strip() if isinstance(value, str) else value)
+
+    func.updated_at = datetime.utcnow()
+    db.add(func)
+    db.commit()
+    db.refresh(func)
+
+    client_ip = request.client.host if request.client else None
+    log_config_history(
+        db,
+        username=current_user.username,
+        action="UPDATE_CUSTOM_FUNCTION",
+        isam_instance_id=func.isam_instance_id,
+        success=True,
+        message=f"Custom function '{func.name}' updated",
+        ip_address=client_ip,
+    )
+
+    return func
+
+
+@router.delete("/custom-functions/{function_id}", status_code=204)
+def delete_custom_function(
+    function_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    func = get_custom_function_or_404(db, function_id)
+    ensure_function_editable(current_user, func)
+
+    client_ip = request.client.host if request.client else None
+    log_config_history(
+        db,
+        username=current_user.username,
+        action="DELETE_CUSTOM_FUNCTION",
+        isam_instance_id=func.isam_instance_id,
+        success=True,
+        message=f"Custom function '{func.name}' deleted",
+        ip_address=client_ip,
+    )
+
+    db.delete(func)
+    db.commit()
+
+
+# --- EXECUTE Custom Function ---
+
+@router.post("/custom-functions/execute", response_model=CustomFunctionExecuteResponse)
+def execute_custom_function(
+    body: CustomFunctionExecuteRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    instance = get_instance_or_404(db, body.instance_id)
+    function = None
+    command_template = body.command_template
+
+    if body.function_id:
+        function = get_custom_function_or_404(db, body.function_id)
+        ensure_function_visible_to_user(current_user, function, instance.id)
+        command_template = function.command_template
+
+    if not command_template:
+        raise HTTPException(status_code=400, detail="No command template provided.")
+
+    data_service = ISAMDataService(instance)
+
+    try:
+        rendered_script, commands, detected_vars = ISAMDataService.render_template_commands(
+            command_template,
+            selected_port=body.variables.get("port"),
+            variables=body.variables,
+        )
+    except ValueError as e:
+        return CustomFunctionExecuteResponse(
+            success=False,
+            protocol_used=None,
+            executed_command="",
+            raw_output="",
+            variables_used=body.variables,
+            message=str(e),
+            function_id=function.id if function else None,
+            function_name=function.name if function else None,
+        )
+
+    success, protocol, raw_output, msg, _ = data_service.apply_template_content(
+        commands_template=command_template,
+        selected_port=body.variables.get("port", ""),
+        variables=body.variables,
+        timeout=45,
+    )
+
+    client_ip = request.client.host if request.client else None
+    log_config_history(
+        db,
+        username=current_user.username,
+        action="EXECUTE_CUSTOM_FUNCTION",
+        isam_instance_id=instance.id,
+        success=success,
+        message=msg,
+        ip_address=client_ip,
+        commands_executed=commands,
+        raw_output=raw_output,
+    )
+
+    return CustomFunctionExecuteResponse(
+        success=success,
+        protocol_used=protocol,
+        executed_command=rendered_script,
+        raw_output=raw_output or "",
+        variables_used=body.variables,
+        message=msg,
+        function_id=function.id if function else None,
+        function_name=function.name if function else None,
+    )
+
+
+
+
+@router.post("/instances/{instance_id}/ports-config/sync")
+def sync_ports_config_now(
+    instance_id: int,
+    port_id: str | None = Query(None),
+    force: bool = Query(False),
+    background_tasks: BackgroundTasks = None,
+    current_user: TokenUser = Depends(require_admin),
+):
+    def _job():
+        db = SessionLocal()
+        try:
+            inst = get_instance_or_404(db, instance_id)
+            ok, msg = sync_ports_for_instance(
+                db,
+                inst,
+                force=force,
+                min_age_hours=24,
+                port_id=port_id,
+                timeout=25,
+                skip_port_types={"pon"},
+            )
+            db.commit()
+            logger.info("[PORTCFG-SYNC] manual sync finished: %s", msg)
+        except Exception:
+            db.rollback()
+            logger.exception("[PORTCFG-SYNC] manual sync failed")
+        finally:
+            db.close()
+
+    if background_tasks is None:
+        _job()
+        return {"success": True, "message": "Sync executed (sync mode)."}
+    else:
+        background_tasks.add_task(_job)
+        return {"success": True, "message": "Sync started in background."}
+    
+
+
+
+
+@router.get(
+    "/instances/{instance_id}/ports/{port_id:path}/config-detail",
+    response_model=PortConfigDetailResponse,
+)
+def get_port_config_detail(
+    instance_id: int,
+    port_id: str,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    inst = get_instance_or_404(db, instance_id)
+
+    # user access control (même logique que apply)
+    ensure_selected_port_allowed_for_user(
+        current_user=current_user,
+        selected_port=port_id,
+        credentials=credentials,
+    )
+
+    # 1) last apply from config_history (full commands)
+    apply_actions = ["APPLY_TEMPLATE", "APPLY_TEMPLATE_LIVE", "APPLY_TEMPLATE_MY_PORT"]
+
+    last_apply = (
+        db.query(ConfigHistory)
+        .filter(
+            ConfigHistory.isam_instance_id == instance_id,
+            ConfigHistory.port_id == port_id,
+            ConfigHistory.success == True,
+            ConfigHistory.action.in_(apply_actions),
+        )
+        .order_by(ConfigHistory.created_at.desc())
+        .first()
+    )
+
+    tpl = None
+    if last_apply and last_apply.template_id:
+        tpl = db.query(WanTemplate).filter(WanTemplate.id == last_apply.template_id).first()
+
+    app_block = PortConfigAppLastApply(
+        found=bool(last_apply),
+        template_id=(last_apply.template_id if last_apply else None),
+        template_name=(tpl.name if tpl else None),
+        project=(tpl.project if tpl else None),
+        applied_by=(last_apply.username if last_apply else None),
+        applied_at=(last_apply.created_at if last_apply else None),
+        commands_executed=(last_apply.commands_executed.splitlines() if last_apply and last_apply.commands_executed else []),
+        raw_output=(last_apply.raw_output if last_apply else None),
+    )
+
+    # 2) device snapshot from ports_config
+    cfg = (
+        db.query(PortConfig)
+        .filter(PortConfig.isam_instance_id == instance_id, PortConfig.port_id == port_id)
+        .first()
+    )
+
+    device_block = PortConfigDeviceSnapshot(
+        status=(cfg.status if cfg else "UNKNOWN"),
+        last_device_check_at=(cfg.last_device_check_at if cfg else None),
+        last_device_check_success=bool(cfg.last_device_check_success) if cfg else False,
+        last_device_check_error=(cfg.last_device_check_error if cfg else None),
+        device_vlan_lines=(cfg.device_vlan_lines or []) if cfg else [],
+        device_raw_output=(cfg.device_raw_output if cfg else None),
+    )
+
+    return PortConfigDetailResponse(
+        success=True,
+        instance_id=instance_id,
+        port_id=port_id,
+        app_last_apply=app_block,
+        device_snapshot=device_block,
+    )
+
+@router.post(
+    "/instances/{instance_id}/ports/{port_id:path}/config-sync",
+    response_model=PortConfigDetailResponse,
+)
+def sync_port_config_now(
+    instance_id: int,
+    port_id: str,
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    inst = get_instance_or_404(db, instance_id)
+
+    ensure_selected_port_allowed_for_user(
+        current_user=current_user,
+        selected_port=port_id,
+        credentials=credentials,
+    )
+
+    # sync uniquement ce port
+    ok, msg = sync_ports_for_instance(
+        db,
+        inst,
+        force=True,
+        min_age_hours=0,
+        port_id=port_id,
+        timeout=25,
+        skip_port_types={"pon"},
+    )
+    db.commit()
+
+    # renvoyer directement le detail rafraîchi
+    return get_port_config_detail(
+        instance_id=instance_id,
+        port_id=port_id,
+        db=db,
+        current_user=current_user,
+        credentials=credentials,
+    )
+
+
+
+@router.post("/instances/{instance_id}/ports-config/sync")
+def sync_ports_config_all(
+    instance_id: int,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    force: bool = Query(True, description="True => sync maintenant même si déjà sync < 24h"),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    # vérifie instance
+    inst = get_instance_or_404(db, instance_id)
+
+    def _job():
+        job_db = SessionLocal()
+        lock_key = f"ports_config_sync_instance_{instance_id}"
+
+        try:
+            # ---- MySQL advisory lock pour éviter 2 sync en même temps ----
+            acquired = job_db.execute(
+                text("SELECT GET_LOCK(:k, 0)"),
+                {"k": lock_key},
+            ).scalar()
+
+            if acquired != 1:
+                logger.warning("[PORTCFG-SYNC] Sync déjà en cours pour instance %s", instance_id)
+                return
+
+            inst2 = job_db.query(ISAMInstance).filter(ISAMInstance.id == instance_id).first()
+            if not inst2:
+                logger.warning("[PORTCFG-SYNC] Instance %s introuvable", instance_id)
+                return
+
+            ok, msg = sync_ports_for_instance(
+                job_db,
+                inst2,
+                force=force,
+                min_age_hours=24,
+                port_id=None,          # => TOUS les ports
+                timeout=25,
+                skip_port_types={"pon"},
+            )
+
+            job_db.commit()
+            logger.info("[PORTCFG-SYNC] Instance %s terminé: ok=%s msg=%s", instance_id, ok, msg)
+
+        except Exception:
+            job_db.rollback()
+            logger.exception("[PORTCFG-SYNC] Erreur sync instance %s", instance_id)
+
+        finally:
+            try:
+                job_db.execute(text("SELECT RELEASE_LOCK(:k)"), {"k": lock_key})
+                job_db.commit()
+            except Exception:
+                pass
+            job_db.close()
+
+    background_tasks.add_task(_job)
+
+    client_ip = request.client.host if request.client else None
+    log_config_history(
+        db,
+        username=current_user.username,
+        action="PORTCFG_SYNC_ALL",
+        isam_instance_id=instance_id,
+        success=True,
+        message="Ports config sync started (info flat).",
+        ip_address=client_ip,
+    )
+
+    return {
+        "success": True,
+        "message": "Sync started in background (info flat). This may take several minutes.",
+    }
+
+
+
+
+
+
+# ── Endpoint 1 : Refresh manuel (admin) ──────────────────────────────────────
+@router.post(
+    "/instances/{instance_id}/transceivers/refresh",
+    response_model=TransceiverRefreshResponse,
+    summary="Refresh SFP transceiver inventory depuis l'équipement",
+)
+def refresh_transceivers(
+    instance_id: int,
+    slot_short_ids: List[str] = Query(
+        default=None,
+        description="Slots à rafraîchir. Si vide → tous les slots de l'instance.",
+    ),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(require_admin),
+):
+    inst = get_instance_or_404(db, instance_id)
+
+    # Si aucun slot fourni → tous les slots de l'instance
+    if not slot_short_ids:
+        from app.services.isam_sfp_cache import _get_slot_short_ids_for_instance
+        slot_short_ids = _get_slot_short_ids_for_instance(db, instance_id)
+        if not slot_short_ids:
+            raise HTTPException(
+                status_code=404,
+                detail="No LT slots found. Run a LT sync first.",
+            )
+
+    try:
+        refresh_sfp_snapshot(db, inst, timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    # Construire réponse depuis le cache DB fraîchement mis à jour
+    slots_resp: Dict[str, TransceiverSlotResult] = {}
+    for slot_short in slot_short_ids:
+        cached = load_cached_sfp_slot(db, instance_id, slot_short)
+        sfp_list = cached["sfp"]
+
+        summary = SFPSlotSummary(
+            total    = len(sfp_list),
+            active   = sum(1 for s in sfp_list if s["is_active"]),
+            empty    = sum(1 for s in sfp_list if s["is_empty"]),
+            copper   = sum(1 for s in sfp_list if s["is_copper"]),
+            fiber    = sum(1 for s in sfp_list if s.get("media") == "fiber"),
+            speeds   = sorted({s["speed"]    for s in sfp_list if s.get("speed")}),
+            standards= sorted({s["standard"] for s in sfp_list if s.get("standard")}),
+        )
+
+        slots_resp[slot_short] = TransceiverSlotResult(
+            slot_short_id = slot_short,
+            ok            = cached["last_refresh_success"],
+            error         = cached.get("last_refresh_error"),
+            sfp           = [SFPPortRead(**s) for s in sfp_list],
+            summary       = summary,
+        )
+
+    return TransceiverRefreshResponse(
+        success  = True,
+        protocol = None,
+        message  = f"SFP refreshed: {len(slot_short_ids)} slots",
+        slots    = slots_resp,
+    )
+
+
+# ── Endpoint 2 : SFP d'un port depuis le cache DB ───────────────────────────
+@router.get(
+    "/instances/{instance_id}/ports/{port_id:path}/sfp",
+    response_model=TransceiverPortResponse,
+    summary="Retourne les infos SFP d'un port (cache DB)",
+)
+def get_port_sfp(
+    instance_id: int,
+    port_id:     str,
+    db:           Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    _ = get_instance_or_404(db, instance_id)
+    result = load_cached_sfp_port(db, instance_id, port_id)
+
+    return TransceiverPortResponse(
+        success     = result["found"],
+        port_id     = port_id,
+        instance_id = instance_id,
+        sfp         = SFPPortRead(**result["sfp"]) if result["found"] else None,
+        message     = result["message"],
+    )
+
+
+# ── Endpoint 3 : Tous les SFP d'un slot depuis le cache DB ──────────────────
+@router.get(
+    "/instances/{instance_id}/lt-slots/{slot_id:path}/sfp",
+    response_model=List[SFPPortRead],
+    summary="Retourne tous les SFP d'un slot (cache DB)",
+)
+def get_slot_sfp(
+    instance_id:  int,
+    slot_id:      str,
+    db:           Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    slot_id    = unquote(slot_id)
+    _          = get_instance_or_404(db, instance_id)
+    slot_short = slot_id.replace("lt:", "").strip()
+
+    cached = load_cached_sfp_slot(db, instance_id, slot_short)
+    return [SFPPortRead(**s) for s in cached["sfp"]]

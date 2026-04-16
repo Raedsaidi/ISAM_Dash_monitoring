@@ -26,6 +26,7 @@ import CiscoSwitchManagementSection from "./components/cisco/CiscoSwitchManageme
 import CiscoPortManagementSection from "./components/cisco/CiscoPortManagementSection";
 import CiscoVlanManagementSection from "./components/cisco/CiscoVlanManagementSection";
 import MyTemplatesSection from "./components/isam/MyTemplatesSection";
+import CustomFunctionsSection from "./components/isam/CustomFunctionsSection";  // ← NOUVEAU
 
 import ProductSelection from "./components/ProductSelection";
 import LoginForm from "./components/auth/LoginForm";
@@ -72,6 +73,10 @@ const isamSectionMeta: Record<NavSection, { title: string; subtitle: string }> =
     "vlan-management": {
       title: "VLAN Management",
       subtitle: "View and manage VLANs",
+    },
+    "custom-functions": {
+      title: "Custom Functions",
+      subtitle: "Create and manage custom functions for ISAM",
     },
   };
 
@@ -177,6 +182,10 @@ function App() {
    ISAM Layout  (unchanged)
    ============================================================ */
 
+/* ============================================================
+   ISAM Layout
+   ============================================================ */
+
 function IsamLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const location = useLocation();
@@ -193,6 +202,7 @@ function IsamLayout() {
     "user-management": "user-management",
     "wan-templates": "wan-templates",
     "my-templates": "my-templates",
+    "custom-functions": "custom-functions",        // ← NOUVEAU
   };
 
   const activeSection: NavSection = pathToSection[sub] || "overview";
@@ -218,6 +228,9 @@ function IsamLayout() {
         break;
       case "my-templates":
         subPath = "my-templates";
+        break;
+      case "custom-functions":                    // ← NOUVEAU
+        subPath = "custom-functions";
         break;
       default:
         subPath = "overview";
@@ -248,6 +261,10 @@ function IsamLayout() {
             <Route path="user-management" element={<UserManagementSection />} />
             <Route path="wan-templates" element={<WanTemplatesSection />} />
             <Route path="my-templates" element={<MyTemplatesSection />} />
+            
+            {/* Nouvelle page */}
+            <Route path="custom-functions" element={<CustomFunctionsSection />} />
+
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>
