@@ -1100,6 +1100,68 @@ def change_port_vlan(
             body.port_label, exc,
         )
 
+    # ── Pre-change cleanup: remove stale mode config before switching ────────
+    # Only runs if the port is already configured AND the mode is changing.
+    # If the port has never been configured we skip silently.
+    requested_mode = "trunk" if body.vlan_type.lower() == "trunk" else "access"
+
+    try:
+        cfg_ok, _, current_cfg, _ = service.get_port_running_config(
+            body.port_label, timeout=15
+        )
+        if cfg_ok and current_cfg:
+            cfg_lower = current_cfg.lower()
+            current_is_trunk = "switchport mode trunk" in cfg_lower
+            current_is_access = "switchport mode access" in cfg_lower
+
+            if current_is_trunk and requested_mode == "access":
+                # Trunk → Access: strip trunk settings first
+                logger.info(
+                    "[MODE-CHANGE] %s: trunk → access, cleaning up trunk config",
+                    body.port_label,
+                )
+                expanded = expand_interface_name(body.port_label)
+                cleanup_lines = [
+                    f"interface {expanded}",
+                    "no switchport trunk allowed vlan",
+                    "no switchport trunk native vlan",
+                    "no switchport mode trunk",
+                    "switchport mode access",
+                ]
+                c_ok, _c_out, c_err = service._ssh_config_commands(cleanup_lines, timeout=20)
+                if not c_ok:
+                    logger.warning(
+                        "[MODE-CHANGE] Cleanup (trunk→access) failed for %s: %s",
+                        body.port_label, c_err,
+                    )
+
+            elif current_is_access and requested_mode == "trunk":
+                # Access → Trunk: strip access settings first
+                logger.info(
+                    "[MODE-CHANGE] %s: access → trunk, cleaning up access config",
+                    body.port_label,
+                )
+                expanded = expand_interface_name(body.port_label)
+                cleanup_lines = [
+                    f"interface {expanded}",
+                    "no switchport access vlan",
+                    "no switchport mode access",
+                    "switchport mode trunk",
+                ]
+                c_ok, _c_out, c_err = service._ssh_config_commands(cleanup_lines, timeout=20)
+                if not c_ok:
+                    logger.warning(
+                        "[MODE-CHANGE] Cleanup (access→trunk) failed for %s: %s",
+                        body.port_label, c_err,
+                    )
+            # If neither flag is set the port was never explicitly configured —
+            # no cleanup needed, change_vlan will configure it fresh.
+    except Exception as cleanup_exc:
+        logger.warning(
+            "[MODE-CHANGE] Pre-change cleanup skipped for %s: %s",
+            body.port_label, cleanup_exc,
+        )
+
     try:
         ok, proto, output, error = service.change_vlan(
             port_label=body.port_label,
@@ -1112,7 +1174,6 @@ def change_port_vlan(
         return VlanChangeResponse(
             success=False, error=f"{type(exc).__name__}: {exc}"
         )
-
     if not ok:
         return VlanChangeResponse(
             success=False, protocol_used=proto, error=error
@@ -1585,23 +1646,16 @@ def vlan_mgmt_list_all_vlans(
     return VlanMgmtListResponse(success=True, vlans=vlans, total=len(vlans))
 
 
-@router.post(
-    "/vlan-management/vlans",
-    response_model=VlanMgmtRead,
-    status_code=201,
-)
+@router.post("/vlan-management/vlans", response_model=VlanMgmtRead, status_code=201)
 def vlan_mgmt_create_vlan(
     body: VlanMgmtCreate,
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    existing = (
-        db.query(CiscoVlan).filter(CiscoVlan.vlan_id == body.vlan_id).first()
-    )
+    existing = db.query(CiscoVlan).filter(CiscoVlan.vlan_id == body.vlan_id).first()
     if existing:
-        raise HTTPException(
-            status_code=409, detail=f"VLAN {body.vlan_id} already exists."
-        )
+        raise HTTPException(status_code=409, detail=f"VLAN {body.vlan_id} already exists.")
+    
     now = datetime.utcnow()
     vlan = CiscoVlan(
         vlan_id=body.vlan_id, name=body.name.strip(),
@@ -1610,7 +1664,32 @@ def vlan_mgmt_create_vlan(
     db.add(vlan)
 
     switches = db.query(CiscoSwitch).all()
+    push_errors = []
+
     for sw in switches:
+        # ── Push VLAN to the actual switch ──────────────────────────
+        try:
+            service = CiscoConnectionService(sw)
+            commands = [
+                f"vlan {body.vlan_id}",
+                f"name {body.name.strip()}",
+                "exit",
+            ]
+            ok, out, err = service._ssh_config_commands(commands, timeout=20)
+            if not ok:
+                logger.warning(
+                    "[VLAN-CREATE] Failed to push VLAN %d to switch '%s': %s",
+                    body.vlan_id, sw.name, err,
+                )
+                push_errors.append(sw.name)
+        except Exception as exc:
+            logger.warning(
+                "[VLAN-CREATE] Error pushing VLAN %d to switch '%s': %s",
+                body.vlan_id, sw.name, exc,
+            )
+            push_errors.append(sw.name)
+
+        # ── Update DB snapshot regardless ───────────────────────────
         snapshot = (
             db.query(CiscoVlanSnapshot)
             .filter(
@@ -1632,12 +1711,18 @@ def vlan_mgmt_create_vlan(
 
     db.commit()
     db.refresh(vlan)
+
+    if push_errors:
+        logger.warning(
+            "[VLAN-CREATE] VLAN %d saved to DB but failed to push to: %s",
+            body.vlan_id, ", ".join(push_errors),
+        )
+
     return VlanMgmtRead(
         id=vlan.id, vlan_id=vlan.vlan_id, name=vlan.name,
         status=vlan.status, port_count=0,
         created_at=vlan.created_at, updated_at=vlan.updated_at,
     )
-
 
 @router.delete(
     "/vlan-management/vlans/{vlan_db_id}",

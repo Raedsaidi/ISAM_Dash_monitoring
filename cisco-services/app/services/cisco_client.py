@@ -794,18 +794,25 @@ class CiscoConnectionService:
         if vlan_type.lower() == "trunk":
             commands = [
                 f"interface {full_name}",
-                "switchport mode trunk",
+                # Clean up access config before switching to trunk
                 "no switchport access vlan",
+                "no switchport mode access",
+                # Now configure trunk
+                "switchport mode trunk",
                 f"switchport trunk allowed vlan {new_vlan}",
+                "switchport trunk native vlan 1",
             ]
         else:
             commands = [
                 f"interface {full_name}",
-                "switchport mode access",
+                # Clean up trunk config before switching to access
                 "no switchport trunk allowed vlan",
+                "no switchport trunk native vlan",
+                "no switchport mode trunk",
+                # Now configure access
+                "switchport mode access",
                 f"switchport access vlan {new_vlan}",
             ]
-
         if description:
             commands.append(f"description {description}")
 

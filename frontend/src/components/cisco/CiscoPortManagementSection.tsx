@@ -121,7 +121,83 @@ interface PortConfigHistoryResponse {
   page_size: number;
   total_pages: number;
 }
+
 const HISTORY_PAGE_SIZE = 4;
+
+// ─── Lock Confirm Dialog ──────────────────────────────────────────────────────
+
+/**
+ * Shown whenever a user clicks the Lock button on a port (grid or table).
+ * Unlocking is instant — only locking requires confirmation.
+ */
+function LockConfirmDialog({
+  open,
+  portLabel,
+  onConfirm,
+  onCancel,
+}: {
+  open: boolean;
+  portLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+      if (e.key === "Enter") onConfirm();
+    };
+    document.addEventListener("keydown", h);
+    return () => document.removeEventListener("keydown", h);
+  }, [open, onConfirm, onCancel]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[300] flex items-center justify-center"
+      onClick={onCancel}
+    >
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      <div
+        className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm mx-4 p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-4 mb-5">
+          <div className="h-11 w-11 rounded-xl bg-red-100 flex items-center justify-center shrink-0">
+            <Lock size={20} className="text-red-600" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-slate-900">Lock Port?</h3>
+            <p className="text-sm text-slate-500 mt-1">
+              Locking{" "}
+              <span className="font-mono font-semibold text-slate-700">
+                {portLabel}
+              </span>{" "}
+              will disable all controls for non-super-admins. You can unlock it
+              at any time.
+            </p>
+          </div>
+        </div>
+        <div className="flex justify-end gap-3">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors"
+          >
+            Lock Port
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function HistoryPagination({
   page,
   totalPages,
@@ -148,16 +224,13 @@ function HistoryPagination({
       className="flex items-center justify-between px-4 py-2.5 border-t
                  border-slate-200 bg-slate-50 shrink-0"
     >
-      {/* Count info */}
       <p className="text-xs text-slate-500">
         {total === 0
           ? "No snapshots"
           : `${start}–${end} of ${total} snapshot${total !== 1 ? "s" : ""}`}
       </p>
 
-      {/* Page buttons */}
       <div className="flex items-center gap-1">
-        {/* First */}
         <button
           onClick={() => onChange(1)}
           disabled={safePage <= 1 || loading}
@@ -169,7 +242,6 @@ function HistoryPagination({
           <ChevronLeft size={14} className="text-slate-600" />
         </button>
 
-        {/* Prev */}
         <button
           onClick={() => onChange(safePage - 1)}
           disabled={safePage <= 1 || loading}
@@ -181,17 +253,14 @@ function HistoryPagination({
           <ChevronLeft size={14} className="text-slate-600" />
         </button>
 
-        {/* Page numbers */}
         {Array.from({ length: safeTotalPages }, (_, i) => i + 1)
           .filter((p) => {
-            // Show first, last, current and neighbors
             if (safeTotalPages <= 5) return true;
             return (
               p === 1 || p === safeTotalPages || Math.abs(p - safePage) <= 1
             );
           })
           .reduce<(number | "…")[]>((acc, p, i, arr) => {
-            // Insert ellipsis for gaps
             if (i > 0 && typeof arr[i - 1] === "number") {
               const prev = arr[i - 1] as number;
               if (p - prev > 1) acc.push("…");
@@ -224,7 +293,6 @@ function HistoryPagination({
             ),
           )}
 
-        {/* Next */}
         <button
           onClick={() => onChange(safePage + 1)}
           disabled={safePage >= safeTotalPages || loading}
@@ -236,7 +304,6 @@ function HistoryPagination({
           <ChevronRightIcon size={14} className="text-slate-600" />
         </button>
 
-        {/* Last */}
         <button
           onClick={() => onChange(safeTotalPages)}
           disabled={safePage >= safeTotalPages || loading}
@@ -254,10 +321,6 @@ function HistoryPagination({
 
 // ─── saved_by label helpers ───────────────────────────────────────────────────
 
-/**
- * Maps the raw saved_by string (written by the backend) to a human-readable
- * label and a Tailwind colour scheme so callers only need to call one function.
- */
 function getSavedByMeta(savedBy: string): {
   label: string;
   cls: string;
@@ -467,12 +530,6 @@ function LockBadge({ locked }: { locked: boolean }) {
   );
 }
 
-// ─── SavedBy Badge ────────────────────────────────────────────────────────────
-
-/**
- * Colour-coded pill that shows WHERE a config snapshot came from.
- * Used inside both RunningConfigModal and LastConfigModal.
- */
 function SavedByBadge({ savedBy }: { savedBy: string }) {
   const { label, cls, icon } = getSavedByMeta(savedBy);
   return (
@@ -553,8 +610,6 @@ function Pagination({
 
 // ─── Running Config Modal ─────────────────────────────────────────────────────
 
-// Replace the entire RunningConfigModal component
-
 function RunningConfigModal({
   open,
   onClose,
@@ -577,7 +632,6 @@ function RunningConfigModal({
   const [savedBy, setSavedBy] = useState<string | null>(null);
   const [source, setSource] = useState<"db" | "live" | null>(null);
 
-  // ── Step 1: try DB, Step 2: if empty auto-fetch live ──────────────────
   const loadConfig = useCallback(
     async (portLabel: string) => {
       setConfig(null);
@@ -588,7 +642,6 @@ function RunningConfigModal({
       setLoading(true);
 
       try {
-        // ── Step 1: check DB first ──────────────────────────────────────
         const encodedLabel = encodeURIComponent(portLabel);
         let dbData: PortConfigHistoryResponse | null = null;
 
@@ -599,12 +652,10 @@ function RunningConfigModal({
             token,
           );
         } catch (dbErr: any) {
-          // DB call failed — fall through to live fetch
-          logger.debug?.("DB fetch failed, will try live:", dbErr);
+          console.debug?.("DB fetch failed, will try live:", dbErr);
         }
 
         if (dbData?.success && dbData.history.length > 0) {
-          // ── Found in DB ───────────────────────────────────────────────
           const entry = dbData.history[0];
           setConfig(entry.config_text);
           setSavedAt(entry.saved_at);
@@ -613,7 +664,6 @@ function RunningConfigModal({
           return;
         }
 
-        // ── Step 2: nothing in DB → auto-fetch live from switch ─────────
         toast.info(
           `No snapshot in DB for ${portLabel} — fetching live from switch…`,
           { duration: 3000 },
@@ -640,8 +690,7 @@ function RunningConfigModal({
         } else {
           setError(
             liveData.error ||
-              "Could not fetch config from switch. " +
-                "Check SSH connectivity.",
+              "Could not fetch config from switch. Check SSH connectivity.",
           );
         }
       } catch (err: any) {
@@ -653,7 +702,6 @@ function RunningConfigModal({
     [switchId, token],
   );
 
-  // ── Manual "Sync from Switch" button ────────────────────────────────────
   const handleManualSync = useCallback(async () => {
     if (!port) return;
     setLoading(true);
@@ -688,13 +736,11 @@ function RunningConfigModal({
     }
   }, [port, switchId, token]);
 
-  // ── Load when modal opens ────────────────────────────────────────────────
   useEffect(() => {
     if (!open || !port) return;
     loadConfig(port.label);
   }, [open, port, loadConfig]);
 
-  // ── Keyboard close ───────────────────────────────────────────────────────
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -703,7 +749,6 @@ function RunningConfigModal({
     return () => document.removeEventListener("keydown", h);
   }, [onClose]);
 
-  // ── Download ─────────────────────────────────────────────────────────────
   const handleDownload = () => {
     if (!config || !port) return;
     const safeLabel = port.label.replace(/[^a-zA-Z0-9_\-]/g, "_");
@@ -725,7 +770,6 @@ function RunningConfigModal({
                    overflow-hidden max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ── Header ──────────────────────────────────────────────────── */}
         <div
           className="flex items-center justify-between px-6 py-4 border-b
                         border-slate-200 bg-slate-900 shrink-0"
@@ -768,7 +812,6 @@ function RunningConfigModal({
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Manual re-sync button */}
             <button
               onClick={handleManualSync}
               disabled={loading}
@@ -803,7 +846,6 @@ function RunningConfigModal({
           </div>
         </div>
 
-        {/* ── Snapshot metadata bar ────────────────────────────────────── */}
         {config && !loading && savedAt && (
           <div
             className="flex items-center gap-2 px-6 py-2 bg-slate-800
@@ -858,9 +900,7 @@ function RunningConfigModal({
           </div>
         )}
 
-        {/* ── Body ────────────────────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto bg-slate-950 p-6">
-          {/* Loading state */}
           {loading && (
             <div
               className="flex flex-col items-center justify-center
@@ -880,7 +920,6 @@ function RunningConfigModal({
             </div>
           )}
 
-          {/* Error state */}
           {error && !loading && (
             <div
               className="flex items-start gap-3 p-4 bg-red-900/30
@@ -907,7 +946,6 @@ function RunningConfigModal({
             </div>
           )}
 
-          {/* Config display */}
           {config && !loading && (
             <pre
               className="text-xs text-green-300 font-mono
@@ -918,7 +956,6 @@ function RunningConfigModal({
           )}
         </div>
 
-        {/* ── Footer ──────────────────────────────────────────────────── */}
         <div
           className="flex items-center justify-between px-6 py-3
                         border-t border-slate-200 bg-slate-50 shrink-0"
@@ -973,12 +1010,10 @@ function LastConfigModal({
     null,
   );
 
-  // Pagination state
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
-  // ── Fetch one page of history ──────────────────────────────────────────
   const fetchPage = useCallback(
     async (targetPage: number, portLabel: string) => {
       setLoading(true);
@@ -1006,7 +1041,6 @@ function LastConfigModal({
         setTotalPages(data.total_pages);
         setTotal(data.total);
 
-        // Auto-select first entry on first page load
         if (targetPage === 1 && data.history.length > 0) {
           setSelectedEntry(data.history[0]);
         } else if (data.history.length > 0 && selectedEntry === null) {
@@ -1021,10 +1055,8 @@ function LastConfigModal({
     [switchId, token, selectedEntry],
   );
 
-  // ── Load page 1 when modal opens ──────────────────────────────────────
   useEffect(() => {
     if (!open || !port) return;
-    // Reset state on open
     setHistory([]);
     setSelectedEntry(null);
     setError(null);
@@ -1034,17 +1066,14 @@ function LastConfigModal({
     fetchPage(1, port.label);
   }, [open, port]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Page change ────────────────────────────────────────────────────────
   const handlePageChange = useCallback(
     (newPage: number) => {
       if (!port || newPage === page || loading) return;
-      // Keep the currently selected entry visible while loading
       fetchPage(newPage, port.label);
     },
     [port, page, loading, fetchPage],
   );
 
-  // ── Keyboard close ─────────────────────────────────────────────────────
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -1053,7 +1082,6 @@ function LastConfigModal({
     return () => document.removeEventListener("keydown", h);
   }, [onClose]);
 
-  // ── Download selected entry ────────────────────────────────────────────
   const handleDownload = (entry: PortConfigHistory) => {
     const safeLabel = entry.port_label.replace(/[^a-zA-Z0-9_\-]/g, "_");
     const ts = entry.saved_at.replace(/[:.]/g, "-").slice(0, 19);
@@ -1077,7 +1105,6 @@ function LastConfigModal({
                    mx-4 overflow-hidden max-h-[88vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ── Header ──────────────────────────────────────────────────── */}
         <div
           className="flex items-center justify-between px-6 py-4 border-b
                      border-slate-200 bg-slate-900 shrink-0"
@@ -1115,16 +1142,12 @@ function LastConfigModal({
           </button>
         </div>
 
-        {/* ── Body ────────────────────────────────────────────────────── */}
         <div className="flex flex-1 overflow-hidden min-h-0">
-          {/* ── Sidebar: snapshot list ─────────────────────────────────── */}
           <div
             className="w-56 shrink-0 border-r border-slate-200 bg-slate-50
                        flex flex-col overflow-hidden"
           >
-            {/* Sidebar scroll area */}
             <div className="flex-1 overflow-y-auto">
-              {/* Loading skeleton */}
               {loading && (
                 <div className="space-y-px">
                   {Array.from({ length: HISTORY_PAGE_SIZE }).map((_, i) => (
@@ -1137,7 +1160,6 @@ function LastConfigModal({
                 </div>
               )}
 
-              {/* Error */}
               {error && !loading && (
                 <div className="p-4 text-xs text-red-600">
                   <AlertCircle size={14} className="inline mr-1" />
@@ -1145,7 +1167,6 @@ function LastConfigModal({
                 </div>
               )}
 
-              {/* Empty state */}
               {!loading && !error && history.length === 0 && (
                 <div
                   className="flex flex-col items-center justify-center py-10
@@ -1161,12 +1182,10 @@ function LastConfigModal({
                 </div>
               )}
 
-              {/* Snapshot list */}
               {!loading &&
                 history.map((entry, i) => {
                   const isSelected = selectedEntry?.id === entry.id;
                   const date = new Date(entry.saved_at);
-                  // Entry index across all pages for display
                   const globalIndex = (page - 1) * HISTORY_PAGE_SIZE + i;
 
                   return (
@@ -1181,7 +1200,6 @@ function LastConfigModal({
                           : "hover:bg-white border-l-transparent",
                       )}
                     >
-                      {/* Latest badge only on absolute first entry */}
                       {globalIndex === 0 && (
                         <span
                           className="inline-flex items-center px-1.5 py-0.5
@@ -1207,7 +1225,6 @@ function LastConfigModal({
                 })}
             </div>
 
-            {/* ── Sidebar pagination ───────────────────────────────────── */}
             {totalPages > 1 && (
               <HistoryPagination
                 page={page}
@@ -1220,11 +1237,9 @@ function LastConfigModal({
             )}
           </div>
 
-          {/* ── Main: config preview ───────────────────────────────────── */}
           <div className="flex-1 flex flex-col overflow-hidden bg-slate-950">
             {selectedEntry ? (
               <>
-                {/* Config header bar */}
                 <div
                   className="flex items-center justify-between px-4 py-2.5
                              border-b border-slate-800 bg-slate-900 shrink-0"
@@ -1255,7 +1270,6 @@ function LastConfigModal({
                   </button>
                 </div>
 
-                {/* Config text */}
                 <div className="flex-1 overflow-y-auto p-5">
                   <pre
                     className="text-xs text-amber-200 font-mono
@@ -1277,7 +1291,6 @@ function LastConfigModal({
           </div>
         </div>
 
-        {/* ── Footer ──────────────────────────────────────────────────── */}
         <div
           className="flex items-center justify-between px-6 py-3 border-t
                      border-slate-200 bg-slate-50 shrink-0"
@@ -1386,7 +1399,6 @@ function ConfigurePortModal({
           }
         })
         .catch(() => {
-          // Fallback to global VLAN management list
           const fallbackParams = new URLSearchParams();
           if (search.trim()) fallbackParams.set("search", search.trim());
 
@@ -1495,8 +1507,6 @@ function ConfigurePortModal({
       next.has(vid) ? next.delete(vid) : next.add(vid);
       return next;
     });
-
-  // ── Sub-components (defined inline so they close over mode) ──────────────
 
   const VlanSourceBadge = () => {
     if (vlansLoading || vlanSource === null) return null;
@@ -1628,7 +1638,6 @@ function ConfigurePortModal({
         onClick={onClose}
       />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-xl mx-4 overflow-hidden max-h-[92vh] flex flex-col">
-        {/* ── Header ── */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-gradient-to-r from-slate-50 to-slate-100 shrink-0">
           <div className="flex items-center gap-3">
             <div className="h-9 w-9 rounded-xl bg-blue-100 flex items-center justify-center shadow-sm">
@@ -1669,7 +1678,6 @@ function ConfigurePortModal({
               </div>
             )}
 
-            {/* Description */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-1.5">
                 Description
@@ -1683,7 +1691,6 @@ function ConfigurePortModal({
               />
             </div>
 
-            {/* Admin status */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-2">
                 Port Admin Status
@@ -1728,7 +1735,6 @@ function ConfigurePortModal({
               </div>
             </div>
 
-            {/* Port mode */}
             <div>
               <label className="block text-sm font-semibold text-slate-700 mb-2">
                 Port Mode
@@ -1759,7 +1765,6 @@ function ConfigurePortModal({
               </div>
             </div>
 
-            {/* VLAN selection */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-sm font-semibold text-slate-700">
@@ -1946,7 +1951,6 @@ function ConfigurePortModal({
             </div>
           </div>
 
-          {/* ── Footer ── */}
           <div className="shrink-0 flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50">
             <div className="text-xs text-slate-500">
               {mode === "access" && accessVlan !== null && (
@@ -2376,7 +2380,39 @@ function SwitchPortDetail({
     new Set(),
   );
 
-  // Fetch which ports have history entries (to show/hide the "Last Config" button)
+  // ── Lock confirm state (detail view) ────────────────────────────────────
+  const [lockConfirm, setLockConfirm] = useState<{
+    open: boolean;
+    portLabel: string;
+  }>({ open: false, portLabel: "" });
+
+  // Intercept onToggleLock — show confirm only when LOCKING (not unlocking)
+  const handleToggleLockWithConfirm = useCallback(
+    (portLabel: string) => {
+      const currentPorts = pageCache.pages[currentPage] ?? [];
+      const port = currentPorts.find((p) => p.label === portLabel);
+      if (!port) return;
+
+      if (port.locked) {
+        // Unlocking — no confirmation needed
+        onToggleLock(portLabel);
+      } else {
+        // Locking — show confirmation dialog
+        setLockConfirm({ open: true, portLabel });
+      }
+    },
+    [pageCache.pages, currentPage, onToggleLock],
+  );
+
+  const confirmLock = useCallback(() => {
+    onToggleLock(lockConfirm.portLabel);
+    setLockConfirm({ open: false, portLabel: "" });
+  }, [lockConfirm.portLabel, onToggleLock]);
+
+  const cancelLock = useCallback(() => {
+    setLockConfirm({ open: false, portLabel: "" });
+  }, []);
+
   useEffect(() => {
     if (!sw.id || !token) return;
     apiFetch<{ success: boolean; port_labels: string[] }>(
@@ -2454,6 +2490,14 @@ function SwitchPortDetail({
 
   return (
     <div className="space-y-6">
+      {/* Lock Confirm Dialog */}
+      <LockConfirmDialog
+        open={lockConfirm.open}
+        portLabel={lockConfirm.portLabel}
+        onConfirm={confirmLock}
+        onCancel={cancelLock}
+      />
+
       {/* Header */}
       <div>
         <button
@@ -2652,7 +2696,7 @@ function SwitchPortDetail({
             ) : (
               <PortGrid
                 ports={currentPorts}
-                onToggleLock={onToggleLock}
+                onToggleLock={handleToggleLockWithConfirm}
                 isAdmin={isAdmin}
                 isSuperAdmin={isSuperAdmin}
               />
@@ -2661,7 +2705,7 @@ function SwitchPortDetail({
         ) : (
           <PortTable
             ports={currentPorts}
-            onToggleLock={onToggleLock}
+            onToggleLock={handleToggleLockWithConfirm}
             onConfigure={onConfigure}
             onViewConfig={handleViewConfig}
             onViewHistory={handleViewHistory}
@@ -2702,7 +2746,6 @@ function SwitchPortDetail({
           </span>{" "}
           Config history available
         </span>
-        {/* Saved-by legend */}
         <span className="flex items-center gap-1.5">
           <SavedByBadge savedBy="startup" /> startup capture
         </span>
@@ -2763,6 +2806,35 @@ function ExpandedSwitchPanel({
   const anyLocked = ports.some((p) => p.locked);
   const anyUnlocked = ports.some((p) => !p.locked);
 
+  // ── Lock confirm state (expanded panel) ─────────────────────────────────
+  const [lockConfirm, setLockConfirm] = useState<{
+    open: boolean;
+    portLabel: string;
+  }>({ open: false, portLabel: "" });
+
+  const handleToggleLockWithConfirm = useCallback(
+    (portLabel: string) => {
+      const port = ports.find((p) => p.label === portLabel);
+      if (!port) return;
+
+      if (port.locked) {
+        onToggleLock(portLabel);
+      } else {
+        setLockConfirm({ open: true, portLabel });
+      }
+    },
+    [ports, onToggleLock],
+  );
+
+  const confirmLock = useCallback(() => {
+    onToggleLock(lockConfirm.portLabel);
+    setLockConfirm({ open: false, portLabel: "" });
+  }, [lockConfirm.portLabel, onToggleLock]);
+
+  const cancelLock = useCallback(() => {
+    setLockConfirm({ open: false, portLabel: "" });
+  }, []);
+
   if (cache.loading) {
     return (
       <div className="flex items-center justify-center py-6 text-slate-400">
@@ -2806,6 +2878,14 @@ function ExpandedSwitchPanel({
 
   return (
     <div className="space-y-3">
+      {/* Lock Confirm Dialog */}
+      <LockConfirmDialog
+        open={lockConfirm.open}
+        portLabel={lockConfirm.portLabel}
+        onConfirm={confirmLock}
+        onCancel={cancelLock}
+      />
+
       <div className="flex items-center justify-between flex-wrap gap-2">
         <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">
           Port Overview — Page {currentPage} of {Math.max(1, cache.totalPages)}
@@ -2851,7 +2931,7 @@ function ExpandedSwitchPanel({
       <div key={`panel-grid-${sw.id}-${currentPage}`}>
         <PortGrid
           ports={ports}
-          onToggleLock={onToggleLock}
+          onToggleLock={handleToggleLockWithConfirm}
           isAdmin={isAdmin}
           isSuperAdmin={isSuperAdmin}
         />
