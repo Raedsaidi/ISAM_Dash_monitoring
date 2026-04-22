@@ -1,3 +1,7 @@
+"""
+Cisco Switch Management Service — application entry point.
+"""
+
 import asyncio
 import logging
 from datetime import datetime
@@ -7,51 +11,102 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.api.v1.endpoints.cisco import router as cisco_router
+from app.api.v1.endpoints.cisco_config_routes import router as cisco_config_router
 from app.core.config import settings
 from app.core.db import Base, engine, SessionLocal
 from app.models.cisco_switch import (
     CiscoSwitch,
-    CiscoPortLock,
     CiscoVlan,
-    CiscoPortAssignment,
-    CiscoPortSnapshot,      # ← add this import
+    CiscoPortLock,
+    CiscoPortSnapshot,
+    CiscoPortConfigHistory,
 )
 from app.services.cisco_client import (
     test_connection_for_switch,
-    CiscoConnectionService,  # ← add this import
+    CiscoConnectionService,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def configure_logging():
+# ─────────────────────────────────────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def configure_logging() -> None:
     logging.basicConfig(
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
     )
 
 
-def seed_default_vlan():
-    """Ensure VLAN 1 (default) exists."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Seeding
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def seed_default_vlan() -> None:
     db = SessionLocal()
     try:
-        existing = db.query(CiscoVlan).filter(CiscoVlan.vlan_id == 1).first()
-        if not existing:
+        exists = db.query(CiscoVlan).filter(CiscoVlan.vlan_id == 1).first()
+        if not exists:
             db.add(CiscoVlan(vlan_id=1, name="default", status="active"))
             db.commit()
-            logger.info("Seeded default VLAN 1.")
-    except Exception as e:
-        logger.warning("Could not seed VLAN 1: %s", e)
+            logger.info("[SEED] Seeded default VLAN 1.")
+    except Exception as exc:
+        logger.warning("[SEED] Could not seed VLAN 1: %s", exc)
         db.rollback()
     finally:
         db.close()
 
 
-async def health_check_loop(interval_seconds: int = 900):
+# ─────────────────────────────────────────────────────────────────────────────
+# Verify the switch ORM object has the fields cisco_client.py expects
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _verify_switch_fields(sw: CiscoSwitch) -> tuple[bool, str]:
+    """
+    cisco_client.py accesses sw.host, sw.ssh_port, sw.telnet_port,
+    sw.username, sw.password, sw.enable_password, sw.protocol_preference.
+
+    If your model uses password_encrypted instead of password,
+    the CiscoConnectionService will get AttributeError and return nothing.
+
+    This helper checks and logs exactly which fields are missing.
+    """
+    required = [
+        "host", "ssh_port", "telnet_port",
+        "username", "password",
+        "protocol_preference",
+    ]
+    missing = [f for f in required if not hasattr(sw, f)]
+    if missing:
+        return False, f"Switch ORM missing fields: {missing}"
+
+    # Also check the values are not None/empty
+    empty = []
+    for f in ["host", "username", "password"]:
+        val = getattr(sw, f, None)
+        if not val:
+            empty.append(f)
+    if empty:
+        return False, f"Switch ORM has empty required fields: {empty}"
+
+    return True, "ok"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Health-check loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def health_check_loop(interval_seconds: int = 900) -> None:
     await asyncio.sleep(10)
     while True:
-        logger.info("[HEALTH] Starting periodic Cisco switch health check.")
-        db = None
+        logger.info("[HEALTH] Starting periodic health check.")
+        db: Session | None = None
         try:
             db = SessionLocal()
             switches = db.query(CiscoSwitch).all()
@@ -69,11 +124,13 @@ async def health_check_loop(interval_seconds: int = 900):
                         sw.health_protocol_used = None
                         sw.last_error = msg
                     db.add(sw)
-                except Exception as e:
-                    logger.error("[HEALTH] Error checking switch %s: %s", sw.name, e)
+                except Exception as exc:
+                    logger.error(
+                        "[HEALTH] Error checking switch %s: %s", sw.name, exc
+                    )
             db.commit()
         except Exception:
-            logger.exception("[HEALTH] Error during health check loop.")
+            logger.exception("[HEALTH] Unhandled error.")
             if db:
                 db.rollback()
         finally:
@@ -82,31 +139,49 @@ async def health_check_loop(interval_seconds: int = 900):
         await asyncio.sleep(interval_seconds)
 
 
-def _sync_ports_for_switch(db: Session, sw: CiscoSwitch) -> int:
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 1 — Port snapshot sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _sync_ports_for_switch(db: Session, sw: CiscoSwitch) -> list[str]:
     """
-    Fetch live ports from a single switch and upsert into cisco_port_snapshots.
-    Returns the number of ports synced, or -1 on failure.
-    Runs synchronously — called from a thread pool via asyncio.to_thread().
+    SSH → fetch port list → upsert cisco_port_snapshots → COMMIT.
+    Returns the list of port_labels now in the DB, or [] on failure.
     """
+    # ── Guard: verify the ORM object has what cisco_client needs ─────────
+    ok, reason = _verify_switch_fields(sw)
+    if not ok:
+        logger.error(
+            "[PORT-SYNC] %s: cannot sync — %s. "
+            "Check that CiscoSwitch model has a 'password' column "
+            "(not 'password_encrypted').",
+            sw.name, reason,
+        )
+        return []
+
     try:
         service = CiscoConnectionService(sw)
         ok, proto, raw_ports, error = service.get_all_port_status(timeout=25)
 
         if not ok:
             logger.warning(
-                "[PORT-SYNC] Switch %s (%s): could not fetch ports — %s",
-                sw.name, sw.host, error,
+                "[PORT-SYNC] %s: get_all_port_status failed — %s",
+                sw.name, error,
             )
-            return -1
+            return []
 
-        locks = {
-            lock.port_label
-            for lock in db.query(CiscoPortLock)
-            .filter(CiscoPortLock.switch_id == sw.id)
-            .all()
-        }
+        if not raw_ports:
+            logger.warning(
+                "[PORT-SYNC] %s: connected OK but zero ports returned. "
+                "Check parse_interfaces_status() output.",
+                sw.name,
+            )
+            return []
 
         now = datetime.utcnow()
+        synced_labels: list[str] = []
+
         for p in raw_ports:
             label = p["port_label"]
             snapshot = (
@@ -128,7 +203,7 @@ def _sync_ports_for_switch(db: Session, sw: CiscoSwitch) -> int:
                 snapshot.mac_address  = p.get("mac_address")
                 snapshot.last_seen_at = now
             else:
-                snapshot = CiscoPortSnapshot(
+                db.add(CiscoPortSnapshot(
                     switch_id    = sw.id,
                     port_label   = label,
                     port_number  = p.get("port_number", 0),
@@ -141,78 +216,362 @@ def _sync_ports_for_switch(db: Session, sw: CiscoSwitch) -> int:
                     mac_address  = p.get("mac_address"),
                     last_seen_at = now,
                     created_at   = now,
-                )
-                db.add(snapshot)
+                ))
+            synced_labels.append(label)
 
         db.commit()
         logger.info(
-            "[PORT-SYNC] Switch %s: synced %d ports (proto=%s).",
-            sw.name, len(raw_ports), proto,
+            "[PORT-SYNC] ✓ %s: %d port(s) saved to DB (proto=%s).",
+            sw.name, len(synced_labels), proto,
         )
-        return len(raw_ports)
+        return synced_labels
 
-    except Exception as e:
+    except AttributeError as exc:
+        # This fires when sw.password doesn't exist (model mismatch)
         db.rollback()
         logger.error(
-            "[PORT-SYNC] Switch %s: unexpected error — %s",
-            sw.name, e, exc_info=True,
+            "[PORT-SYNC] %s: AttributeError — model field missing: %s. "
+            "Your CiscoSwitch ORM model must have a plain 'password' "
+            "column for CiscoConnectionService to work.",
+            sw.name, exc,
+        )
+        return []
+
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "[PORT-SYNC] %s: unexpected error — %s",
+            sw.name, exc, exc_info=True,
+        )
+        return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 2 — Running-config sync
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _sync_running_configs_for_switch(
+    db: Session,
+    sw: CiscoSwitch,
+    port_labels: list[str],
+    *,
+    trigger: str = "background-sync",
+) -> int:
+    """
+    For every port_label (already in DB from Step 1):
+        SSH → show running-config interface <label>
+        → write cisco_port_config_history row if text changed
+        → COMMIT
+
+    Returns new rows written, or -1 on hard failure.
+    """
+    if not port_labels:
+        logger.info("[CFG-SYNC] %s: empty port list, skipping.", sw.name)
+        return 0
+
+    ok, reason = _verify_switch_fields(sw)
+    if not ok:
+        logger.error(
+            "[CFG-SYNC] %s: cannot sync — %s", sw.name, reason
+        )
+        return -1
+
+    try:
+        service = CiscoConnectionService(sw)
+        saved_count = 0
+        now = datetime.utcnow()
+
+        logger.info(
+            "[CFG-SYNC] %s: fetching running config for %d port(s) "
+            "(trigger=%s)…",
+            sw.name, len(port_labels), trigger,
+        )
+
+        for port_label in port_labels:
+            try:
+                ok_cfg, proto, output, error = service.get_port_running_config(
+                    port_label, timeout=15
+                )
+
+                if not ok_cfg or not output:
+                    logger.debug(
+                        "[CFG-SYNC] %s / %s: fetch failed — %s",
+                        sw.name, port_label, error,
+                    )
+                    continue
+
+                # Strip IOS shell noise so we compare only config lines
+                clean_output = _strip_ios_noise(output, port_label)
+
+                if not clean_output.strip():
+                    logger.debug(
+                        "[CFG-SYNC] %s / %s: output empty after "
+                        "stripping IOS noise, skipping.",
+                        sw.name, port_label,
+                    )
+                    continue
+
+                # Only write when text has actually changed
+                last = (
+                    db.query(CiscoPortConfigHistory)
+                    .filter(
+                        CiscoPortConfigHistory.switch_id  == sw.id,
+                        CiscoPortConfigHistory.port_label == port_label,
+                    )
+                    .order_by(CiscoPortConfigHistory.saved_at.desc())
+                    .first()
+                )
+
+                if last and last.config_text.strip() == clean_output.strip():
+                    logger.debug(
+                        "[CFG-SYNC] %s / %s: unchanged, skipping.",
+                        sw.name, port_label,
+                    )
+                    continue
+
+                db.add(CiscoPortConfigHistory(
+                    switch_id   = sw.id,
+                    port_label  = port_label,
+                    config_text = clean_output,
+                    saved_by    = trigger,
+                    saved_at    = now,
+                ))
+                saved_count += 1
+                logger.debug(
+                    "[CFG-SYNC] %s / %s: snapshot saved (trigger=%s).",
+                    sw.name, port_label, trigger,
+                )
+
+            except Exception as port_exc:
+                logger.warning(
+                    "[CFG-SYNC] %s / %s: error — %s",
+                    sw.name, port_label, port_exc,
+                )
+
+        db.commit()
+        logger.info(
+            "[CFG-SYNC] ✓ %s: %d / %d snapshot(s) written (trigger=%s).",
+            sw.name, saved_count, len(port_labels), trigger,
+        )
+        return saved_count
+
+    except Exception as exc:
+        db.rollback()
+        logger.error(
+            "[CFG-SYNC] %s: unexpected error — %s",
+            sw.name, exc, exc_info=True,
         )
         return -1
 
 
-async def port_sync_loop(interval_seconds: int = 1800):
+def _strip_ios_noise(raw: str, port_label: str) -> str:
     """
-    Every `interval_seconds` (default 30 min), fetch live port data
-    from every known switch and upsert it into cisco_port_snapshots.
+    Remove IOS shell artefacts from 'show running-config interface' output.
 
-    - Runs each switch in a thread pool so blocking SSH/Telnet calls
-      don't stall the event loop.
-    - Existing snapshots are updated in-place; stale ports are kept so
-      the UI always has something to show even if a switch is unreachable.
-    - First run is delayed 60 s after startup to let the app warm up.
+    Cisco interactive shell adds:
+      - the echoed command line
+      - 'terminal length 0' line
+      - blank lines / prompt characters at the start and end
+
+    We keep only lines that look like IOS config (start with a space,
+    'interface', 'end', or '!').
     """
-    await asyncio.sleep(60)          # wait for app to be ready
-    while True:
-        logger.info("[PORT-SYNC] Starting background port sync for all switches.")
-        db = SessionLocal()
-        try:
-            switches = db.query(CiscoSwitch).all()
-            if not switches:
-                logger.info("[PORT-SYNC] No switches configured, skipping.")
-            else:
-                # Build one coroutine per switch, each in its own thread
-                # so SSH connections run truly in parallel.
-                async def sync_one(sw: CiscoSwitch):
-                    # Each thread gets its own DB session to avoid conflicts.
-                    thread_db = SessionLocal()
-                    try:
-                        count = await asyncio.to_thread(
-                            _sync_ports_for_switch, thread_db, sw
-                        )
-                        if count >= 0:
-                            logger.info(
-                                "[PORT-SYNC] ✓ %s — %d ports", sw.name, count
-                            )
-                        else:
-                            logger.warning(
-                                "[PORT-SYNC] ✗ %s — sync failed (switch may be unreachable)",
-                                sw.name,
-                            )
-                    finally:
-                        thread_db.close()
+    lines = raw.splitlines()
+    config_lines: list[str] = []
+    in_config = False
 
-                await asyncio.gather(*[sync_one(sw) for sw in switches])
+    for line in lines:
+        stripped = line.strip()
 
-        except Exception:
-            logger.exception("[PORT-SYNC] Unexpected error in port_sync_loop.")
-        finally:
-            db.close()
+        # Start capturing when we hit the interface stanza
+        if stripped.lower().startswith("interface"):
+            in_config = True
 
+        if in_config:
+            # Stop at the next prompt-like line (ends with # or >)
+            if stripped.endswith("#") or stripped.endswith(">"):
+                break
+            config_lines.append(line)
+
+    return "\n".join(config_lines) if config_lines else raw
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Combined pipeline for ONE switch
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _full_sync_for_switch(
+    sw: CiscoSwitch,
+    *,
+    trigger: str = "background-sync",
+) -> tuple[int, int]:
+    """
+    Port sync → DB commit → Config fetch → DB commit.
+
+    Two separate DB sessions guarantee Step 2 always sees Step 1's rows.
+
+    Returns (ports_synced, configs_saved).
+    ports_synced == -1  →  port fetch failed entirely.
+    configs_saved == -1 →  config fetch failed entirely.
+    """
+    # ── Session A: port snapshots ─────────────────────────────────────────
+    db_a = SessionLocal()
+    try:
+        port_labels = _sync_ports_for_switch(db_a, sw)
+    finally:
+        db_a.close()
+
+    if not port_labels:
+        return -1, 0
+
+    # ── Session B: running configs ────────────────────────────────────────
+    # Fresh session — guaranteed to see Session A's committed rows.
+    db_b = SessionLocal()
+    try:
+        configs_saved = _sync_running_configs_for_switch(
+            db_b, sw, port_labels, trigger=trigger
+        )
+    finally:
+        db_b.close()
+
+    return len(port_labels), configs_saved
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Async orchestrator
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def _run_full_sync_for_all_switches(
+    trigger: str = "background-sync",
+    *,
+    require_active: bool = True,
+) -> None:
+    """
+    Run the full pipeline for all matching switches concurrently.
+
+    require_active=False  →  query ALL switches (used at startup before
+                             health-check has marked anything active).
+    require_active=True   →  only switches with status='active'
+                             (used by the periodic loop).
+    """
+    logger.info(
+        "[FULL-SYNC] Starting (trigger=%s, require_active=%s).",
+        trigger, require_active,
+    )
+
+    db = SessionLocal()
+    try:
+        q = db.query(CiscoSwitch)
+        if require_active:
+            q = q.filter(CiscoSwitch.status == "active")
+        switches = q.all()
+
+        # Log what we found so silent-skip bugs are obvious
         logger.info(
-            "[PORT-SYNC] Cycle complete. Next run in %d minutes.",
-            interval_seconds // 60,
+            "[FULL-SYNC] Found %d switch(es) to process: %s",
+            len(switches),
+            [f"{s.name}({s.id})" for s in switches],
+        )
+    finally:
+        db.close()
+
+    if not switches:
+        logger.warning(
+            "[FULL-SYNC] No switches found — "
+            "check the cisco_switches table is populated."
+        )
+        return
+
+    async def _handle_one(sw: CiscoSwitch) -> None:
+        logger.info(
+            "[FULL-SYNC] → %s (id=%d, host=%s): "
+            "port sync + config capture…",
+            sw.name, sw.id, sw.host,
+        )
+        try:
+            ports_synced, configs_saved = await asyncio.to_thread(
+                _full_sync_for_switch, sw, trigger=trigger
+            )
+            if ports_synced < 0:
+                logger.warning(
+                    "[FULL-SYNC] ✗ %s: port sync failed — "
+                    "check SSH credentials and connectivity.",
+                    sw.name,
+                )
+            else:
+                logger.info(
+                    "[FULL-SYNC] ✓ %s: %d port(s) → DB | "
+                    "%d config snapshot(s) → DB.",
+                    sw.name, ports_synced, configs_saved,
+                )
+        except Exception as exc:
+            logger.error(
+                "[FULL-SYNC] ✗ %s: unhandled exception — %s",
+                sw.name, exc, exc_info=True,
+            )
+
+    await asyncio.gather(*[_handle_one(sw) for sw in switches])
+    logger.info("[FULL-SYNC] All switches done (trigger=%s).", trigger)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ONE-SHOT startup task
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def startup_full_sync() -> None:
+    """
+    Runs ONCE at boot:
+        1. Wait 5 s for uvicorn to finish binding.
+        2. Query ALL switches (require_active=False — health-check hasn't
+           run yet so status column is still whatever it was last session).
+        3. For each switch: port sync → DB → config fetch → DB.
+
+    saved_by column will contain "startup" so you can filter in the UI.
+    """
+    logger.info("[STARTUP-SYNC] Waiting 5 s for HTTP server to be ready…")
+    await asyncio.sleep(5)
+
+    logger.info("[STARTUP-SYNC] ═══ BEGIN startup full sync ═══")
+    await _run_full_sync_for_all_switches(
+        trigger="startup",
+        require_active=False,   # ALL switches regardless of status column
+    )
+    logger.info("[STARTUP-SYNC] ═══ END startup full sync ═══")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Periodic loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def port_and_config_sync_loop(interval_seconds: int = 1800) -> None:
+    """
+    Every 30 min run the full pipeline for all ACTIVE switches.
+    Sleeps FIRST so the boot run is not duplicated.
+    """
+    logger.info(
+        "[PERIODIC] port+config sync loop ready — "
+        "first run in %d min.", interval_seconds // 60,
+    )
+    await asyncio.sleep(interval_seconds)
+    while True:
+        await _run_full_sync_for_all_switches(
+            trigger="periodic",
+            require_active=True,
+        )
+        logger.info(
+            "[PERIODIC] Next run in %d min.", interval_seconds // 60
         )
         await asyncio.sleep(interval_seconds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Application factory
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def create_app() -> FastAPI:
@@ -224,16 +583,14 @@ def create_app() -> FastAPI:
         version="1.0.0",
     )
 
-    origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://10.255.25.77:5173",
-    ]
-
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,
+        allow_origins=[
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://10.255.25.77:5173",
+        ],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -241,17 +598,31 @@ def create_app() -> FastAPI:
 
     Base.metadata.create_all(bind=engine)
     seed_default_vlan()
-    app.include_router(cisco_router, prefix="/api/v1")
+
+    app.include_router(cisco_router,        prefix="/api/v1")
+    app.include_router(cisco_config_router, prefix="/api/v1")
 
     @app.get("/health", tags=["Health"])
     def health():
         return {"status": "ok", "service": settings.APP_NAME}
 
     @app.on_event("startup")
-    async def startup_event():
-        logger.info("Starting %s (%s)", settings.APP_NAME, settings.ENVIRONMENT)
-        asyncio.create_task(health_check_loop(interval_seconds=900))
-        asyncio.create_task(port_sync_loop(interval_seconds=1800))  # ← 30 min
+    async def startup_event() -> None:
+        logger.info(
+            "Starting %s (%s)", settings.APP_NAME, settings.ENVIRONMENT
+        )
+        asyncio.create_task(
+            startup_full_sync(),
+            name="startup-full-sync",
+        )
+        asyncio.create_task(
+            health_check_loop(interval_seconds=900),
+            name="health-check-loop",
+        )
+        asyncio.create_task(
+            port_and_config_sync_loop(interval_seconds=1800),
+            name="port-and-config-sync-loop",
+        )
 
     return app
 

@@ -1,10 +1,11 @@
 import logging
+import re
 import shutil
 import socket
 import subprocess
 import time
 import select
-from typing import Literal, Optional, Tuple
+from typing import Literal, Optional, Tuple, Pattern
 
 import paramiko
 import telnetlib
@@ -14,6 +15,9 @@ from app.models.isam_instance import ISAMInstance
 logger = logging.getLogger(__name__)
 
 Protocol = Literal["ssh", "ssh-legacy", "telnet"]
+
+# ANSI escape sequences (ex: \x1b[1D) that appear in your outputs
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 class ISAMConnectionService:
@@ -63,7 +67,6 @@ class ISAMConnectionService:
         }
 
         if legacy_algorithms:
-            # À ajuster selon les équipements si besoin.
             connect_kwargs["disabled_algorithms"] = {}
 
         client.connect(**connect_kwargs)
@@ -111,6 +114,34 @@ class ISAMConnectionService:
 
         return chan
 
+    def _make_prompt_re(self) -> Pattern[str]:
+        """
+        Prompt ISAM looks like:  leg:isadmin>#  or  leg:isadmin>configure>...#
+        We'll match any line that contains the username and ends with > or #.
+        """
+        user = (self.instance.username or "").strip()
+        if user:
+            u = re.escape(user)
+            return re.compile(rf"(?m)^[^\n]*\b{u}\b[^\n]*[>#]\s*$")
+        # fallback: any line ending with prompt char
+        return re.compile(r"(?m)^[^\n]*[>#]\s*$")
+
+    def _drain_shell(self, chan: paramiko.Channel, max_seconds: float = 0.6) -> None:
+        """
+        Drain any remaining bytes in the channel buffer (prevents output shifting).
+        """
+        end = time.time() + max_seconds
+        while time.time() < end:
+            if chan.closed:
+                return
+            if chan.recv_ready():
+                try:
+                    _ = chan.recv(65535)
+                except Exception:
+                    return
+                continue
+            time.sleep(0.05)
+
     def _read_shell_output(
         self,
         chan: paramiko.Channel,
@@ -118,10 +149,8 @@ class ISAMConnectionService:
         idle_timeout: float = 1.5,
     ) -> str:
         """
-        Lit la sortie du shell jusqu’à :
-        - absence de nouvelles données pendant idle_timeout
-        - ou timeout global
-        - ou fermeture du channel
+        Legacy reader: reads until idle_timeout silence OR global timeout.
+        Kept for compatibility, but for persistent shells prefer _read_shell_output_until_prompt().
         """
         end_time = time.time() + timeout
         last_data_time = time.time()
@@ -159,14 +188,85 @@ class ISAMConnectionService:
 
         return "".join(chunks)
 
+    def _read_shell_output_until_prompt(
+        self,
+        chan: paramiko.Channel,
+        *,
+        timeout: int = 30,
+        idle_no_prompt: float = 8.0,
+        idle_after_prompt: float = 0.35,
+        prompt_re: Optional[Pattern[str]] = None,
+    ) -> str:
+        """
+        Robust reader for persistent interactive shells:
+        reads until we see the prompt again (recommended).
+        This prevents output shifting between commands.
+
+        - idle_no_prompt: safety if prompt never comes
+        - idle_after_prompt: small grace time after seeing prompt
+        """
+        if prompt_re is None:
+            prompt_re = self._make_prompt_re()
+
+        end = time.time() + timeout
+        last_data = time.time()
+        saw_prompt = False
+        chunks: list[str] = []
+
+        while time.time() < end:
+            if chan.closed:
+                break
+
+            try:
+                if chan.recv_ready():
+                    data = chan.recv(65535)
+                    if not data:
+                        break
+                    decoded = data.decode("utf-8", errors="ignore")
+                    chunks.append(decoded)
+                    last_data = time.time()
+
+                    # check prompt on a recent window (faster)
+                    window = "".join(chunks[-6:])
+                    if prompt_re.search(window):
+                        saw_prompt = True
+                    continue
+
+                # no data available
+                idle = time.time() - last_data
+                if saw_prompt and idle >= idle_after_prompt:
+                    break
+                if (not saw_prompt) and chunks and idle >= idle_no_prompt:
+                    break
+
+                time.sleep(0.08)
+
+            except socket.timeout:
+                idle = time.time() - last_data
+                if saw_prompt and idle >= idle_after_prompt:
+                    break
+                if (not saw_prompt) and chunks and idle >= idle_no_prompt:
+                    break
+            except Exception as e:
+                logger.debug(
+                    "[SSH] Lecture shell (until prompt) interrompue sur %s:%s : %s",
+                    self.instance.host,
+                    self.instance.ssh_port,
+                    e,
+                )
+                break
+
+        return "".join(chunks)
+
     def _sanitize_command_output(self, output: str, command: str) -> str:
         """
-        Nettoyage léger de la sortie brute.
+        Nettoyage léger de la sortie brute + suppression ANSI.
         """
         if not output:
             return ""
 
         cleaned = output.replace("\r", "")
+        cleaned = _ANSI_RE.sub("", cleaned)
         return cleaned.strip()
 
     def _sshpass_available(self) -> bool:
@@ -180,11 +280,6 @@ class ISAMConnectionService:
     # =========================================================
 
     def test_ssh_connection(self, timeout: int = 10) -> Tuple[bool, str]:
-        """
-        Test SSH standard :
-        - connexion SSH
-        - ouverture d’un shell interactif
-        """
         started_at = time.perf_counter()
         client: Optional[paramiko.SSHClient] = None
         chan: Optional[paramiko.Channel] = None
@@ -278,12 +373,6 @@ class ISAMConnectionService:
                 client.close()
 
     def test_ssh_connection_legacy(self, timeout: int = 10) -> Tuple[bool, str]:
-        """
-        Test SSH legacy via openssh + sshpass en mode interactif.
-        Nécessite :
-        - sshpass
-        - ssh
-        """
         started_at = time.perf_counter()
 
         if not self._openssh_available():
@@ -512,10 +601,15 @@ class ISAMConnectionService:
     ) -> Tuple[bool, str, str]:
         """
         Exécute une commande via SSH avec shell interactif (Paramiko).
+
+        FIX IMPORTANT:
+        on lit jusqu'au prompt (au lieu de "silence idle_timeout"), sinon tu auras
+        des sorties décalées entre commandes (ce que tu as vu pour 1/1/8, 1/1/10...).
         """
         started_at = time.perf_counter()
         client: Optional[paramiko.SSHClient] = None
         chan: Optional[paramiko.Channel] = None
+        prompt_re = self._make_prompt_re()
 
         try:
             logger.info(
@@ -530,15 +624,15 @@ class ISAMConnectionService:
             client = self._connect_ssh(timeout=timeout, legacy_algorithms=False)
             chan = self._open_ssh_shell(client, timeout=timeout, read_delay=1.2)
 
+            # Drain any banner/prompt
             try:
-                initial = self._read_shell_output(chan, timeout=2, idle_timeout=0.8)
-                if initial:
-                    logger.debug(
-                        "[SSH] Flux initial avant commande depuis %s:%s : %r",
-                        self.instance.host,
-                        self.instance.ssh_port,
-                        initial[-500:],
-                    )
+                self._drain_shell(chan, max_seconds=0.5)
+                _ = self._read_shell_output_until_prompt(
+                    chan,
+                    timeout=4,
+                    idle_no_prompt=max(2.0, idle_timeout),
+                    prompt_re=prompt_re,
+                )
             except Exception:
                 pass
 
@@ -546,16 +640,17 @@ class ISAMConnectionService:
                 raise paramiko.SSHException("SSH shell channel closed before sending command")
 
             if init_command:
-                logger.debug(
-                    "[SSH] Envoi commande d'initialisation vers %s:%s : %r",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    init_command,
-                )
                 chan.send(init_command + "\n")
-                time.sleep(0.7)
-                _ = self._read_shell_output(chan, timeout=3, idle_timeout=1.0)
+                time.sleep(0.3)
+                _ = self._read_shell_output_until_prompt(
+                    chan,
+                    timeout=min(8, timeout),
+                    idle_no_prompt=max(3.0, idle_timeout),
+                    prompt_re=prompt_re,
+                )
 
+            # IMPORTANT: send line by line + read until prompt EACH line
+            out_parts: list[str] = []
             for line in command.split("\n"):
                 line = line.strip()
                 if not line:
@@ -564,47 +659,31 @@ class ISAMConnectionService:
                 if chan.closed:
                     raise paramiko.SSHException("SSH shell channel closed during command send")
 
-                logger.debug(
-                    "[SSH] Envoi ligne vers %s:%s : %r",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    line,
-                )
                 chan.send(line + "\n")
-                time.sleep(0.35)
+                time.sleep(0.10)
+
+                raw = self._read_shell_output_until_prompt(
+                    chan,
+                    timeout=timeout,
+                    idle_no_prompt=max(8.0, idle_timeout),
+                    prompt_re=prompt_re,
+                )
+                out_parts.append(raw)
 
             time.sleep(post_send_delay)
 
-            if chan.closed:
-                raise paramiko.SSHException("SSH shell channel closed after sending command")
-
-            output = self._read_shell_output(
-                chan,
-                timeout=timeout,
-                idle_timeout=idle_timeout,
-            )
-
+            output = "".join(out_parts)
             cleaned_output = self._sanitize_command_output(output, command)
             elapsed = round(time.perf_counter() - started_at, 2)
 
-            if cleaned_output:
-                logger.info(
-                    "[SSH] Commande terminée avec succès vers %s:%s en %ss (output=%d chars).",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    elapsed,
-                    len(cleaned_output),
-                )
-                return True, cleaned_output, ""
-
-            msg = "[SSH] Aucune sortie reçue après exécution de la commande."
-            logger.warning(
-                "[SSH] Commande terminée sans sortie vers %s:%s en %ss.",
+            logger.info(
+                "[SSH] Commande terminée vers %s:%s en %ss (output=%d chars).",
                 self.instance.host,
                 self.instance.ssh_port,
                 elapsed,
+                len(cleaned_output or ""),
             )
-            return True, "", msg
+            return True, cleaned_output, ""
 
         except paramiko.AuthenticationException:
             elapsed = round(time.perf_counter() - started_at, 2)
@@ -661,6 +740,9 @@ class ISAMConnectionService:
             if client:
                 client.close()
 
+    # (ssh legacy + telnet unchanged below)
+    # =========================================================
+
     def execute_ssh_command_legacy(
         self,
         command: str,
@@ -668,9 +750,6 @@ class ISAMConnectionService:
         idle_timeout: float = 1.5,
         post_send_delay: float = 1.0,
     ) -> Tuple[bool, str, str]:
-        """
-        Exécute une commande SSH legacy via openssh + sshpass en mode interactif.
-        """
         started_at = time.perf_counter()
 
         if not self._openssh_available():
@@ -736,7 +815,6 @@ class ISAMConnectionService:
             time.sleep(2.0)
 
             try:
-                # vide le flux initial
                 ready, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.5)
                 for stream in ready:
                     _ = stream.read()
@@ -747,12 +825,6 @@ class ISAMConnectionService:
                 line = line.strip()
                 if not line:
                     continue
-                logger.debug(
-                    "[SSH-LEGACY] Envoi ligne vers %s:%s : %r",
-                    self.instance.host,
-                    self.instance.ssh_port,
-                    line,
-                )
                 proc.stdin.write(line + "\n")
                 proc.stdin.flush()
                 time.sleep(0.35)
@@ -860,10 +932,6 @@ class ISAMConnectionService:
         timeout: int = 20,
         idle_timeout: float = 1.0,
     ) -> Tuple[bool, str, str]:
-        """
-        Exécute une commande via Telnet.
-        Telnet reste le dernier fallback.
-        """
         started_at = time.perf_counter()
 
         try:
@@ -1099,7 +1167,7 @@ class ISAMConnectionService:
 
 
 # =========================================================
-# SESSION TELNET PERSISTANTE
+# SESSION TELNET PERSISTANTE (unchanged)
 # =========================================================
 
 class ISAMPersistentTelnet:
@@ -1309,10 +1377,6 @@ class ISAMPersistentTelnet:
 
 
 def test_connection_for_instance(instance: ISAMInstance, timeout: int = 10):
-    """
-    Helper pour les health-checks.
-    Retourne (success, protocol_used, message, response_time_ms)
-    """
     started_at = time.perf_counter()
 
     service = ISAMConnectionService(instance)

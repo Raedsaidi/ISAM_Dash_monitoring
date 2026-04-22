@@ -51,3 +51,13 @@ async def require_admin(
             detail="Accès réservé aux ADMIN / SUPER_ADMIN.",
         )
     return current_user
+def require_super_admin(
+    current_user: TokenUser = Depends(get_current_user),
+) -> TokenUser:
+    """Only SUPER_ADMIN may call this endpoint."""
+    if current_user.role != "SUPER_ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super Admin access required.",
+        )
+    return current_user
