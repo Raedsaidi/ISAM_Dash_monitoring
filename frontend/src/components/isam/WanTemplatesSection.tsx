@@ -1541,117 +1541,120 @@ function validateTemplateForm(): string | null {
     }
   }
 
-  async function handleTestTemplate() {
+async function handleTestTemplate() {
     setFormError(null);
 
     if (!commandsTemplate.trim()) {
-      setFormError("Template content is required.");
-      return;
+        setFormError("Template content is required.");
+        return;
     }
 
     if (!testInstanceId) {
-      setFormError("Choose an ISAM.");
-      return;
+        setFormError("Choose an ISAM.");
+        return;
     }
 
     if (detectedVariables.some(isPortVar) && !testPort.trim()) {
-      setFormError("Test port is required.");
-      return;
+        setFormError("Test port is required.");
+        return;
     }
 
     setTestState((s) => ({
-      ...s,
-      loading: true,
-      success: false,
-      error: null,
-      warningMessage: null,
-      message: null,
-      executionHasTemplateErrors: false,
-      errorBlocks: [],
-    }));
-
-    const tid = toast.loading("Testing template...");
-
-    try {
-      const res = await authFetch<TemplateTestResponse>(
-        `${ISAM_BASE_URL}/api/v1/isam/wan-templates/test`,
-        accessToken,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            instance_id: Number(testInstanceId),
-            commands_template: commandsTemplate,
-            selected_port: testPort.trim() || null,
-            variables: variableValues,
-            template_id: editingTemplate?.id ?? null,
-            template_name: finalName || name.trim() || null,
-          }),
-        }
-      );
-
-      const outputAnalysis = analyzeRawOutput(res.raw_output || "");
-      const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
-
-      let userFriendlyError: string | null = null;
-      if (!res.success) {
-        const backendMessageSource = res.message || res.raw_output || "";
-        userFriendlyError = getSimpleErrorMessage(
-          { message: backendMessageSource },
-          "Template test failed."
-        );
-      }
-
-      setTestState({
-        loading: false,
-        success: res.success && !hasTemplateErrors,
-        error: res.success ? null : userFriendlyError,
-        warningMessage:
-          res.success && hasTemplateErrors
-            ? "Template tested, but invalid or unsupported commands were detected in device output."
-            : null,
-        protocol_used: res.protocol_used,
-        raw_output: res.raw_output,
-        rendered_commands: res.rendered_commands,
-        message:
-          res.success && !hasTemplateErrors
-            ? res.message || "Template test executed successfully."
-            : null,
-        executionHasTemplateErrors: hasTemplateErrors,
-        errorBlocks: outputAnalysis.errorBlocks,
-      });
-
-      if (res.success && !hasTemplateErrors) {
-        const successMsg =
-          res.message && res.message.trim().length > 0
-            ? res.message
-            : "Template test executed successfully.";
-        toast.success(successMsg, { id: tid });
-      } else if (res.success && hasTemplateErrors) {
-        toast.warning(
-          "Template contains invalid or unsupported commands. Saving is disabled until the template is fixed.",
-          { id: tid }
-        );
-      } else {
-        toast.error(userFriendlyError || "Template test failed.", { id: tid });
-      }
-    } catch (err: any) {
-      const simpleMsg = getSimpleErrorMessage(err, "Unable to test template.");
-      setTestState({
-        loading: false,
+        ...s,
+        loading: true,
         success: false,
-        error: simpleMsg,
+        error: null,
         warningMessage: null,
-        protocol_used: null,
-        raw_output: "",
-        rendered_commands: [],
         message: null,
         executionHasTemplateErrors: false,
         errorBlocks: [],
-      });
-      toast.error(simpleMsg, { id: tid });
+    }));
+
+    const tid = toast.loading("Testing template on ISAM...");
+
+    try {
+        const res = await authFetch<TemplateTestResponse>(
+            `${ISAM_BASE_URL}/api/v1/isam/wan-templates/test`,
+            accessToken,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    instance_id: Number(testInstanceId),
+                    commands_template: commandsTemplate,
+                    selected_port: testPort.trim() || null,
+                    variables: variableValues,
+                    template_id: editingTemplate?.id ?? null,
+                    template_name: finalName || name.trim() || null,
+                }),
+            }
+        );
+
+        const outputAnalysis = analyzeRawOutput(res.raw_output || "");
+        const hasTemplateErrors = outputAnalysis.hasTemplateErrors;
+
+        let displayMessage = "";
+        let toastMessage = "";
+        let isSuccess = res.success && !hasTemplateErrors;
+        let isWarning = res.success && hasTemplateErrors;
+
+        if (isSuccess) {
+            displayMessage = "Template executed successfully on the ISAM.";
+            toastMessage = "Test completed successfully.";
+        } 
+        else if (isWarning) {
+            displayMessage = "Template tested but contains invalid or unsupported commands. Saving is disabled.";
+            toastMessage = "Template contains invalid commands. Saving is disabled until fixed.";
+        } 
+        else {
+            const backendMessage = res.message || res.raw_output || "";
+            displayMessage = getSimpleErrorMessage(
+                { message: backendMessage },
+                "Template test failed."
+            );
+            toastMessage = displayMessage;
+        }
+
+        setTestState({
+            loading: false,
+            success: isSuccess,
+            error: !isSuccess && !isWarning ? displayMessage : null,
+            warningMessage: isWarning ? displayMessage : null,
+            message: isSuccess ? displayMessage : null,
+            protocol_used: res.protocol_used,
+            raw_output: res.raw_output || "",
+            rendered_commands: res.rendered_commands || [],
+            executionHasTemplateErrors: hasTemplateErrors,
+            errorBlocks: outputAnalysis.errorBlocks,
+        });
+
+        // Toast final
+        if (isSuccess) {
+            toast.success(toastMessage, { id: tid });
+        } else if (isWarning) {
+            toast.warning(toastMessage, { id: tid });
+        } else {
+            toast.error(toastMessage, { id: tid });
+        }
+    } catch (err: any) {
+        const simpleMsg = getSimpleErrorMessage(err, "Unable to test template.");
+
+        setTestState({
+            loading: false,
+            success: false,
+            error: simpleMsg,
+            warningMessage: null,
+            protocol_used: null,
+            raw_output: "",
+            rendered_commands: [],
+            message: null,
+            executionHasTemplateErrors: false,
+            errorBlocks: [],
+        });
+
+        toast.error(simpleMsg, { id: tid });
     }
-  }
+}
 
   async function handleSaveTemplate(e: React.FormEvent) {
     e.preventDefault();

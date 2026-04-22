@@ -416,7 +416,7 @@ export default function CiscoSwitchManagementSection() {
                     e.stopPropagation();
                     handleTestConnection(sw.id);
                   }}
-                  className="flex items-center gap-1 text-xs text-red-600 hover:text-red-800 shrink-0 font-medium"
+                  className="flex items-center gap-1 text-xs text-purple-600 hover:text-purple-800 shrink-0 font-medium"
                 >
                   <Activity size={14} />
                   Test

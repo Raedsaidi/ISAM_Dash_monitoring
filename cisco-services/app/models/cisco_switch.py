@@ -149,3 +149,42 @@ class CiscoVlanSnapshot(Base):
     ports = Column(Text, nullable=True)  # JSON array of port names
     last_seen_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class CiscoSavedConfig(Base):
+    """Saved configuration templates / functions for Cisco switches."""
+    __tablename__ = "cisco_saved_configs"
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    name        = Column(String(255), nullable=False, unique=True, index=True)
+    description = Column(String(500), nullable=True, default="")
+    # The raw config template — args are written as {{arg_name}}
+    template    = Column(Text, nullable=False)
+    # JSON array of arg definitions: [{"name": "vlan_id", "label": "VLAN ID", "placeholder": "e.g. 10"}]
+    args        = Column(Text, nullable=False, default="[]")
+    created_by  = Column(String(255), nullable=True)
+    created_at  = Column(DateTime, default=datetime.utcnow)
+    updated_at  = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class CiscoPortConfigHistory(Base):
+    """
+    Stores a snapshot of the running port config captured *before* each
+    configuration change is applied.  This lets operators review what the
+    port looked like before the last modification.
+    """
+    __tablename__ = "cisco_port_config_history"
+    __table_args__ = (
+        Index("ix_config_history_switch_port", "switch_id", "port_label"),
+    )
+
+    id          = Column(Integer, primary_key=True, autoincrement=True)
+    switch_id   = Column(Integer, nullable=False, index=True)
+    port_label  = Column(String(100), nullable=False)
+    # The full running-config text captured before the change
+    config_text = Column(Text, nullable=False)
+    # Who triggered the change (username from JWT, or None if unknown)
+    saved_by    = Column(String(255), nullable=True)
+    saved_at    = Column(DateTime, default=datetime.utcnow, nullable=False)

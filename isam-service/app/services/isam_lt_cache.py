@@ -120,7 +120,7 @@ def _replace_lt_ports_for_slot(
 def refresh_lt_slots_snapshot(
     db: Session,
     instance: ISAMInstance,
-    timeout: int = 30,
+    timeout: int = 45,
 ) -> None:
     """
     Refresh complet via UNE SEULE session Telnet persistante.
@@ -138,9 +138,9 @@ def refresh_lt_slots_snapshot(
         success, raw_slots, slots_with_ports, msg = (
             service.refresh_all_single_session(
                 timeout=timeout,
-                idle_timeout=3.0,
-                post_send_delay=1.0,
-                inter_command_delay=1.0,
+                idle_timeout=20.0,
+                post_send_delay=1.5,
+                inter_command_delay=1.5,
             )
         )
 

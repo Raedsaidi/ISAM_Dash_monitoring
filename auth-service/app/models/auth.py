@@ -220,6 +220,7 @@ class UserCreateSelf(UserInputBase):
 class UserPortCreate(StrictInputModel):
     label: Optional[PortLabelStr] = None
     value: PortValueStr
+    shared: bool = False
 
     @field_validator("label", mode="before")
     @classmethod
@@ -263,6 +264,7 @@ class UserPortRead(ORMReadModel):
     id: int
     label: Optional[str] = None
     value: str
+    shared: bool = False
 
 
 # =========================================================
@@ -434,3 +436,9 @@ class ChangeRoleRequest(StrictInputModel):
 class FilteredMyPortsResponse(StrictInputModel):
     wan_model: Optional[str] = None
     ports: list[UserPortRead] = Field(default_factory=list)
+
+
+
+class PortAccessResponse(BaseModel):
+    allowed: bool
+    reason: str | None = None

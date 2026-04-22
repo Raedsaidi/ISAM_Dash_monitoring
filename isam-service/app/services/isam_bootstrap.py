@@ -11,7 +11,7 @@ from app.services.isam_lt_cache import refresh_lt_slots_snapshot
 
 logger = logging.getLogger(__name__)
 
-LT_REFRESH_TIMEOUT_SECONDS = 30
+LT_REFRESH_TIMEOUT_SECONDS = 90
 
 
 def bootstrap_new_isam_instance(instance_id: int) -> None:

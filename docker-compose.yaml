@@ -103,6 +103,24 @@ services:
         - isam-service
         - cisco-services
       restart: on-failure
+  # ---------- Backup service (NEW) ----------
+  db-backup:
+      build:
+        context: ./backup
+      container_name: db-backup
+      environment:
+        DB_HOST: db
+        DB_PORT: "3306"
+        DB_USER: pfe_user
+        DB_PASSWORD: pfe_pass
+        DB_NAME: isam_dash
+        RETENTION_DAYS: "30"     
+      volumes:
+        - /opt/ISAM-CISCO-BACKUP:/backups
+      depends_on:
+        db:
+          condition: service_healthy
+      restart: unless-stopped
 
 volumes:
   db_data:

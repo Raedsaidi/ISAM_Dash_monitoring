@@ -19,6 +19,7 @@ from app.core.security import (
     revoke_refresh_token,
 )
 from app.models.auth import (
+    PortAccessResponse,
     Token,
     UserCreateSelf,
     AdminUserCreate,
@@ -331,6 +332,7 @@ def create_user_admin(
             user_id=user.id,
             label=p.label.strip() if p.label else None,
             value=p.value.strip(),
+            shared=p.shared,
         )
         db.add(up)
         created_ports.append(up)
@@ -504,6 +506,7 @@ def update_user_admin(
             up = UserPort(
                 label=p.label.strip() if p.label else None,
                 value=p.value.strip(),
+                shared=p.shared,
             )
             user.ports.append(up)   # via relation ORM
             created_ports.append(up)
@@ -566,3 +569,30 @@ def delete_user(
     db.delete(user)
     db.commit()
     return
+
+
+
+@router.get("/ports/access", response_model=PortAccessResponse)
+def can_current_user_use_port(
+    port_value: str = Query(..., min_length=1, max_length=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    port_value = port_value.strip()
+
+    port = (
+        db.query(UserPort)
+        .filter(UserPort.value == port_value)
+        .first()
+    )
+
+    if not port:
+        return PortAccessResponse(allowed=False, reason="Port not found in user_ports.")
+
+    if port.user_id == current_user.id:
+        return PortAccessResponse(allowed=True, reason="Owned port.")
+
+    if port.shared:
+        return PortAccessResponse(allowed=True, reason="Shared port.")
+
+    return PortAccessResponse(allowed=False, reason="Port is not shared.")

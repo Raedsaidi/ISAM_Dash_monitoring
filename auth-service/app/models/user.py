@@ -4,7 +4,7 @@ from datetime import datetime , timezone
 from enum import Enum as PyEnum
 from typing import List, Optional
 
-from sqlalchemy import Integer, String, Boolean, DateTime, ForeignKey
+from sqlalchemy import Integer, String, Boolean, DateTime, ForeignKey ,false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.db import Base
@@ -68,5 +68,12 @@ class UserPort(Base):
     )
     label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     value: Mapped[str] = mapped_column(String(100), nullable=False)
+
+    shared: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+    )
 
     user: Mapped["User"] = relationship("User", back_populates="ports")
