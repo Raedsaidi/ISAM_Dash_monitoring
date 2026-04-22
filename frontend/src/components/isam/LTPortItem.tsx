@@ -1,25 +1,44 @@
-import React, { useEffect, useState } from 'react';
-import {
-  Lock,
-  Zap,
-  Cable,
-  Radio,
-  Wifi,
-  CheckCircle2,
-  Circle,
-} from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Lock, Zap, Cable, Radio, Signal, Wifi, X } from 'lucide-react';
 import { cn } from '../../utils/cn';
 import PortLockButton from './PortLockButton';
+import PortConfigDetailModal from './PortConfigDetailModal';
 
-const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
+type PortConfigStatus = 'UNKNOWN' | 'NOT_CONFIGURED' | 'VIA_APP' | 'MANUAL' | 'DRIFTED';
 
-interface TemplateStatus {
-  configured: boolean;
+interface PortConfigSummary {
+  status: PortConfigStatus;
+  last_device_check_at?: string | null;
   last_template_name?: string | null;
-  last_applied_by?: string | null;
   last_project?: string | null;
+  last_applied_by?: string | null;
   last_applied_at?: string | null;
   apply_count?: number;
+  device_vlan_count?: number;
+  expected_vlan_count?: number;
+  ont_sernum?: string | null;
+}
+
+// ✅ Interface SFP inline — pas de fichier séparé
+interface SFPInfo {
+  sfp_id: string;
+  slot_short_id: string;
+  sfp_index: number;
+  port_id: string;
+  status: string;
+  is_empty: boolean;
+  is_active: boolean;
+  is_copper: boolean;
+  part_number: string | null;
+  wavelength: string | null;
+  fiber_mode: string | null;
+  standard: string | null;
+  speed: string | null;
+  direction: string | null;
+  media: string | null;
+  tx_wavelength: string | null;
+  rx_wavelength: string | null;
+  last_refresh_at: string | null;
 }
 
 interface LTPortItemProps {
@@ -29,21 +48,8 @@ interface LTPortItemProps {
   accessToken: string | null;
   isAdmin: boolean;
   onLockToggle: () => void;
-  templateStatus?: TemplateStatus | null;
-}
-
-function isEmpty(val: any): boolean {
-  if (val === null || val === undefined || val === '') return true;
-  if (typeof val === 'number' && val === 0) return true;
-  if (typeof val === 'string' && val.trim() === '-') return true;
-  return false;
-}
-
-function formatMtu(cfg: any, oper: any): string | null {
-  if (isEmpty(cfg) && isEmpty(oper)) return null;
-  const c = isEmpty(cfg) ? '—' : cfg;
-  const o = isEmpty(oper) ? '—' : oper;
-  return `${c}/${o}`;
+  // ✅ SFP passé depuis le parent — pas de fetch ici
+  sfp?: SFPInfo | null;
 }
 
 function formatRelativeTime(dateStr: string): string {
@@ -61,6 +67,228 @@ function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
+function normalizeConfig(cfg: any): PortConfigSummary | null {
+  if (!cfg) return null;
+  if (typeof cfg === 'string') {
+    try {
+      return JSON.parse(cfg);
+    } catch {
+      return null;
+    }
+  }
+  return cfg as PortConfigSummary;
+}
+
+// ── Badges existants ─────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status?: string }) {
+  const s = (status || 'UNKNOWN').toUpperCase();
+  const cls =
+    s === 'VIA_APP'
+      ? 'bg-green-50 border-green-200 text-green-700'
+      : s === 'MANUAL'
+        ? 'bg-blue-50 border-blue-200 text-blue-700'
+        : s === 'DRIFTED'
+          ? 'bg-red-50 border-red-200 text-red-700'
+          : s === 'NOT_CONFIGURED'
+            ? 'bg-gray-50 border-gray-200 text-gray-700'
+            : 'bg-yellow-50 border-yellow-200 text-yellow-800';
+
+  return (
+    <span className={cn('px-2 py-1 rounded border text-xs font-medium', cls)}>{s}</span>
+  );
+}
+
+function StateBadge({ label, up, value }: { label: string; up: boolean; value: string }) {
+  return (
+    <div
+      className={cn(
+        'inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs',
+        up ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-600',
+      )}
+    >
+      <div className={cn('w-1.5 h-1.5 rounded-full', up ? 'bg-green-500' : 'bg-gray-400')} />
+      <span>
+        {label}: {value}
+      </span>
+    </div>
+  );
+}
+
+// ── ONT badge (empty/plugged only) ───────────────────────────────────────────
+
+function ONTPlugBadge({ plugged }: { plugged: boolean }) {
+  if (!plugged) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-gray-100 border border-gray-200 text-gray-400 text-xs">
+        <Signal size={10} />
+        empty
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-green-50 border border-green-200 text-green-700 text-xs font-medium">
+      <Signal size={10} />
+      plugged
+    </span>
+  );
+}
+
+// ── SFP badge inline ─────────────────────────────────────────────────────────
+
+function SFPBadge({
+  sfp,
+  expanded,
+  onClick,
+}: {
+  sfp: SFPInfo;
+  expanded: boolean;
+  onClick?: () => void;
+}) {
+  // Port vide
+  if (sfp.is_empty) {
+    return (
+      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-gray-100 border border-gray-200 text-gray-400 text-xs">
+        <Signal size={10} />
+        empty
+      </span>
+    );
+  }
+
+  // Cuivre
+  if (sfp.is_copper) {
+    return (
+      <button
+        onClick={onClick}
+        className={cn(
+          'inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium transition-colors',
+          'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 cursor-pointer',
+          expanded && 'ring-1 ring-amber-400',
+        )}
+      >
+        <Cable size={10} />
+        {sfp.speed ?? '1 Gbps'} · Copper
+      </button>
+    );
+  }
+
+  // Fibre active / GPON
+  if (sfp.is_active) {
+    const dir =
+      sfp.direction === 'downstream' ? '↓' : sfp.direction === 'upstream' ? '↑' : '↕';
+
+    const isGpon = (sfp.standard || '').toLowerCase().includes('bplusc');
+    const mediaLabel = isGpon ? 'GPON' : 'Fiber';
+
+    const colorCls = isGpon
+      ? 'bg-purple-50 border-purple-200 text-purple-700 hover:bg-purple-100'
+      : 'bg-cyan-50 border-cyan-200 text-cyan-700 hover:bg-cyan-100';
+
+    const ringCls = expanded ? (isGpon ? 'ring-1 ring-purple-400' : 'ring-1 ring-cyan-400') : '';
+
+    const waveCls = isGpon ? 'text-purple-500' : 'text-cyan-500';
+
+    return (
+      <button
+        onClick={onClick}
+        className={cn(
+          'inline-flex items-center gap-1 px-2 py-0.5 rounded border text-xs font-medium transition-colors cursor-pointer',
+          colorCls,
+          ringCls,
+        )}
+      >
+        <Wifi size={10} />
+        {sfp.speed ?? ''} {dir} {mediaLabel}
+        {sfp.wavelength && (
+          <span className={cn('ml-1 font-mono text-[10px]', waveCls)}>{sfp.wavelength}</span>
+        )}
+      </button>
+    );
+  }
+
+  // Erreur
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-50 border border-red-200 text-red-600 text-xs">
+      <Signal size={10} />
+      {sfp.status}
+    </span>
+  );
+}
+
+// ── Panneau SFP détaillé collapse ────────────────────────────────────────────
+
+function SFPPanel({ sfp, onClose }: { sfp: SFPInfo; onClose: () => void }) {
+  if (sfp.is_empty) return null;
+
+  const isCopper = sfp.is_copper;
+  const isGpon = (sfp.standard || '').toLowerCase().includes('bplusc');
+
+  const panelCls = isCopper
+    ? 'bg-amber-50 border-amber-100'
+    : isGpon
+      ? 'bg-purple-50 border-purple-100'
+      : 'bg-cyan-50 border-cyan-100';
+
+  const headerCls = isCopper ? 'text-amber-700' : isGpon ? 'text-purple-700' : 'text-cyan-700';
+
+  // (optionnel mais utile) : afficher GPON dans le panel aussi
+  const mediaValue = isGpon ? 'GPON' : sfp.media;
+
+  const rows: { label: string; value: string | null; mono?: boolean }[] = [
+    { label: 'SFP ID', value: sfp.sfp_id, mono: true },
+    { label: 'Status', value: sfp.status },
+    { label: 'Part #', value: sfp.part_number, mono: true },
+    { label: 'Standard', value: sfp.standard, mono: true },
+    { label: 'Speed', value: sfp.speed },
+    { label: 'Direction', value: sfp.direction },
+    { label: 'Media', value: mediaValue },
+    { label: 'Wavelength', value: sfp.wavelength, mono: true },
+    { label: 'Fiber mode', value: sfp.fiber_mode },
+    { label: 'TX λ', value: sfp.tx_wavelength, mono: true },
+    { label: 'RX λ', value: sfp.rx_wavelength, mono: true },
+    {
+      label: 'Refreshed',
+      value: sfp.last_refresh_at ? formatRelativeTime(sfp.last_refresh_at) : null,
+    },
+  ].filter(
+    (r): r is { label: string; value: string; mono?: boolean } =>
+      r.value !== null && r.value !== undefined && r.value !== '',
+  );
+
+  return (
+    <div className={cn('mt-3 px-3 py-2.5 rounded-lg border', panelCls)}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <span className={cn('text-xs font-semibold font-mono', headerCls)}>{sfp.sfp_id}</span>
+        <button
+          onClick={onClose}
+          className="p-1 rounded hover:bg-white/60 text-gray-400 hover:text-gray-600 transition-colors"
+        >
+          <X size={12} />
+        </button>
+      </div>
+
+      {/* Grille infos */}
+      <div className="grid grid-cols-2 gap-x-6 gap-y-0.5">
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-baseline gap-1 min-w-0">
+            <span className="text-[11px] text-gray-400 shrink-0 w-20">{r.label}:</span>
+            <span
+              className={cn('text-[11px] text-gray-700 truncate', r.mono && 'font-mono')}
+              title={r.value ?? undefined}
+            >
+              {r.value}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Composant principal ──────────────────────────────────────────────────────
+
 export default function LTPortItem({
   port,
   isLocked,
@@ -68,287 +296,148 @@ export default function LTPortItem({
   accessToken,
   isAdmin,
   onLockToggle,
-  templateStatus: externalStatus,
+  sfp,
 }: LTPortItemProps) {
-  const [status, setStatus] = useState<TemplateStatus | null>(
-    externalStatus ?? null,
-  );
-  const [statusLoading, setStatusLoading] = useState(false);
-
-  useEffect(() => {
-    if (externalStatus !== undefined) {
-      setStatus(externalStatus);
-      return;
-    }
-
-    if (!instanceId || !port.port_id || !accessToken) return;
-
-    let cancelled = false;
-    setStatusLoading(true);
-
-    fetch(
-      `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/ports/${port.port_id}/template-status`,
-      {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      },
-    )
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!cancelled && data) setStatus(data);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setStatusLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [instanceId, port.port_id, accessToken, externalStatus]);
+  const cfg = useMemo(() => normalizeConfig(port?.config), [port?.config]);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [sfpExpanded, setSfpExpanded] = useState(false);
 
   function getPortTypeIcon() {
     const pt = (port.port_type || '').toLowerCase();
-    if (pt.includes('xdsl')) return <Zap size={14} />;
-    if (pt.includes('ethernet')) return <Cable size={14} />;
-    if (pt.includes('pon') || pt.includes('ont')) return <Radio size={14} />;
-    return <Wifi size={14} />;
+    if (pt.includes('xdsl')) return <Zap size={16} className="text-blue-600" />;
+    if (pt.includes('ethernet')) return <Cable size={16} className="text-green-600" />;
+    if (pt.includes('pon') || pt.includes('ont'))
+      return <Radio size={16} className="text-purple-600" />;
+    return <Cable size={16} className="text-gray-600" />;
   }
 
-  function getTypeStyle() {
-    const pt = (port.port_type || '').toLowerCase();
-
-    if (pt.includes('xdsl')) {
-      return {
-        bg: 'bg-amber-50',
-        border: 'border-amber-200',
-        text: 'text-amber-700',
-        badge: 'bg-amber-50 text-amber-800 border-amber-200',
-      };
-    }
-
-    if (pt.includes('ethernet')) {
-      return {
-        bg: 'bg-sky-50',
-        border: 'border-sky-200',
-        text: 'text-sky-700',
-        badge: 'bg-sky-50 text-sky-800 border-sky-200',
-      };
-    }
-
-    if (pt.includes('pon') || pt.includes('ont')) {
-      return {
-        bg: 'bg-violet-50',
-        border: 'border-violet-200',
-        text: 'text-violet-700',
-        badge: 'bg-violet-50 text-violet-800 border-violet-200',
-      };
-    }
-
-    return {
-      bg: 'bg-slate-50',
-      border: 'border-slate-200',
-      text: 'text-slate-600',
-      badge: 'bg-slate-50 text-slate-700 border-slate-200',
-    };
-  }
-
-  const style = getTypeStyle();
-  const adminUp = ['up'].includes((port.admin_state || '').toLowerCase());
-  const portUp = ['up'].includes((port.port_state || '').toLowerCase());
-
-  const mtuDisplay = formatMtu(port.cfg_mtu, port.oper_mtu);
-  const hasMode = !isEmpty(port.mode);
-  const hasEncap = !isEmpty(port.encap);
-  const hasDetails = mtuDisplay || hasMode || hasEncap;
-
-  const isConfigured = status?.configured === true;
+  const adminUp = (port.admin_state || '').toLowerCase() === 'up';
+  const portUp = (port.port_state || '').toLowerCase() === 'up';
+  const isOnt = (port.port_type || '').toLowerCase() === 'ont';
+  const sfpNotEmpty = !!sfp && !sfp.is_empty;
 
   return (
     <div
       className={cn(
-        'group relative rounded-xl border transition-all duration-200 shadow-[0_1px_3px_rgba(15,23,42,0.04)]',
-        isLocked
-          ? 'border-orange-200 bg-gradient-to-r from-orange-50 via-orange-50/60 to-white'
-          : 'border-slate-200/80 bg-white hover:border-slate-300 hover:shadow-[0_8px_20px_rgba(15,23,42,0.06)]',
+        'rounded-lg border p-3 transition-all',
+        isLocked ? 'border-orange-200 bg-orange-50' : 'border-gray-200 bg-white hover:border-gray-300',
       )}
     >
-      {isLocked && (
-        <div className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full bg-gradient-to-b from-orange-300 to-orange-500" />
-      )}
-
-      <div className="px-3.5 py-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3 flex-1 min-w-0">
-            <div
-              className={cn(
-                'flex items-center justify-center w-8 h-8 rounded-lg border shadow-sm shrink-0 ring-1 ring-white',
-                style.bg,
-                style.border,
-                style.text,
-              )}
-            >
-              {getPortTypeIcon()}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono font-semibold text-slate-900 text-[13px] leading-none tracking-tight">
-                  {port.port_id}
-                </span>
-
-                <span
-                  className={cn(
-                    'inline-flex px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-[0.14em] border leading-none',
-                    style.badge,
-                  )}
-                >
-                  {port.port_type}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-                <StateDot label="Admin" up={adminUp} value={port.admin_state} />
-                <StateDot label="Port" up={portUp} value={port.port_state} />
-
-                {hasDetails && (
-                  <>
-                    <div className="hidden sm:flex items-center gap-1.5 flex-wrap">
-                      {mtuDisplay && <MicroChip label="MTU" value={mtuDisplay} />}
-                      {hasMode && <MicroChip label="Mode" value={port.mode} />}
-                      {hasEncap && <MicroChip label="Encap" value={port.encap} />}
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
+      {/* ── Ligne principale ──────────────────────────────────────── */}
+      <div className="flex items-start justify-between gap-3">
+        {/* Gauche */}
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <div className="p-2 rounded-lg bg-gray-100 border border-gray-200 shrink-0">
+            {getPortTypeIcon()}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {isLocked && (
-              <div className="inline-flex items-center gap-1 px-2 py-1 bg-orange-50 border border-orange-200 rounded-full text-[9px] font-bold text-orange-700 uppercase tracking-[0.12em] shadow-sm">
-                <Lock size={10} />
-                Locked
-              </div>
-            )}
+          <div className="min-w-0 flex-1">
+            {/* Badges ligne 1 */}
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <span className="font-mono font-medium text-gray-900 text-sm">{port.port_id}</span>
 
-            {isAdmin && (
-              <PortLockButton
-                portId={port.port_id}
-                isLocked={isLocked}
-                instanceId={instanceId}
-                accessToken={accessToken}
-                onLockToggle={onLockToggle}
-              />
-            )}
+              <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
+                {port.port_type}
+              </span>
+
+              <StatusBadge status={cfg?.status} />
+
+              {/* ONT sernum */}
+              {isOnt && cfg?.ont_sernum && (
+                <span className="text-xs px-2 py-0.5 rounded bg-purple-50 border border-purple-200 text-purple-700 font-mono">
+                  {cfg.ont_sernum}
+                </span>
+              )}
+
+              {/* ✅ ONT: juste empty/plugged | PON/Eth/...: badge complet */}
+              {isOnt ? (
+                <ONTPlugBadge plugged={!!sfp && !sfp.is_empty} />
+              ) : sfp ? (
+                <SFPBadge
+                  sfp={sfp}
+                  expanded={sfpExpanded}
+                  onClick={sfpNotEmpty ? () => setSfpExpanded((v) => !v) : undefined}
+                />
+              ) : null}
+            </div>
+
+            {/* Ligne 2 : états */}
+            <div className="flex items-center gap-2 flex-wrap text-xs text-gray-600">
+              <StateBadge label="Admin" up={adminUp} value={port.admin_state} />
+              <StateBadge label="Port" up={portUp} value={port.port_state} />
+
+              {cfg?.last_device_check_at && (
+                <span className="text-gray-400">· synced {formatRelativeTime(cfg.last_device_check_at)}</span>
+              )}
+
+              {cfg?.device_vlan_count !== undefined && (
+                <span className="text-gray-400">· VLAN {cfg.device_vlan_count}</span>
+              )}
+            </div>
           </div>
         </div>
 
-        {!statusLoading && status && (
-          <div className="mt-2.5 pt-2 border-t border-slate-100">
-            {isConfigured ? (
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <div className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded-full text-[9px] font-semibold text-emerald-700 shadow-sm">
-                  <CheckCircle2 size={10} className="shrink-0" />
-                  Configured
-                </div>
+        {/* Droite : boutons */}
+        <div className="flex items-center gap-2 shrink-0">
+          {isLocked && (
+            <div className="inline-flex items-center gap-1 px-2 py-1 bg-orange-100 border border-orange-200 rounded text-xs font-medium text-orange-700">
+              <Lock size={12} />
+              Locked
+            </div>
+          )}
 
-                {status.last_template_name && (
-                  <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-[9px] font-mono font-semibold text-slate-700">
-                    {status.last_template_name}
-                  </span>
-                )}
+          <button
+            onClick={() => setDetailOpen(true)}
+            className="px-3 py-1.5 text-xs border border-gray-300 rounded-lg hover:bg-gray-50"
+            disabled={!accessToken}
+            title={!accessToken ? 'Login required' : 'Open config detail'}
+          >
+            Details
+          </button>
 
-                {status.last_project && (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-violet-50 border border-violet-200 text-[9px] font-semibold text-violet-700">
-                    {status.last_project}
-                  </span>
-                )}
-
-                {status.last_applied_by && (
-                  <span className="text-[9px] text-slate-400">
-                    by{' '}
-                    <span className="font-semibold text-slate-500">
-                      {status.last_applied_by}
-                    </span>
-                  </span>
-                )}
-
-                {status.last_applied_at && (
-                  <span className="text-[9px] text-slate-300">
-                    · {formatRelativeTime(status.last_applied_at)}
-                  </span>
-                )}
-
-                {(status.apply_count ?? 0) > 1 && (
-                  <span className="text-[9px] text-slate-300">
-                    · {status.apply_count}× applied
-                  </span>
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
-                <Circle size={8} className="text-slate-300 shrink-0" />
-                <span>Not configured</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {statusLoading && (
-          <div className="mt-2.5 pt-2 border-t border-slate-100">
-            <div className="h-3 w-32 bg-slate-100 rounded-full animate-pulse" />
-          </div>
-        )}
-
-        {hasDetails && (
-          <div className="sm:hidden mt-2.5 pt-2 border-t border-slate-100 flex items-center gap-1.5 flex-wrap">
-            {mtuDisplay && <MicroChip label="MTU" value={mtuDisplay} />}
-            {hasMode && <MicroChip label="Mode" value={port.mode} />}
-            {hasEncap && <MicroChip label="Encap" value={port.encap} />}
-          </div>
-        )}
+          {isAdmin && (
+            <PortLockButton
+              portId={port.port_id}
+              isLocked={isLocked}
+              instanceId={instanceId}
+              accessToken={accessToken}
+              onLockToggle={onLockToggle}
+            />
+          )}
+        </div>
       </div>
-    </div>
-  );
-}
 
-function StateDot({
-  label,
-  up,
-  value,
-}: {
-  label: string;
-  up: boolean;
-  value: string;
-}) {
-  return (
-    <div className="inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded-full bg-slate-50 border border-slate-100">
-      <div
-        className={cn(
-          'w-1.5 h-1.5 rounded-full shrink-0',
-          up ? 'bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.12)]' : 'bg-slate-300',
-        )}
+      {/* ✅ Panel SFP : jamais sur ONT */}
+      {sfpExpanded && sfp && sfpNotEmpty && !isOnt && (
+        <SFPPanel sfp={sfp} onClose={() => setSfpExpanded(false)} />
+      )}
+
+      {/* Template info */}
+      {cfg?.last_template_name && (
+        <div className="mt-3 pt-3 border-t border-gray-200 text-xs text-gray-600 flex flex-wrap gap-2">
+          <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700 font-mono">
+            {cfg.last_template_name}
+          </span>
+          {cfg.last_project && (
+            <span className="px-2 py-1 rounded bg-blue-50 border border-blue-200 text-blue-700 font-medium">
+              {cfg.last_project}
+            </span>
+          )}
+          {cfg.last_applied_by && <span className="text-gray-500">by {cfg.last_applied_by}</span>}
+          {cfg.last_applied_at && (
+            <span className="text-gray-400">· {formatRelativeTime(cfg.last_applied_at)}</span>
+          )}
+        </div>
+      )}
+
+      <PortConfigDetailModal
+        open={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        instanceId={instanceId}
+        portId={port.port_id}
+        accessToken={accessToken}
+        ontSernum={cfg?.ont_sernum || null}
       />
-      <span className="text-[10px] text-slate-400">{label}</span>
-      <span
-        className={cn(
-          'text-[10px] font-semibold uppercase',
-          up ? 'text-emerald-700' : 'text-slate-500',
-        )}
-      >
-        {value}
-      </span>
     </div>
-  );
-}
-
-function MicroChip({ label, value }: { label: string; value: string }) {
-  return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-[9px] shadow-sm">
-      <span className="font-semibold text-slate-400 uppercase tracking-wide">
-        {label}
-      </span>
-      <span className="font-mono font-semibold text-slate-700">{value}</span>
-    </span>
   );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from sqlalchemy.dialects.mysql import DATETIME
 
 from sqlalchemy import Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -58,20 +59,11 @@ class ISAMLTSlot(Base):
     # Port type (xdsl-line, ethernet-line, ont, etc)
     port_type: Mapped[str] = mapped_column(String(50), nullable=False)
 
-    # Timestamp du dernier snapshot réussi
-    last_success_at: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True
-    )
+    last_success_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=6), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DATETIME(fsp=6), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        nullable=False,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-    )
+
 
     # Relationship
     instance = relationship("ISAMInstance", back_populates="lt_slots")

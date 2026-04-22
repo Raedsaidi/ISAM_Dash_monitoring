@@ -25,6 +25,7 @@ import CiscoSwitchManagementSection from "./components/cisco/CiscoSwitchManageme
 import CiscoPortManagementSection from "./components/cisco/CiscoPortManagementSection";
 import CiscoVlanManagementSection from "./components/cisco/CiscoVlanManagementSection";
 import MyTemplatesSection from "./components/isam/MyTemplatesSection";
+import CustomFunctionsSection from "./components/isam/CustomFunctionsSection";  // ← NOUVEAU
 import ProductSelection from "./components/ProductSelection";
 import LoginForm from "./components/auth/LoginForm";
 import RegisterSelfForm from "./components/auth/RegisterSelfForm";
@@ -34,48 +35,52 @@ import { Toaster } from "sonner";
 /* ------------ ISAM metadata ------------ */
 
 const isamSectionMeta: Record<NavSection, { title: string; subtitle: string }> =
-  {
-    overview: {
-      title: "Dashboard Overview",
-      subtitle: "System health, metrics, and real-time monitoring",
-    },
-    junctions: {
-      title: "ISAM Management",
-      subtitle: "ISAM configuration and management",
-    },
-    "audit-logs": {
-      title: "Audit Logs",
-      subtitle: "Activity tracking and security event monitoring",
-    },
-    "user-management": {
-      title: "User Management",
-      subtitle: "Create and manage users and roles",
-    },
-    "wan-templates": {
-      title: "WAN Templates",
-      subtitle: "Configure WAN connection templates",
-    },
-    "my-templates": {
-      title: "My Templates",
-      subtitle: "Manage your personal WAN templates",
-    },
-    "switch-management": {
-      title: "Switch Management",
-      subtitle: "Manage network switches",
-    },
-    "port-management": {
-      title: "Port Management",
-      subtitle: "View and control switch ports",
-    },
-    "vlan-management": {
-      title: "VLAN Management",
-      subtitle: "View and manage VLANs",
-    },
-    "cisco-configs": {
-      title: "Cisco Configs Management",
-      subtitle: "Manage and configure Cisco device settings",
-    },
-  };
+{
+  overview: {
+    title: "Dashboard Overview",
+    subtitle: "System health, metrics, and real-time monitoring",
+  },
+  junctions: {
+    title: "ISAM Management",
+    subtitle: "ISAM configuration and management",
+  },
+  "audit-logs": {
+    title: "Audit Logs",
+    subtitle: "Activity tracking and security event monitoring",
+  },
+  "user-management": {
+    title: "User Management",
+    subtitle: "Create and manage users and roles",
+  },
+  "wan-templates": {
+    title: "WAN Templates",
+    subtitle: "Configure WAN connection templates",
+  },
+  "my-templates": {
+    title: "My Templates",
+    subtitle: "Manage your personal WAN templates",
+  },
+  "switch-management": {
+    title: "Switch Management",
+    subtitle: "Manage network switches",
+  },
+  "port-management": {
+    title: "Port Management",
+    subtitle: "View and control switch ports",
+  },
+  "vlan-management": {
+    title: "VLAN Management",
+    subtitle: "View and manage VLANs",
+  },
+  "cisco-configs": {
+    title: "Cisco Configs Management",
+    subtitle: "Manage and configure Cisco device settings",
+  },
+  "custom-functions": {
+    title: "Custom Functions",
+    subtitle: "Create and manage custom functions for ISAM",
+  },
+};
 
 /* ------------ Cisco metadata ------------ */
 
@@ -183,6 +188,10 @@ function App() {
    ISAM Layout
    ============================================================ */
 
+/* ============================================================
+   ISAM Layout
+   ============================================================ */
+
 function IsamLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const location = useLocation();
@@ -199,21 +208,40 @@ function IsamLayout() {
     "user-management": "user-management",
     "wan-templates": "wan-templates",
     "my-templates": "my-templates",
+    "custom-functions": "custom-functions",        // ← NOUVEAU
   };
 
   const activeSection: NavSection = pathToSection[sub] ?? "overview";
   const meta = isamSectionMeta[activeSection];
 
   const handleNavigate = (section: NavSection) => {
-    const sectionToPath: Partial<Record<NavSection, string>> = {
-      overview: "overview",
-      junctions: "junctions",
-      "audit-logs": "audit-logs",
-      "user-management": "user-management",
-      "wan-templates": "wan-templates",
-      "my-templates": "my-templates",
-    };
-    navigate(`/isam/${sectionToPath[section] ?? "overview"}`);
+    let subPath: string;
+    switch (section) {
+      case "overview":
+        subPath = "overview";
+        break;
+      case "junctions":
+        subPath = "junctions";
+        break;
+      case "audit-logs":
+        subPath = "audit-logs";
+        break;
+      case "user-management":
+        subPath = "user-management";
+        break;
+      case "wan-templates":
+        subPath = "wan-templates";
+        break;
+      case "my-templates":
+        subPath = "my-templates";
+        break;
+      case "custom-functions":                    // ← NOUVEAU
+        subPath = "custom-functions";
+        break;
+      default:
+        subPath = "overview";
+    }
+    navigate(`/isam/${subPath}`);
   };
 
   return (
@@ -239,6 +267,10 @@ function IsamLayout() {
             <Route path="user-management" element={<UserManagementSection />} />
             <Route path="wan-templates" element={<WanTemplatesSection />} />
             <Route path="my-templates" element={<MyTemplatesSection />} />
+
+            {/* Nouvelle page */}
+            <Route path="custom-functions" element={<CustomFunctionsSection />} />
+
             <Route index element={<Navigate to="overview" replace />} />
             <Route path="*" element={<Navigate to="overview" replace />} />
           </Routes>

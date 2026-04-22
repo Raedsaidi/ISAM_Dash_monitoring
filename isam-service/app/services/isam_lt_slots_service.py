@@ -840,7 +840,7 @@ class ISAMLTSlotsService:
 
     def refresh_all_single_session(
         self,
-        timeout: int = 30,
+        timeout: int = 40,
         idle_timeout: float = 3.0,
         post_send_delay: float = 1.0,
         inter_command_delay: float = 1.5,
@@ -926,8 +926,8 @@ class ISAMLTSlotsService:
 
             ok_p, raw_all_ports, err_p = session.execute(
                 cmd_all_ports,
-                idle_timeout=8.0,
-                post_send_delay=1.5,
+                idle_timeout=20.0,
+                post_send_delay=2.5,
             )
 
             if not ok_p:

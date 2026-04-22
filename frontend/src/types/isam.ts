@@ -54,5 +54,6 @@ export type NavSection =
   | "my-templates"
   | "switch-management"
   | "port-management"
-  | "vlan-management";
-  | "cisco-configs";
+  | "vlan-management"
+  | "cisco-configs"
+  | "custom-functions"; 

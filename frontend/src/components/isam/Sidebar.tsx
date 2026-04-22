@@ -11,6 +11,7 @@ import {
   User,
   Globe2,
   FolderOpen,
+  Terminal, 
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
@@ -51,10 +52,9 @@ export default function Sidebar({
     );
   }
 
-  navItems.push({
-    section: 'audit-logs',
-    label: 'Audit Logs',
-    icon: <ScrollText size={20} />,
+  navItems.push(
+      { section: 'custom-functions', label: 'Custom Functions', icon: <Terminal size={20} /> },
+      { section: 'audit-logs',label: 'Audit Logs',icon: <ScrollText size={20} />,
   });
 
   return (

@@ -37,6 +37,7 @@ interface UserPort {
   id: number;
   label?: string | null;
   value: string;
+  shared?: boolean;
 }
 
 interface UserAdminRead {
@@ -72,6 +73,7 @@ interface WanModelListResponse {
 interface PortForm {
   label: string;
   value: string;
+  shared: boolean;
 }
 
 interface UserFormState {
@@ -203,8 +205,9 @@ function normalizePortsForPayload(ports: PortForm[]): PortForm[] {
     .map((p) => ({
       label: (p.label ?? "").trim(),
       value: (p.value ?? "").trim(),
+      shared: !!p.shared,
     }))
-    .filter((p) => p.value.length > 0);
+    .filter((p) => p.value.length > 0); // on envoie uniquement les lignes qui ont un value
 }
 
 type BadgeProps = {
@@ -543,7 +546,7 @@ export default function UserManagementSection() {
     password: "",
     role: "USER",
     is_active: true,
-    ports: [{ label: "", value: "" }],
+    ports: [{ label: "", value: "", shared: false }],
   });
 
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -677,22 +680,29 @@ export default function UserManagementSection() {
   }
 
   function addPortRow() {
-    setForm((f) => ({ ...f, ports: [...f.ports, { label: "", value: "" }] }));
+    setForm((f) => ({
+      ...f,
+      ports: [...f.ports, { label: "", value: "", shared: false }],
+    }));
   }
+    function removePortRow(index: number) {
+      setForm((f) => {
+        const copy = [...f.ports];
+        copy.splice(index, 1);
 
-  function removePortRow(index: number) {
-    setForm((f) => {
-      if (f.ports.length === 1) return f;
-      const copy = [...f.ports];
-      copy.splice(index, 1);
-      return { ...f, ports: copy };
-    });
-  }
+        // USER => au moins 1 ligne visible
+        if (f.role === "USER" && copy.length === 0) {
+          return { ...f, ports: [{ label: "", value: "", shared: false }] };
+        }
+
+        return { ...f, ports: copy };
+      });
+    }
 
   function updatePortRow(
     index: number,
-    field: "label" | "value",
-    value: string,
+    field: "label" | "value" | "shared",
+    value: string | boolean,
   ) {
     setForm((f) => {
       const copy = [...f.ports];
@@ -713,7 +723,7 @@ export default function UserManagementSection() {
       password: "",
       role: "USER",
       is_active: true,
-      ports: [{ label: "", value: "" }],
+      ports: [{ label: "", value: "", shared: false }],
     });
     setUserModalOpen(true);
   }
@@ -733,8 +743,12 @@ export default function UserManagementSection() {
       is_active: target.is_active,
       ports:
         existingPorts.length > 0
-          ? existingPorts.map((p) => ({ label: p.label ?? "", value: p.value }))
-          : [{ label: "", value: "" }],
+          ? existingPorts.map((p) => ({
+              label: p.label ?? "",
+              value: p.value,
+              shared: !!p.shared, // NEW
+           }))
+          : [{ label: "", value: "", shared: false }],
     });
     setUserModalOpen(true);
   }
@@ -778,37 +792,44 @@ export default function UserManagementSection() {
 
     const portsAreRequired = form.role === "USER";
     const seenValues = new Set<string>();
-    let hasAtLeastOnePortValue = false;
+    let hasAtLeastOneValidPort = false;
 
     form.ports.forEach((p, index) => {
       const l = (p.label || "").trim();
       const v = (p.value || "").trim();
 
+      // Ligne complètement vide => ignorée (autorisé pour ADMIN/SUPER_ADMIN)
+      if (!l && !v) return;
+
+      // Si value fourni => label requis
       if (!l) {
         e[`ports.${index}.label`] = "WAN mode is required.";
       }
 
+      // Si USER => value requis dès qu’une ligne est “utilisée”
       if (!v) {
-        if (portsAreRequired)
-          e[`ports.${index}.value`] = "Port value is required.";
+        if (portsAreRequired) e[`ports.${index}.value`] = "Port value is required.";
         return;
       }
 
-      hasAtLeastOnePortValue = true;
-
+      // value présent => validation format
       if (/\s/.test(v))
         e[`ports.${index}.value`] = "Port value must not contain spaces.";
       else if (!/^\d+(\/\d+)*$/.test(v))
         e[`ports.${index}.value`] = "Invalid format. Example: 1/1/7/3";
 
+      // doublons
       if (seenValues.has(v))
         e[`ports.${index}.value`] = "Duplicate port value is not allowed.";
-
       seenValues.add(v);
+
+      // Si label + value OK => c’est un port valide
+      if (l && v) hasAtLeastOneValidPort = true;
     });
 
-    if (portsAreRequired && !hasAtLeastOnePortValue)
-      e.ports = "At least one port is required for USER role.";
+    if (portsAreRequired && !hasAtLeastOneValidPort) {
+      e.ports = "At least one valid port (WAN mode + value) is required for USER role.";
+    }
 
     setFormErrors(e);
     return Object.keys(e).length === 0;
@@ -1206,6 +1227,11 @@ export default function UserManagementSection() {
                                         </span>
                                       ) : null}
                                       <span className="font-mono">{p.value}</span>
+                                      {p.shared && (
+                                          <span className="ml-1 rounded bg-sky-50 border border-sky-200 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700">
+                                            shared
+                                          </span>
+                                        )}
                                     </span>
                                   ))}
                                   {ports.length > 4 && (
@@ -1580,86 +1606,95 @@ export default function UserManagementSection() {
 
                           <div className="max-h-[300px] overflow-y-auto space-y-2.5 pr-1">
                             {form.ports.map((p, index) => (
-                              <div
-                                key={index}
-                                className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-3.5 md:grid-cols-[1fr_1fr_auto]"
-                              >
-                                <div>
-                                  <FieldLabel required>WAN Mode</FieldLabel>
-                                  <Select
-                                    value={p.label}
-                                    onChange={(e) =>
-                                      updatePortRow(index, "label", e.target.value)
-                                    }
-                                    disabled={wanModelsLoading}
-                                    className={cn(
-                                      formErrors[`ports.${index}.label`] &&
-                                        "border-red-300 focus:ring-red-50 focus:border-red-300",
-                                    )}
-                                  >
-                                    <option value="">
-                                      {wanModelsLoading
-                                        ? "Loading WAN modes..."
-                                        : "Select WAN mode"}
-                                    </option>
-                                    {wanModels.map((wm) => (
-                                      <option key={wm.id} value={wm.name}>
-                                        {wm.name}
+                                <div
+                                  key={index}
+                                  className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-white p-3.5 md:grid-cols-[1fr_1fr_180px_auto]"
+                                >
+                                  <div>
+                                    <FieldLabel required={!!(p.value || "").trim() || form.role === "USER"}>
+                                      WAN Mode
+                                    </FieldLabel>
+                                    <Select
+                                      value={p.label}
+                                      onChange={(e) => updatePortRow(index, "label", e.target.value)}
+                                      disabled={wanModelsLoading}
+                                      className={cn(
+                                        formErrors[`ports.${index}.label`] &&
+                                          "border-red-300 focus:ring-red-50 focus:border-red-300",
+                                      )}
+                                    >
+                                      <option value="">
+                                        {wanModelsLoading ? "Loading WAN modes..." : "Select WAN mode"}
                                       </option>
-                                    ))}
-                                  </Select>
-                                  {formErrors[`ports.${index}.label`] && (
-                                    <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                                      <AlertCircle
-                                        size={12}
-                                        className="opacity-70"
-                                      />
-                                      {formErrors[`ports.${index}.label`]}
-                                    </div>
-                                  )}
-                                </div>
-
-                                <div>
-                                  <FieldLabel required={form.role === "USER"}>
-                                    Port value
-                                  </FieldLabel>
-                                  <Input
-                                    value={p.value}
-                                    onChange={(e) =>
-                                      updatePortRow(index, "value", e.target.value)
-                                    }
-                                    placeholder="ex: 1/1/7/3/95"
-                                    className={cn(
-                                      formErrors[`ports.${index}.value`] &&
-                                        "border-red-300 focus:ring-red-50 focus:border-red-300",
-                                      "font-mono",
+                                      {wanModels.map((wm) => (
+                                        <option key={wm.id} value={wm.name}>
+                                          {wm.name}
+                                        </option>
+                                      ))}
+                                    </Select>
+                                    {formErrors[`ports.${index}.label`] && (
+                                      <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                                        <AlertCircle size={12} className="opacity-70" />
+                                        {formErrors[`ports.${index}.label`]}
+                                      </div>
                                     )}
-                                  />
-                                  {formErrors[`ports.${index}.value`] && (
-                                    <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
-                                      <AlertCircle
-                                        size={12}
-                                        className="opacity-70"
-                                      />
-                                      {formErrors[`ports.${index}.value`]}
-                                    </div>
-                                  )}
-                                </div>
+                                  </div>
 
-                                <div className="md:pt-7">
-                                  <Btn
-                                    type="button"
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => removePortRow(index)}
-                                    disabled={form.ports.length === 1}
-                                    title="Remove this port"
-                                    className="border border-slate-200 hover:border-red-200 hover:text-red-500 hover:bg-red-50"
-                                  >
-                                    <X size={14} />
-                                  </Btn>
+                                  <div>
+                                    <FieldLabel required={form.role === "USER" || !!(p.label || "").trim()}>
+                                      Port value
+                                    </FieldLabel>
+                                    <Input
+                                      value={p.value}
+                                      onChange={(e) => updatePortRow(index, "value", e.target.value)}
+                                      placeholder="ex: 1/1/7/3/95"
+                                      className={cn(
+                                        formErrors[`ports.${index}.value`] &&
+                                          "border-red-300 focus:ring-red-50 focus:border-red-300",
+                                        "font-mono",
+                                      )}
+                                    />
+                                    {formErrors[`ports.${index}.value`] && (
+                                      <div className="mt-1 flex items-center gap-1 text-xs text-red-500">
+                                        <AlertCircle size={12} className="opacity-70" />
+                                        {formErrors[`ports.${index}.value`]}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="md:pt-7">
+                                    <div className="flex items-center gap-2">
+                                      <input
+                                        id={`shared-${index}`}
+                                        type="checkbox"
+                                        checked={!!p.shared}
+                                        onChange={(e) => updatePortRow(index, "shared", e.target.checked)}
+                                        className="h-4 w-4 rounded border-slate-300"
+                                      />
+                                      <label
+                                        htmlFor={`shared-${index}`}
+                                        className="text-xs font-medium text-slate-500 select-none"
+                                        title="If enabled, other users can configure this port via manual entry."
+                                      >
+                                        Shared
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  <div className="md:pt-7">
+                                    <Btn
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => removePortRow(index)}
+                                      disabled={form.role === "USER" && form.ports.length === 1}
+                                      title="Remove this port"
+                                      className="border border-slate-200 hover:border-red-200 hover:text-red-500 hover:bg-red-50"
+                                    >
+                                      <X size={14} />
+                                    </Btn>
+                                  </div>
                                 </div>
-                              </div>
                             ))}
                           </div>
                         </div>
