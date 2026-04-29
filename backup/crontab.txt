@@ -1,1 +1,8 @@
-0 5 * * 1 root /bin/bash /usr/local/bin/backup.sh
+# Every day at 2 AM (current)
+0 2 * * * root /bin/bash /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+
+# Every 7 days (every Monday at 2 AM)
+#0 2 * * 1 root /bin/bash /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
+
+# Or every 7 days from today regardless of weekday
+#0 2 */7 * * root /bin/bash /usr/local/bin/backup.sh >> /var/log/backup.log 2>&1
