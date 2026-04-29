@@ -2597,11 +2597,9 @@ function SwitchPortDetail({
       {allCurrentLocked && !loadingPage && !isSuperAdmin && (
         <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-300 rounded-lg text-sm text-red-700">
           <Lock size={16} className="shrink-0" />
-          All ports on this page are <strong className="mx-1">
-            locked
-          </strong>{" "}
-          and disabled. Use <strong className="mx-1">Unlock All</strong> or
-          unlock individual ports to enable them.
+          All ports on this page have been{" "}
+          <strong className="mx-1">locked by the admin</strong> and are
+          currently disabled. Contact your administrator to unlock them.
         </div>
       )}
 
@@ -2914,9 +2912,9 @@ function ExpandedSwitchPanel({
       {allLocked && !isSuperAdmin && (
         <div className="flex items-center gap-2 p-2.5 bg-red-50 border border-red-300 rounded-lg text-xs text-red-700">
           <Lock size={12} className="shrink-0" />
-          All ports are locked and disabled. Click{" "}
-          <strong className="mx-1">Unlock All</strong> or use{" "}
-          <strong>Manage Ports</strong> to unlock individually.
+          All ports have been{" "}
+          <strong className="mx-1">locked by the admin</strong> and are
+          currently disabled. Contact your administrator to unlock them.
         </div>
       )}
 
