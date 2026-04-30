@@ -115,7 +115,7 @@ services:
       RETENTION_DAYS: "30"
       BACKUP_PATH: "/backups"
     volumes:
-      - /home/raed/backups:/backups   # ← Debian host path (native, not WSL)
+      - /home/backups:/backups   # ← Debian host path (native, not WSL)
     depends_on:
       db:
         condition: service_healthy
