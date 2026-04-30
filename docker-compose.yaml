@@ -18,8 +18,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 30s   # gives MySQL time to fully initialize
-    
+      start_period: 30s
+
   # ---------- Logs-service ----------
   logs-service:
     image: amir20/dozzle:latest
@@ -29,7 +29,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
-    
+
   # ---------- Auth-service ----------
   auth-service:
     build: ./auth-service
@@ -42,7 +42,7 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-        condition: service_healthy   # ← waits for MySQL to be truly ready
+        condition: service_healthy
     restart: on-failure
 
   # ---------- ISAM-service ----------
@@ -58,12 +58,12 @@ services:
       - JWT_ALGORITHM=HS256
     depends_on:
       db:
-        condition: service_healthy   # ← waits for MySQL
+        condition: service_healthy
       auth-service:
-        condition: service_started   # ← waits for auth to start
+        condition: service_started
     restart: on-failure
 
-  # ── Cisco-service (NEW — same pattern as isam-service) ──
+  # ---------- Cisco-service ----------
   cisco-services:
     build:
       context: ./cisco-services
@@ -82,45 +82,44 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
-    
+
   # ---------- Frontend ----------
   frontend:
-      build:
-        context: ./frontend
-        dockerfile: Dockerfile
-        args:
-          - VITE_AUTH_BASE_URL=http://10.255.25.77:9000
-          - VITE_ISAM_BASE_URL=http://10.255.25.77:8001
-          - VITE_CISCO_BASE_URL=http://10.255.25.77:8002
-          #- VITE_AUTH_BASE_URL=http://127.0.0.1:9000
-          #- VITE_CISCO_BASE_URL=http://127.0.0.1:8002
-          #- VITE_ISAM_BASE_URL=http://127.0.0.1:8001
-      container_name: isam-frontend-container
-      ports:
-        - "5173:80"
-      depends_on:
-        - auth-service
-        - isam-service
-        - cisco-services
-      restart: on-failure
-  # ---------- Backup service (NEW) ----------
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
+        - VITE_CISCO_BASE_URL=http://127.0.0.1:8002
+        - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
+    container_name: isam-frontend-container
+    ports:
+      - "5173:80"
+    depends_on:
+      - auth-service
+      - isam-service
+      - cisco-services
+    restart: on-failure
+
+  # ---------- Backup service ----------
   db-backup:
-      build:
-        context: ./backup
-      container_name: db-backup
-      environment:
-        DB_HOST: db
-        DB_PORT: "3306"
-        DB_USER: pfe_user
-        DB_PASSWORD: pfe_pass
-        DB_NAME: isam_dash
-        RETENTION_DAYS: "30"     
-      volumes:
-        - /opt/ISAM-CISCO-BACKUP:/backups
-      depends_on:
-        db:
-          condition: service_healthy
-      restart: unless-stopped
+    build:
+      context: ./backup
+    container_name: db-backup
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: pfe_user
+      DB_PASSWORD: pfe_pass
+      DB_NAME: isam_dash
+      RETENTION_DAYS: "30"
+      BACKUP_PATH: "/backups"
+    volumes:
+      - /home/raed/backups:/backups   # ← Debian host path (native, not WSL)
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   db_data:
