@@ -14,7 +14,17 @@ services:
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "pfe_user", "-ppfe_pass"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-u",
+          "pfe_user",
+          "-ppfe_pass",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -115,7 +125,7 @@ services:
       RETENTION_DAYS: "30"
       BACKUP_PATH: "/backups"
     volumes:
-      - /home/raed/backups:/backups   # ← Debian host path (native, not WSL)
+      - /home/raed/backups:/backups # ← Debian host path (native, not WSL)
     depends_on:
       db:
         condition: service_healthy

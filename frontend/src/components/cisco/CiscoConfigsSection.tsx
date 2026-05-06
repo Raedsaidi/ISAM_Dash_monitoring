@@ -31,6 +31,7 @@ import {
   Hash,
   AlertTriangle,
   Clock,
+  Lock,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "../../context/AuthContext";
@@ -314,7 +315,7 @@ function OutputPanel({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Save Config Modal (SUPER_ADMIN only)                               */
+/*  Save Config Modal (ADMIN / SUPER_ADMIN only)                       */
 /* ------------------------------------------------------------------ */
 
 function SaveConfigModal({
@@ -678,14 +679,17 @@ function FunctionCard({
   onEdit,
   onDelete,
   isSuperAdmin,
+  isAdmin,
 }: {
   config: SavedConfig;
   onLoad: (c: SavedConfig) => void;
   onEdit: (c: SavedConfig) => void;
   onDelete: (c: SavedConfig) => void;
   isSuperAdmin: boolean;
+  isAdmin: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const canManage = isSuperAdmin || isAdmin;
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden hover:border-indigo-300 hover:shadow-md transition-all">
@@ -747,7 +751,8 @@ function FunctionCard({
         >
           <Zap size={12} /> Load
         </button>
-        {isSuperAdmin && (
+        {/* Edit and Delete only for ADMIN and SUPER_ADMIN */}
+        {canManage && (
           <>
             <button
               onClick={() => onEdit(config)}
@@ -769,13 +774,96 @@ function FunctionCard({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Read-Only Command Viewer (for regular users)                       */
+/* ------------------------------------------------------------------ */
+
+function ReadOnlyCommandViewer({
+  command,
+  configName,
+}: {
+  command: string;
+  configName: string | null;
+}) {
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* Terminal header bar */}
+      <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700">
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5">
+            <span className="w-3 h-3 rounded-full bg-red-500" />
+            <span className="w-3 h-3 rounded-full bg-amber-400" />
+            <span className="w-3 h-3 rounded-full bg-green-500" />
+          </div>
+          <span className="text-xs font-mono text-slate-400">
+            {configName ?? "No function loaded"}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Lock size={12} className="text-slate-500" />
+          <span className="text-xs text-slate-500 font-mono">read-only</span>
+        </div>
+      </div>
+
+      {/* Content area */}
+      {command ? (
+        <div className="bg-slate-950 px-5 py-4 min-h-[200px] max-h-[340px] overflow-y-auto">
+          <pre className="text-sm text-green-300 font-mono whitespace-pre-wrap leading-relaxed">
+            {command}
+          </pre>
+        </div>
+      ) : (
+        /* Empty state — prompt user to load a function */
+        <div className="bg-slate-950 flex flex-col items-center justify-center min-h-[200px] gap-3 px-6 py-10">
+          <div className="h-14 w-14 rounded-2xl bg-slate-800 flex items-center justify-center">
+            <BookOpen size={26} className="text-slate-500" />
+          </div>
+          <div className="text-center">
+            <p className="text-sm font-semibold text-slate-400">
+              No command loaded
+            </p>
+            <p className="text-xs text-slate-600 mt-1">
+              Select a saved function from the sidebar to get started
+            </p>
+          </div>
+          {/* Subtle animated indicator pointing left */}
+          <div className="flex items-center gap-2 mt-1 text-indigo-500 animate-pulse">
+            <ChevronRight size={14} className="rotate-180" />
+            <span className="text-xs font-medium">
+              Load a function from the left panel
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Footer info strip */}
+      {command && (
+        <div className="flex items-center justify-between px-5 py-2 bg-slate-900 border-t border-slate-800">
+          <span className="text-[10px] text-slate-500 font-mono">
+            {command.split("\n").length}L · {command.length}c
+          </span>
+          <span className="flex items-center gap-1.5 text-[10px] text-slate-500">
+            <Lock size={9} />
+            Template is locked — fill in the arguments below to execute
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Page Component                                                */
 /* ------------------------------------------------------------------ */
 
 export default function CiscoConfigsSection() {
   const { accessToken } = useAuth();
   const jwt = useMemo(() => parseJwt(accessToken), [accessToken]);
+
+  // Role flags
   const isSuperAdmin = jwt?.role === "SUPER_ADMIN";
+  const isAdmin = jwt?.role === "ADMIN";
+  const canManage = isSuperAdmin || isAdmin; // can save / edit / delete functions
+  const isRegularUser = !canManage; // read-only template, load-only
 
   // ── Switches ──────────────────────────────────────────────────────
   const [switches, setSwitches] = useState<SwitchOption[]>([]);
@@ -898,7 +986,7 @@ export default function CiscoConfigsSection() {
   }, []);
 
   /* ----------------------------------------------------------------
-   * Execute — no enable_mode field sent
+   * Execute
    * ---------------------------------------------------------------- */
   const handleExecute = useCallback(async () => {
     if (!selectedSwitchId) {
@@ -926,7 +1014,6 @@ export default function CiscoConfigsSection() {
           body: JSON.stringify({
             switch_id: selectedSwitchId,
             command: preview,
-            // enable_mode removed — backend always uses enable mode
           }),
         },
       );
@@ -951,7 +1038,7 @@ export default function CiscoConfigsSection() {
   }, [selectedSwitchId, preview, unsatisfiedArgs, accessToken]);
 
   /* ----------------------------------------------------------------
-   * Save / Update config
+   * Save / Update config  (ADMIN + SUPER_ADMIN)
    * ---------------------------------------------------------------- */
   const handleSaveConfig = useCallback(
     async (
@@ -985,7 +1072,7 @@ export default function CiscoConfigsSection() {
   );
 
   /* ----------------------------------------------------------------
-   * Delete config
+   * Delete config  (ADMIN + SUPER_ADMIN)
    * ---------------------------------------------------------------- */
   const handleDeleteConfig = useCallback(async () => {
     if (!deleteTarget) return;
@@ -996,6 +1083,8 @@ export default function CiscoConfigsSection() {
       toast.success(`"${deleteTarget.name}" deleted`);
       if (activeConfig?.id === deleteTarget.id) {
         setActiveConfig(null);
+        setCommand("");
+        setArgValues({});
       }
       loadConfigs(configSearch);
     } catch (err: any) {
@@ -1023,11 +1112,14 @@ export default function CiscoConfigsSection() {
             Cisco Configs
           </h1>
           <p className="text-slate-500 mt-1 text-sm">
-            Write, preview and execute IOS config commands against any switch.
-            {isSuperAdmin && " Save reusable functions for the team."}
+            {isRegularUser
+              ? "Load a saved function from the sidebar, fill in the arguments, and execute it against a switch."
+              : "Write, preview and execute IOS config commands against any switch. Save reusable functions for the team."}
           </p>
         </div>
-        {isSuperAdmin && (
+
+        {/* Save button — ADMIN and SUPER_ADMIN only */}
+        {canManage && (
           <button
             onClick={handleOpenSaveModal}
             className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 transition-colors shadow-sm"
@@ -1113,7 +1205,7 @@ export default function CiscoConfigsSection() {
                           ? "No functions match your search"
                           : "No saved functions yet"}
                       </p>
-                      {isSuperAdmin && !configSearch && (
+                      {canManage && !configSearch && (
                         <p className="text-xs text-indigo-500 mt-1 text-center">
                           Write a command and click "Save Current as Function"
                         </p>
@@ -1131,6 +1223,7 @@ export default function CiscoConfigsSection() {
                         }}
                         onDelete={setDeleteTarget}
                         isSuperAdmin={isSuperAdmin}
+                        isAdmin={isAdmin}
                       />
                     ))
                   )}
@@ -1192,52 +1285,61 @@ export default function CiscoConfigsSection() {
             </div>
           </div>
 
-          {/* Editor */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700">
-              <div className="flex items-center gap-3">
-                <div className="flex gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-red-500" />
-                  <span className="w-3 h-3 rounded-full bg-amber-400" />
-                  <span className="w-3 h-3 rounded-full bg-green-500" />
-                </div>
-                <span className="text-xs font-mono text-slate-400">
-                  {activeConfig ? activeConfig.name : "untitled.ios"}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {command && (
-                  <button
-                    onClick={() => {
-                      setCommand("");
-                      setArgValues({});
-                      setResult(null);
-                      setActiveConfig(null);
-                    }}
-                    className="flex items-center gap-1 px-2 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded transition-colors"
-                  >
-                    <X size={12} /> Clear
-                  </button>
-                )}
-                <span className="text-xs text-slate-500 font-mono">
-                  {command.split("\n").length}L · {command.length}c
-                </span>
-              </div>
-            </div>
-
-            <textarea
-              value={command}
-              onChange={(e) => {
-                setCommand(e.target.value);
-                setActiveConfig(null);
-                setResult(null);
-              }}
-              rows={14}
-              placeholder={`Write your IOS config here…\n\nExample:\nconf t\ninterface GigabitEthernet0/1\n switchport mode access\n switchport access vlan 10\nend\n\nUse {{variable}} for dynamic arguments.`}
-              className="w-full px-5 py-4 bg-slate-950 text-green-300 font-mono text-sm focus:outline-none resize-y leading-relaxed placeholder:text-slate-600"
-              spellCheck={false}
+          {/* ── Command area: editable for admins, read-only for users ── */}
+          {isRegularUser ? (
+            /* Regular user: locked template viewer */
+            <ReadOnlyCommandViewer
+              command={command}
+              configName={activeConfig?.name ?? null}
             />
-          </div>
+          ) : (
+            /* Admin / Super Admin: full editor */
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700">
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-red-500" />
+                    <span className="w-3 h-3 rounded-full bg-amber-400" />
+                    <span className="w-3 h-3 rounded-full bg-green-500" />
+                  </div>
+                  <span className="text-xs font-mono text-slate-400">
+                    {activeConfig ? activeConfig.name : "untitled.ios"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {command && (
+                    <button
+                      onClick={() => {
+                        setCommand("");
+                        setArgValues({});
+                        setResult(null);
+                        setActiveConfig(null);
+                      }}
+                      className="flex items-center gap-1 px-2 py-1 text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700 rounded transition-colors"
+                    >
+                      <X size={12} /> Clear
+                    </button>
+                  )}
+                  <span className="text-xs text-slate-500 font-mono">
+                    {command.split("\n").length}L · {command.length}c
+                  </span>
+                </div>
+              </div>
+
+              <textarea
+                value={command}
+                onChange={(e) => {
+                  setCommand(e.target.value);
+                  setActiveConfig(null);
+                  setResult(null);
+                }}
+                rows={14}
+                placeholder={`Write your IOS config here…\n\nExample:\nconf t\ninterface GigabitEthernet0/1\n switchport mode access\n switchport access vlan 10\nend\n\nUse {{variable}} for dynamic arguments.`}
+                className="w-full px-5 py-4 bg-slate-950 text-green-300 font-mono text-sm focus:outline-none resize-y leading-relaxed placeholder:text-slate-600"
+                spellCheck={false}
+              />
+            </div>
+          )}
 
           {/* ── Arg Inputs ─────────────────────────────────────── */}
           {placeholders.length > 0 && (
@@ -1250,6 +1352,12 @@ export default function CiscoConfigsSection() {
                 {unsatisfiedArgs.length > 0 && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 border border-amber-200 rounded-full text-[10px] font-medium text-amber-700">
                     <AlertTriangle size={9} /> {unsatisfiedArgs.length} required
+                  </span>
+                )}
+                {/* Hint for regular users */}
+                {isRegularUser && (
+                  <span className="ml-auto text-[10px] text-slate-400 flex items-center gap-1">
+                    <Lock size={9} /> Fill in the values below to execute
                   </span>
                 )}
               </div>
@@ -1304,6 +1412,7 @@ export default function CiscoConfigsSection() {
 
           {/* ── Action Bar ─────────────────────────────────────── */}
           <div className="flex items-center gap-3 flex-wrap">
+            {/* Preview — available to everyone when command is loaded */}
             <button
               onClick={() => setPreviewOpen(true)}
               disabled={!command.trim()}
@@ -1312,6 +1421,7 @@ export default function CiscoConfigsSection() {
               <Eye size={16} /> Preview
             </button>
 
+            {/* Copy — available to everyone */}
             <button
               onClick={() => {
                 navigator.clipboard.writeText(preview);
@@ -1323,7 +1433,8 @@ export default function CiscoConfigsSection() {
               <Copy size={16} /> Copy
             </button>
 
-            {isSuperAdmin && command.trim() && (
+            {/* Save as Function — ADMIN and SUPER_ADMIN only */}
+            {canManage && command.trim() && (
               <button
                 onClick={handleOpenSaveModal}
                 className="flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-indigo-700 bg-indigo-50 border border-indigo-300 rounded-xl hover:bg-indigo-100 transition-colors shadow-sm"
@@ -1341,13 +1452,15 @@ export default function CiscoConfigsSection() {
               </span>
             )}
 
+            {/* Execute — blocked for regular users if no function is loaded */}
             <button
               onClick={handleExecute}
               disabled={
                 executing ||
                 !command.trim() ||
                 !selectedSwitchId ||
-                unsatisfiedArgs.length > 0
+                unsatisfiedArgs.length > 0 ||
+                (isRegularUser && !activeConfig) // must load a function first
               }
               className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold text-white bg-green-600 rounded-xl hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
             >
@@ -1376,29 +1489,32 @@ export default function CiscoConfigsSection() {
         preview={preview}
       />
 
-      <SaveConfigModal
-        open={saveModalOpen}
-        onClose={() => {
-          setSaveModalOpen(false);
-          setEditingConfig(null);
-        }}
-        onSave={handleSaveConfig}
-        initialData={
-          editingConfig ??
-          (command.trim()
-            ? {
-                id: 0,
-                name: "",
-                description: "",
-                template: command,
-                args: [],
-                created_by: null,
-                created_at: "",
-                updated_at: "",
-              }
-            : null)
-        }
-      />
+      {/* Save modal — only reachable by ADMIN / SUPER_ADMIN */}
+      {canManage && (
+        <SaveConfigModal
+          open={saveModalOpen}
+          onClose={() => {
+            setSaveModalOpen(false);
+            setEditingConfig(null);
+          }}
+          onSave={handleSaveConfig}
+          initialData={
+            editingConfig ??
+            (command.trim()
+              ? {
+                  id: 0,
+                  name: "",
+                  description: "",
+                  template: command,
+                  args: [],
+                  created_by: null,
+                  created_at: "",
+                  updated_at: "",
+                }
+              : null)
+          }
+        />
+      )}
 
       {deleteTarget && (
         <DeleteConfirm
