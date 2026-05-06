@@ -411,18 +411,13 @@ function mapCiscoStatus(raw: string): PortStatus {
   return "inactive";
 }
 
-function apiPortToPort(
-  p: CiscoPortInfo,
-  switchId: number,
-  unlockedSet: Set<string>,
-): Port {
-  const key = portKey(switchId, p.port_label);
+function apiPortToPort(p: CiscoPortInfo, switchId: number): Port {
   return {
     id: `${switchId}-${p.port_label}`,
     number: p.port_number,
     label: p.port_label,
     status: mapCiscoStatus(p.status),
-    locked: !unlockedSet.has(key),
+    locked: p.locked, // comes from DB via the API response
     speed: p.speed || "—",
     vlan: p.vlan || "—",
     macAddress: p.mac_address,
@@ -2955,8 +2950,6 @@ export default function CiscoPortManagementSection() {
   const isSuperAdmin = jwt?.role === "SUPER_ADMIN";
   const isAdmin = isSuperAdmin || jwt?.role === "ADMIN";
 
-  const [unlockedSet, setUnlockedSet] = useState<Set<string>>(getUnlockedSet);
-
   const [switches, setSwitches] = useState<CiscoSwitch[]>([]);
   const [switchesLoading, setSwitchesLoading] = useState(true);
 
@@ -2985,23 +2978,6 @@ export default function CiscoPortManagementSection() {
   } | null>(null);
 
   // ── Recompute locked flag whenever unlockedSet changes ────────────────────
-  useEffect(() => {
-    setCacheMap((prev) => {
-      const next: Record<number, PortPageCache> = {};
-      for (const [sidStr, cache] of Object.entries(prev)) {
-        const sid = Number(sidStr);
-        const updatedPages: Record<number, Port[]> = {};
-        for (const [pgStr, ports] of Object.entries(cache.pages)) {
-          updatedPages[Number(pgStr)] = ports.map((p) => ({
-            ...p,
-            locked: !unlockedSet.has(portKey(sid, p.label)),
-          }));
-        }
-        next[sid] = { ...cache, pages: updatedPages };
-      }
-      return next;
-    });
-  }, [unlockedSet, setCacheMap]);
 
   // ── Load switches ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -3069,10 +3045,7 @@ export default function CiscoPortManagementSection() {
 
         if (!data.success) throw new Error(data.error ?? "Failed");
 
-        const currentUnlocked = getUnlockedSet();
-        const mapped = data.ports.map((p) =>
-          apiPortToPort(p, switchId, currentUnlocked),
-        );
+        const mapped = data.ports.map((p) => apiPortToPort(p, switchId));
 
         setCacheMap((prev) => ({
           ...prev,
@@ -3173,63 +3146,89 @@ export default function CiscoPortManagementSection() {
 
   // ── Toggle lock (single port) ─────────────────────────────────────────────
   const handleToggleLock = useCallback(
-    (switchId: number, portLabel: string) => {
+    async (switchId: number, portLabel: string) => {
       if (!isAdmin) {
         toast.error("Only administrators can lock/unlock ports.");
         return;
       }
-      const key = portKey(switchId, portLabel);
-      setUnlockedSet((prev) => {
-        const next = new Set(prev);
-        if (next.has(key)) {
-          next.delete(key);
-          toast.success(`Port ${portLabel} locked`);
-        } else {
-          next.add(key);
-          toast.success(`Port ${portLabel} unlocked`);
-        }
-        saveUnlockedSet(next);
-        return next;
-      });
+      try {
+        const encoded = encodeURIComponent(portLabel);
+        const data = await apiFetch<{
+          success: boolean;
+          locked: boolean;
+          message: string;
+        }>(
+          `${PREFIX}/switches/${switchId}/ports/${encoded}/toggle-lock`,
+          accessToken,
+          { method: "POST" },
+        );
+        toast.success(data.message);
+        // Invalidate the cached page so it reloads with fresh lock state from DB
+        const currentCache = cacheMapRef.current[switchId];
+        const page = pageMap[switchId] ?? 1;
+        setCacheMap((prev) => {
+          const swCache = prev[switchId];
+          if (!swCache) return prev;
+          const updatedPages = { ...swCache.pages };
+          delete updatedPages[page];
+          return { ...prev, [switchId]: { ...swCache, pages: updatedPages } };
+        });
+        loadDbPage(
+          switchId,
+          page,
+          currentCache?.currentSearch,
+          currentCache?.currentFilter,
+        );
+      } catch (err: any) {
+        toast.error(err.message || "Failed to toggle lock");
+      }
     },
-    [isAdmin],
+    [isAdmin, accessToken, pageMap, loadDbPage, setCacheMap],
   );
 
   // ── Lock all ──────────────────────────────────────────────────────────────
   const handleLockAll = useCallback(
-    (switchId: number) => {
+    async (switchId: number) => {
       if (!isAdmin) return;
-      setUnlockedSet((prev) => {
-        const next = new Set(prev);
-        for (const key of next) {
-          if (key.startsWith(`${switchId}::`)) next.delete(key);
-        }
-        saveUnlockedSet(next);
-        return next;
-      });
-      toast.success("All ports locked");
+      try {
+        const data = await apiFetch<{
+          success: boolean;
+          affected: number;
+          message: string;
+        }>(`${PREFIX}/switches/${switchId}/bulk-lock`, accessToken, {
+          method: "POST",
+        });
+        toast.success(data.message);
+        setCacheMap((prev) => ({ ...prev, [switchId]: emptyPageCache() }));
+        setPageMap((prev) => ({ ...prev, [switchId]: 1 }));
+        setTimeout(() => loadDbPage(switchId, 1), 0);
+      } catch (err: any) {
+        toast.error(err.message || "Lock all failed");
+      }
     },
-    [isAdmin],
+    [isAdmin, accessToken, loadDbPage, setCacheMap],
   );
 
-  // ── Unlock all ────────────────────────────────────────────────────────────
   const handleUnlockAll = useCallback(
-    (switchId: number) => {
+    async (switchId: number) => {
       if (!isAdmin) return;
-      const cache = cacheMapRef.current[switchId];
-      if (!cache) return;
-      const allLabels = Object.values(cache.pages)
-        .flat()
-        .map((p) => p.label);
-      setUnlockedSet((prev) => {
-        const next = new Set(prev);
-        for (const label of allLabels) next.add(portKey(switchId, label));
-        saveUnlockedSet(next);
-        return next;
-      });
-      toast.success("All cached ports unlocked");
+      try {
+        const data = await apiFetch<{
+          success: boolean;
+          affected: number;
+          message: string;
+        }>(`${PREFIX}/switches/${switchId}/bulk-unlock`, accessToken, {
+          method: "POST",
+        });
+        toast.success(data.message);
+        setCacheMap((prev) => ({ ...prev, [switchId]: emptyPageCache() }));
+        setPageMap((prev) => ({ ...prev, [switchId]: 1 }));
+        setTimeout(() => loadDbPage(switchId, 1), 0);
+      } catch (err: any) {
+        toast.error(err.message || "Unlock all failed");
+      }
     },
-    [isAdmin],
+    [isAdmin, accessToken, loadDbPage, setCacheMap],
   );
 
   // ── Configure port ────────────────────────────────────────────────────────
