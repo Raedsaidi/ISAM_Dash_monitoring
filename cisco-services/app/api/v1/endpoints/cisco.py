@@ -1,5 +1,6 @@
 # app/routes/cisco_routes.py
-# Full corrected file
+# Full corrected file — ports are LOCKED BY DEFAULT.
+# CiscoPortLock rows now represent UNLOCKED ports (not locked ones).
 
 """
 REST endpoints for Cisco switch management.
@@ -316,10 +317,6 @@ def test_connection(
 
 # ═══════════════════════════════════════════════════════
 # Execute Command
-#
-# Special handling for interface shutdown / no shutdown:
-# We detect the pattern and route through _ssh_config_commands
-# so the session properly enters "conf t" before the interface block.
 # ═══════════════════════════════════════════════════════
 
 _IFACE_SHUTDOWN_RE = re.compile(
@@ -329,24 +326,15 @@ _IFACE_SHUTDOWN_RE = re.compile(
 
 
 def _is_interface_shutdown_command(command: str) -> bool:
-    """Return True when the command block is an interface up/down operation."""
     return bool(_IFACE_SHUTDOWN_RE.search(command))
 
 
 def _parse_interface_shutdown_commands(command: str) -> list[str]:
-    """
-    Extract the individual IOS config lines from the raw command string.
-    E.g.:
-        "interface GigabitEthernet1/0/10\n no shutdown\n end"
-    Returns:
-        ["interface GigabitEthernet1/0/10", "no shutdown"]
-    (We deliberately exclude "end" — _ssh_config_commands appends it.)
-    """
     lines = []
     for line in command.splitlines():
         stripped = line.strip()
         if stripped.lower() == "end":
-            continue          # _ssh_config_commands sends 'end' itself
+            continue
         if stripped:
             lines.append(stripped)
     return lines
@@ -367,7 +355,6 @@ def execute_command(
     service = CiscoConnectionService(sw)
     start = _time.time()
 
-    # ── Route interface shutdown/no-shutdown through _ssh_config_commands ──
     if _is_interface_shutdown_command(raw_command):
         config_lines = _parse_interface_shutdown_commands(raw_command)
         logger.info(
@@ -376,8 +363,6 @@ def execute_command(
             config_lines,
         )
 
-        # Build a human-readable trace of what we're about to do so the
-        # frontend output modal shows the full session flow.
         session_trace_header = (
             "--- Session flow ---\n"
             "  [1] connect to switch\n"
@@ -390,7 +375,6 @@ def execute_command(
         )
 
         ok, raw_output, err = service._ssh_config_commands(config_lines, timeout=30)
-
         elapsed = round((_time.time() - start) * 1000, 1)
 
         if ok:
@@ -404,11 +388,7 @@ def execute_command(
                 execution_time_ms=elapsed,
             )
         else:
-            # Try Telnet fallback if SSH-cfg failed and preference allows it
             if sw.protocol_preference != "ssh":
-                logger.info(
-                    "[EXECUTE] _ssh_config_commands failed, trying Telnet fallback…"
-                )
                 script_lines = ["conf t"] + config_lines + ["end"]
                 script = "\n".join(script_lines)
                 tel_ok, tel_out, tel_err = service.execute_telnet_command(
@@ -448,7 +428,6 @@ def execute_command(
                 execution_time_ms=elapsed,
             )
 
-    # ── All other commands — use the existing strategy ──────────────────────
     ok, proto, output, error = service.execute_command_preference(
         command=raw_command,
         enable=body.enable_mode,
@@ -870,6 +849,10 @@ def get_vlans(
 
 # ═══════════════════════════════════════════════════════
 # Port Status / Config / Lock / VLAN Change
+#
+# ── LOCK SEMANTICS (inverted from original) ──────────
+#  CiscoPortLock row present  →  port is UNLOCKED
+#  CiscoPortLock row absent   →  port is LOCKED  (default)
 # ═══════════════════════════════════════════════════════
 
 
@@ -896,12 +879,15 @@ def get_port_status(
             success=False, switch_id=switch_id,
             protocol_used=proto, error=error,
         )
-    locks = (
-        db.query(CiscoPortLock)
+
+    # Rows = unlocked ports
+    unlocked_labels = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock)
         .filter(CiscoPortLock.switch_id == switch_id)
         .all()
-    )
-    locked_labels = {lock.port_label for lock in locks}
+    }
+
     ports = []
     for p in raw_ports:
         ports.append(
@@ -915,7 +901,7 @@ def get_port_status(
                 speed=p.get("speed", ""),
                 port_type=p.get("port_type", ""),
                 mac_address=p.get("mac_address"),
-                locked=p["port_label"] in locked_labels,
+                locked=p["port_label"] not in unlocked_labels,  # locked by default
             )
         )
     ports.sort(key=lambda x: (x.port_label.split("/")[0], x.port_number))
@@ -984,24 +970,29 @@ def toggle_port_lock(
         .first()
     )
     if existing:
+        # Row exists → port was unlocked → remove row → lock it
         db.delete(existing)
         db.commit()
         return PortLockToggleResponse(
-            success=True, port_label=port_label,
-            locked=False, message=f"Port {port_label} unlocked.",
+            success=True,
+            port_label=port_label,
+            locked=True,
+            message=f"Port {port_label} locked.",
         )
-    lock = CiscoPortLock(
+    # No row → port was locked → add row → unlock it
+    unlock = CiscoPortLock(
         switch_id=switch_id,
         port_label=port_label,
         locked_by=current_user.username,
         created_at=datetime.utcnow(),
     )
-    db.add(lock)
+    db.add(unlock)
     db.commit()
     return PortLockToggleResponse(
-        success=True, port_label=port_label,
-        locked=True,
-        message=f"Port {port_label} locked by {current_user.username}.",
+        success=True,
+        port_label=port_label,
+        locked=False,
+        message=f"Port {port_label} unlocked by {current_user.username}.",
     )
 
 
@@ -1011,32 +1002,22 @@ def bulk_lock_ports(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    sw = get_switch_or_404(db, switch_id)
-    service = CiscoConnectionService(sw)
-    ok, _, raw_ports, _ = service.get_all_port_status(timeout=25)
-    if not ok:
-        return BulkLockResponse(success=False, affected=0, message="Could not fetch port list.")
-    existing = {
-        lock.port_label
-        for lock in db.query(CiscoPortLock)
+    """
+    Lock ALL ports on this switch — achieved by removing every
+    CiscoPortLock row (since absence of row = locked).
+    """
+    get_switch_or_404(db, switch_id)
+    count = (
+        db.query(CiscoPortLock)
         .filter(CiscoPortLock.switch_id == switch_id)
-        .all()
-    }
-    added = 0
-    for p in raw_ports:
-        label = p["port_label"]
-        if label not in existing:
-            db.add(
-                CiscoPortLock(
-                    switch_id=switch_id,
-                    port_label=label,
-                    locked_by=current_user.username,
-                    created_at=datetime.utcnow(),
-                )
-            )
-            added += 1
+        .delete()
+    )
     db.commit()
-    return BulkLockResponse(success=True, affected=added, message=f"{added} ports locked.")
+    return BulkLockResponse(
+        success=True,
+        affected=count,
+        message=f"{count} ports locked.",
+    )
 
 
 @router.post("/switches/{switch_id}/bulk-unlock", response_model=BulkLockResponse)
@@ -1045,13 +1026,53 @@ def bulk_unlock_ports(
     db: Session = Depends(get_db),
     current_user: TokenUser = Depends(require_admin),
 ):
-    count = (
-        db.query(CiscoPortLock)
-        .filter(CiscoPortLock.switch_id == switch_id)
-        .delete()
+    """
+    Unlock ALL ports on this switch — achieved by inserting a
+    CiscoPortLock row for every port that doesn't already have one.
+    Uses the DB snapshot table so no live SSH call is needed.
+    """
+    get_switch_or_404(db, switch_id)
+
+    # Get all known ports from the snapshot table
+    snapshots = (
+        db.query(CiscoPortSnapshot)
+        .filter(CiscoPortSnapshot.switch_id == switch_id)
+        .all()
     )
+
+    if not snapshots:
+        return BulkLockResponse(
+            success=False,
+            affected=0,
+            message="No port snapshots found. Sync the switch first.",
+        )
+
+    existing_unlocked = {
+        lock.port_label
+        for lock in db.query(CiscoPortLock)
+        .filter(CiscoPortLock.switch_id == switch_id)
+        .all()
+    }
+
+    added = 0
+    for snap in snapshots:
+        if snap.port_label not in existing_unlocked:
+            db.add(
+                CiscoPortLock(
+                    switch_id=switch_id,
+                    port_label=snap.port_label,
+                    locked_by=current_user.username,
+                    created_at=datetime.utcnow(),
+                )
+            )
+            added += 1
+
     db.commit()
-    return BulkLockResponse(success=True, affected=count, message=f"{count} ports unlocked.")
+    return BulkLockResponse(
+        success=True,
+        affected=added,
+        message=f"{added} ports unlocked.",
+    )
 
 
 @router.post(
@@ -1066,7 +1087,8 @@ def change_port_vlan(
 ):
     sw = get_switch_or_404(db, switch_id)
 
-    lock = (
+    # Port is locked when NO unlock row exists
+    unlock_row = (
         db.query(CiscoPortLock)
         .filter(
             CiscoPortLock.switch_id == switch_id,
@@ -1074,10 +1096,10 @@ def change_port_vlan(
         )
         .first()
     )
-    if lock:
+    if not unlock_row:
         return VlanChangeResponse(
             success=False,
-            error=f"Port {body.port_label} is locked by {lock.locked_by}.",
+            error=f"Port {body.port_label} is locked. Unlock it before making changes.",
         )
 
     service = CiscoConnectionService(sw)
@@ -1100,9 +1122,6 @@ def change_port_vlan(
             body.port_label, exc,
         )
 
-    # ── Pre-change cleanup: remove stale mode config before switching ────────
-    # Only runs if the port is already configured AND the mode is changing.
-    # If the port has never been configured we skip silently.
     requested_mode = "trunk" if body.vlan_type.lower() == "trunk" else "access"
 
     try:
@@ -1115,7 +1134,6 @@ def change_port_vlan(
             current_is_access = "switchport mode access" in cfg_lower
 
             if current_is_trunk and requested_mode == "access":
-                # Trunk → Access: strip trunk settings first
                 logger.info(
                     "[MODE-CHANGE] %s: trunk → access, cleaning up trunk config",
                     body.port_label,
@@ -1136,7 +1154,6 @@ def change_port_vlan(
                     )
 
             elif current_is_access and requested_mode == "trunk":
-                # Access → Trunk: strip access settings first
                 logger.info(
                     "[MODE-CHANGE] %s: access → trunk, cleaning up access config",
                     body.port_label,
@@ -1154,8 +1171,6 @@ def change_port_vlan(
                         "[MODE-CHANGE] Cleanup (access→trunk) failed for %s: %s",
                         body.port_label, c_err,
                     )
-            # If neither flag is set the port was never explicitly configured —
-            # no cleanup needed, change_vlan will configure it fresh.
     except Exception as cleanup_exc:
         logger.warning(
             "[MODE-CHANGE] Pre-change cleanup skipped for %s: %s",
@@ -1217,6 +1232,7 @@ def change_port_vlan(
         error=None,
     )
 
+
 # ═══════════════════════════════════════════════════════
 # Sync Ports
 # ═══════════════════════════════════════════════════════
@@ -1248,7 +1264,8 @@ def sync_ports(
             protocol_used=proto, error=error,
         )
 
-    locks = {
+    # Rows = unlocked ports
+    unlocked_labels = {
         lock.port_label
         for lock in db.query(CiscoPortLock)
         .filter(CiscoPortLock.switch_id == switch_id)
@@ -1306,7 +1323,7 @@ def sync_ports(
                 speed=p.get("speed", ""),
                 port_type=p.get("port_type", ""),
                 mac_address=p.get("mac_address"),
-                locked=label in locks,
+                locked=label not in unlocked_labels,  # locked by default
             )
         )
 
@@ -1342,7 +1359,8 @@ def get_ports_db(
 ):
     get_switch_or_404(db, switch_id)
 
-    locks = {
+    # Rows = unlocked ports
+    unlocked_labels = {
         lock.port_label
         for lock in db.query(CiscoPortLock)
         .filter(CiscoPortLock.switch_id == switch_id)
@@ -1379,9 +1397,15 @@ def get_ports_db(
             ~CiscoPortSnapshot.status.ilike("%disabled%"),
         )
     elif filter_by == "locked":
-        if locks:
-            q = q.filter(CiscoPortSnapshot.port_label.in_(locks))
+        # locked = NOT in unlocked_labels
+        if unlocked_labels:
+            q = q.filter(~CiscoPortSnapshot.port_label.in_(unlocked_labels))
+        # if unlocked_labels is empty, ALL ports are locked — no extra filter needed
+    elif filter_by == "unlocked":
+        if unlocked_labels:
+            q = q.filter(CiscoPortSnapshot.port_label.in_(unlocked_labels))
         else:
+            # Nothing is unlocked — return empty
             return PortStatusPageResponse(
                 success=True,
                 switch_id=switch_id,
@@ -1392,9 +1416,6 @@ def get_ports_db(
                 total_pages=1,
                 stats=PortStats(active=0, inactive=0, error=0, locked=0, unlocked=0),
             )
-    elif filter_by == "unlocked":
-        if locks:
-            q = q.filter(~CiscoPortSnapshot.port_label.in_(locks))
 
     total = q.count()
     all_rows = q.all()
@@ -1410,10 +1431,11 @@ def get_ports_db(
             error_count += 1
         else:
             inactive_count += 1
-        if s.port_label in locks:
-            locked_count += 1
-        else:
+
+        if s.port_label in unlocked_labels:
             unlocked_count += 1
+        else:
+            locked_count += 1
 
     PREFIX_ORDER: dict[str, int] = {
         "tengigabitethernet": 1, "te": 1,
@@ -1467,7 +1489,7 @@ def get_ports_db(
             speed=s.speed or "",
             port_type=s.port_type or "",
             mac_address=s.mac_address,
-            locked=s.port_label in locks,
+            locked=s.port_label not in unlocked_labels,  # locked by default
         )
         for s in page_rows
     ]
@@ -1655,7 +1677,7 @@ def vlan_mgmt_create_vlan(
     existing = db.query(CiscoVlan).filter(CiscoVlan.vlan_id == body.vlan_id).first()
     if existing:
         raise HTTPException(status_code=409, detail=f"VLAN {body.vlan_id} already exists.")
-    
+
     now = datetime.utcnow()
     vlan = CiscoVlan(
         vlan_id=body.vlan_id, name=body.name.strip(),
@@ -1667,7 +1689,6 @@ def vlan_mgmt_create_vlan(
     push_errors = []
 
     for sw in switches:
-        # ── Push VLAN to the actual switch ──────────────────────────
         try:
             service = CiscoConnectionService(sw)
             commands = [
@@ -1689,7 +1710,6 @@ def vlan_mgmt_create_vlan(
             )
             push_errors.append(sw.name)
 
-        # ── Update DB snapshot regardless ───────────────────────────
         snapshot = (
             db.query(CiscoVlanSnapshot)
             .filter(
@@ -1723,6 +1743,7 @@ def vlan_mgmt_create_vlan(
         status=vlan.status, port_count=0,
         created_at=vlan.created_at, updated_at=vlan.updated_at,
     )
+
 
 @router.delete(
     "/vlan-management/vlans/{vlan_db_id}",
@@ -2031,11 +2052,15 @@ def get_overview(
         1 for p in all_snapshots
         if (p.status or "").lower() in ("connected", "up")
     )
-    locked_labels = {
-        lock.port_label for lock in db.query(CiscoPortLock).all()
+
+    # All unlocked port labels across all switches
+    all_unlocked = {
+        (lock.switch_id, lock.port_label)
+        for lock in db.query(CiscoPortLock).all()
     }
     locked_ports = sum(
-        1 for p in all_snapshots if p.port_label in locked_labels
+        1 for p in all_snapshots
+        if (p.switch_id, p.port_label) not in all_unlocked
     )
 
     switch_summaries = []
@@ -2045,13 +2070,19 @@ def get_overview(
             .filter(CiscoPortSnapshot.switch_id == sw.id)
             .all()
         )
+        sw_unlocked = {
+            lock.port_label
+            for lock in db.query(CiscoPortLock)
+            .filter(CiscoPortLock.switch_id == sw.id)
+            .all()
+        }
         sw_total = len(sw_snapshots)
         sw_connected = sum(
             1 for p in sw_snapshots
             if (p.status or "").lower() in ("connected", "up")
         )
         sw_locked = sum(
-            1 for p in sw_snapshots if p.port_label in locked_labels
+            1 for p in sw_snapshots if p.port_label not in sw_unlocked
         )
         sw_vlan_count = (
             db.query(CiscoVlanSnapshot)
