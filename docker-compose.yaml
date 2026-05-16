@@ -114,7 +114,7 @@ services:
         DB_USER: pfe_user
         DB_PASSWORD: pfe_pass
         DB_NAME: isam_dash
-        RETENTION_DAYS: "30"     
+        RETENTION_DAYS: "7"     
       volumes:
         - /opt/ISAM-CISCO-BACKUP:/backups
       depends_on:
