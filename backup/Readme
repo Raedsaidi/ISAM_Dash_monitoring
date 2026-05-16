@@ -1,0 +1,86 @@
+# Backup Service — isam-dash
+
+Automated MySQL backup service using cron inside Docker.
+Backups are **gzip-compressed** and stored on the Debian host.
+
+---
+
+## File Structure
+
+```
+backup/
+├── Dockerfile       ← builds the backup container
+├── backup.sh        ← dump + cleanup script
+├── crontab.txt      ← cron schedule (daily at 02:00 Africa/Tunis)
+└── README.md
+```
+
+---
+
+## How It Works
+
+1. Cron triggers `backup.sh` every day at **02:00 (Africa/Tunis)**
+2. `mysqldump` dumps the `isam_dash` database and pipes it through `gzip`
+3. The file is saved as `/backups/YYYY-MM-DD/isam_dash-YYYY-MM-DD_HH-MM-SS.sql.gz`
+4. Backups older than `RETENTION_DAYS` (default: 30) are automatically deleted
+
+---
+
+## Deploy on Debian
+
+```bash
+# 1. Create the backup folder on the host
+mkdir -p /home/raed/backups
+
+# 2. Build and start the full stack
+docker compose up -d --build
+
+# 3. Verify the cron job is registered
+docker exec db-backup crontab -l
+
+# 4. Run a manual backup immediately to test
+docker exec db-backup /bin/bash /usr/local/bin/backup.sh
+
+# 5. Check the output
+ls /home/raed/backups/
+docker logs db-backup
+```
+
+---
+
+## Restore a Backup
+
+```bash
+# Pick a backup file
+BACKUP_FILE=/home/raed/backups/2026-04-28/isam_dash-2026-04-28_02-00-00.sql.gz
+
+# Restore into the running MySQL container
+gunzip < "$BACKUP_FILE" | docker exec -i isam-dash-mysql \
+  mysql -u pfe_user -ppfe_pass isam_dash
+```
+
+---
+
+## Environment Variables
+
+| Variable         | Default      | Description                        |
+|------------------|--------------|------------------------------------|
+| `DB_HOST`        | `db`         | MySQL container hostname           |
+| `DB_PORT`        | `3306`       | MySQL port                         |
+| `DB_USER`        | `pfe_user`   | MySQL user                         |
+| `DB_PASSWORD`    | `pfe_pass`   | MySQL password                     |
+| `DB_NAME`        | `isam_dash`  | Database to back up                |
+| `RETENTION_DAYS` | `30`         | Days to keep backups               |
+| `BACKUP_PATH`    | `/backups`   | Path inside the container          |
+
+---
+
+## Logs
+
+```bash
+# Live container output
+docker logs -f db-backup
+
+# Log file inside container
+docker exec db-backup cat /var/log/backup.log
+```
