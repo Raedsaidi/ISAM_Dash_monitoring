@@ -1,4 +1,3 @@
-// LTSlotExpander.tsx
 import { useState, useCallback, useRef, type ReactNode } from 'react';
 import {
   ChevronDown,
@@ -36,7 +35,7 @@ interface LTSlotExpanderProps {
   instanceId: number;
   accessToken: string | null;
   isAdmin: boolean;
-  // ✅ reçu du parent pour filtre ONT sernum
+  // reçu du parent pour filtre ONT sernum (si un jour tu veux l'utiliser depuis le panel)
   ontSernumFilter?: string;
 }
 
@@ -63,29 +62,6 @@ interface SFPInfo {
 
 type ConfigFilter = 'all' | 'configured' | 'not_configured' | 'unknown';
 
-<<<<<<< HEAD
-=======
-/**
- * Remplace toute occurrence de "fiber/fibre" dans les valeurs affichées
- * (pour éviter d'afficher ce mot dans la section PON/ONT).
- */
-function sanitizeNoFiber(input: string): string {
-  return input.replace(/fibre/gi, 'Optical').replace(/fiber/gi, 'Optical');
-}
-
-function showText(v: unknown): string {
-  if (v === null || v === undefined) return '';
-  return sanitizeNoFiber(String(v));
-}
-
-/**
- * Résout le SFP pour n'importe quel port_id.
- *
- * ethernet  "1/1/7/1"   → sfpMap["1/1/7/1"]   ✅ direct
- * ONT       "1/1/7/1/1" → sfpMap["1/1/7/1/1"] ❌ absent
- *                       → sfpMap["1/1/7/1"]    ✅ fallback (4 segments)
- */
->>>>>>> 1c7136c9675d40725ff1671d920a10e67376a47d
 function resolveSFP(sfpMap: Record<string, SFPInfo>, portId: string): SFPInfo | null {
   if (sfpMap[portId]) return sfpMap[portId];
   const parts = portId.split('/');
@@ -95,8 +71,6 @@ function resolveSFP(sfpMap: Record<string, SFPInfo>, portId: string): SFPInfo | 
   }
   return null;
 }
-
-// ── Helpers affichage SFP inline (pour le header PON) ───────────────────────
 
 function formatRelativeTime(dateStr: string): string {
   const now = new Date();
@@ -112,7 +86,6 @@ function formatRelativeTime(dateStr: string): string {
   return date.toLocaleDateString();
 }
 
-// ✅ Chip SFP en lecture seule (pas de onClick) pour le header PON
 function SFPChip({ sfp }: { sfp: SFPInfo }) {
   if (sfp.is_empty) {
     return (
@@ -130,8 +103,7 @@ function SFPChip({ sfp }: { sfp: SFPInfo }) {
     );
   }
   const isGpon = (sfp.standard || '').toLowerCase().includes('bplusc');
-  const dir =
-    sfp.direction === 'downstream' ? '↓' : sfp.direction === 'upstream' ? '↑' : '↕';
+  const dir = sfp.direction === 'downstream' ? '↓' : sfp.direction === 'upstream' ? '↑' : '↕';
 
   if (isGpon) {
     return (
@@ -155,7 +127,6 @@ function SFPChip({ sfp }: { sfp: SFPInfo }) {
   );
 }
 
-// ✅ Panel SFP détaillé en lecture seule (pas de bouton close, affiché direct)
 function SFPInfoBlock({ sfp }: { sfp: SFPInfo }) {
   if (sfp.is_empty) return null;
 
@@ -257,203 +228,6 @@ function PortSection({
   );
 }
 
-<<<<<<< HEAD
-=======
-function PonGroupExpander({
-  group,
-  portLocks,
-  sfpMap,
-  instanceId,
-  accessToken,
-  isAdmin,
-  onLockToggle,
-}: {
-  group: { pon: any; onts: any[] };
-  portLocks: Record<string, boolean>;
-  sfpMap: Record<string, SFPInfo>;
-  instanceId: number;
-  accessToken: string | null;
-  isAdmin: boolean;
-  onLockToggle: (portId: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  // ✅ SFP du port PON parent
-  const parentSfp = resolveSFP(sfpMap, group.pon.port_id);
-
-  // ✅ CONSERVÉ: Détection GPON si standard = bplusc
-  const displayPortType = parentSfp?.standard?.toLowerCase() === 'bplusc' ? 'GPON' : 'PON';
-
-  return (
-    <div className="rounded-lg border border-gray-200 overflow-hidden">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-gray-50 transition-colors"
-      >
-        <ChevronRight
-          size={16}
-          className={cn('text-gray-400 transition-transform', expanded && 'rotate-90')}
-        />
-        <Radio size={14} className="text-purple-600" />
-        <span className="text-xs font-medium text-gray-700 font-mono">{group.pon.port_id}</span>
-
-        {/* Afficher l'info SFP directement dans le header */}
-        {parentSfp && !parentSfp.is_empty && (
-          <div className="flex items-center gap-2 ml-2">
-            <span className="text-xs text-cyan-600 bg-cyan-50 border border-cyan-200 px-2 py-0.5 rounded flex items-center gap-1">
-              <Signal size={10} />
-              {/* Ne jamais afficher le mot "fiber/fibre" */}
-              {parentSfp.is_copper ? 'Copper' : 'Optical'}
-              {parentSfp.speed && ` · ${showText(parentSfp.speed)}`}
-            </span>
-          </div>
-        )}
-
-        <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded ml-auto">
-          {group.onts.length} ONT{group.onts.length !== 1 ? 's' : ''}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-gray-200 bg-white">
-          {/* Section PON avec SFP uniquement - SANS GRADIENT */}
-          <div className="px-4 py-3 bg-purple-50 border-b border-gray-200">
-            <div className="flex items-start gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-purple-100 border border-purple-200 shrink-0">
-                <Radio size={18} className="text-purple-600" />
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="font-mono text-sm font-semibold text-gray-900">{group.pon.port_id}</span>
-
-                  {/* ✅ Afficher "GPON" au lieu de "GPON Port" */}
-                  <span className="text-xs text-purple-600 bg-purple-100 border border-purple-300 px-2 py-0.5 rounded">
-                    {displayPortType}
-                  </span>
-                </div>
-
-                {/* Info SFP détaillée */}
-                {parentSfp && !parentSfp.is_empty ? (
-                  <div className="space-y-2">
-                    <div className="grid grid-cols-2 gap-2 text-xs">
-                      {parentSfp.part_number && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">Part Number:</span>
-                          <span className="font-mono text-gray-900">{showText(parentSfp.part_number)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.speed && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">Speed:</span>
-                          <span className="font-medium text-gray-900">{showText(parentSfp.speed)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.fiber_mode && (
-                        <div className="flex items-center gap-1.5">
-                          {/* ✅ Ne pas afficher "Fiber Mode" */}
-                          <span className="text-gray-500">Mode:</span>
-                          <span className="text-gray-900">{showText(parentSfp.fiber_mode)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.wavelength && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">Wavelength:</span>
-                          <span className="text-gray-900">{showText(parentSfp.wavelength)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.tx_wavelength && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">TX λ:</span>
-                          <span className="text-gray-900">{showText(parentSfp.tx_wavelength)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.rx_wavelength && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">RX λ:</span>
-                          <span className="text-gray-900">{showText(parentSfp.rx_wavelength)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.standard && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">Standard:</span>
-                          <span className="text-gray-900">{showText(parentSfp.standard)}</span>
-                        </div>
-                      )}
-
-                      {parentSfp.media && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-gray-500">Media:</span>
-                          {/* ✅ sanitizeNoFiber pour éviter d'afficher "fiber/fibre" si présent */}
-                          <span className="text-gray-900">{showText(parentSfp.media)}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div
-                      className={cn(
-                        'inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium',
-                        parentSfp.is_active
-                          ? 'bg-green-50 text-green-700 border border-green-200'
-                          : 'bg-gray-100 text-gray-600 border border-gray-200',
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'w-1.5 h-1.5 rounded-full',
-                          parentSfp.is_active ? 'bg-green-500' : 'bg-gray-400',
-                        )}
-                      />
-                      {showText(parentSfp.status)}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg">
-                    <AlertCircle size={14} className="text-amber-600 shrink-0" />
-                    <span className="text-xs text-amber-700">
-                      {parentSfp?.is_empty ? 'No SFP module detected' : 'SFP information unavailable'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Liste des ONT */}
-          <div className="p-3 bg-gray-50">
-            {group.onts.length === 0 ? (
-              <p className="text-xs text-gray-400 text-center py-4">No ONTs configured</p>
-            ) : (
-              <div className="space-y-2">
-                <div className="text-xs font-medium text-gray-600 px-2 mb-2">ONTs ({group.onts.length})</div>
-                {group.onts.map((ont) => (
-                  <LTPortItem
-                    key={ont.port_id}
-                    port={ont}
-                    isLocked={portLocks[ont.port_id] || false}
-                    instanceId={instanceId}
-                    accessToken={accessToken}
-                    isAdmin={isAdmin}
-                    onLockToggle={() => onLockToggle(ont.port_id)}
-                    sfp={parentSfp}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
->>>>>>> 1c7136c9675d40725ff1671d920a10e67376a47d
 function StatePill({ label, value, up }: { label: string; value: string; up: boolean }) {
   return (
     <div
@@ -470,8 +244,6 @@ function StatePill({ label, value, up }: { label: string; value: string; up: boo
   );
 }
 
-<<<<<<< HEAD
-// ✅ Helper : extrait l'ONT sernum depuis port.config
 function getOntSernum(port: any): string {
   const cfg = port?.config;
   if (!cfg) return '';
@@ -492,9 +264,6 @@ export default function LTSlotExpander({
   isAdmin,
   ontSernumFilter = '',
 }: LTSlotExpanderProps) {
-=======
-export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin }: LTSlotExpanderProps) {
->>>>>>> 1c7136c9675d40725ff1671d920a10e67376a47d
   const [expanded, setExpanded] = useState(false);
   const [ports, setPorts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -550,9 +319,7 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
       );
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
-      toast.success('SFP synced', {
-        description: `Transceiver data refreshed for slot ${slotShort}`,
-      });
+      toast.success('SFP synced', { description: `Transceiver data refreshed for slot ${slotShort}` });
       await loadSFP();
     } catch (e: any) {
       toast.error('SFP sync failed', { description: e?.message });
@@ -597,7 +364,7 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
           locks[p.port_id] = p.locked || false;
         });
         setPortLocks(locks);
-      } catch (err: any) {
+      } catch {
         const msg = 'Failed to load ports. Please try again.';
         setError(msg);
         toast.error('Failed to load ports', { description: msg });
@@ -678,19 +445,14 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
     return true;
   }
 
-  // ✅ Filtre sernum : appliqué sur ONT uniquement, côté frontend
   function matchSernumFilter(p: any): boolean {
     if (!ontSernumFilter) return true;
     const q = ontSernumFilter.toLowerCase();
-    // Pour les ports ONT : check sur le sernum dans config
     if ((p.port_type || '').toLowerCase() === 'ont') {
       const sn = getOntSernum(p).toLowerCase();
       return sn.includes(q);
     }
-    // Pour les ports PON : on les garde si au moins un ONT fils matche
-    // (géré en aval dans ponGroups)
     if ((p.port_type || '').toLowerCase() === 'pon') return true;
-    // Autres types : pas filtrés par sernum
     return true;
   }
 
@@ -700,7 +462,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
   const ethPorts = visiblePorts.filter((p) => p.port_type === 'ethernet-line');
   const ponPorts = visiblePorts.filter((p) => p.port_type === 'pon');
 
-  // ✅ ONT : filtrés par sernum
   const ontPorts = ports
     .filter((p) => p.port_type === 'ont')
     .filter(matchConfigFilter)
@@ -713,7 +474,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
   const mixedXdslEth = xdslPorts.length > 0 && ethPorts.length > 0;
   const effectiveEthPorts = mixedXdslEth ? [] : ethPorts;
 
-  // Group PON + ONT
   const ponMap: Record<string, { pon: any; onts: any[] }> = {};
   ponPorts.forEach((pon) => {
     ponMap[pon.port_id] = { pon, onts: [] };
@@ -738,7 +498,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
     ponMap[parentId].onts.push(ont);
   });
 
-  // ✅ Si filtre sernum actif : ne garder que les groupes PON ayant au moins 1 ONT filtré
   const ponGroups = Object.values(ponMap).filter((g) => {
     if (!ontSernumFilter) return true;
     return g.onts.length > 0;
@@ -746,12 +505,8 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
 
   const adminUp = (slot.admin_state || '').toLowerCase() === 'up';
   const portUp = (slot.port_state || '').toLowerCase() === 'up';
-  const hasFilters =
-    !!activeSearch || !!portTypeFilter || !!stateFilter || configFilter !== 'all';
+  const hasFilters = !!activeSearch || !!portTypeFilter || !!stateFilter || configFilter !== 'all';
   const isTrulyEmpty = hasLoaded && totalCount === 0 && !hasFilters;
-
-  // ✅ Si filtre sernum actif, auto-expand le slot s'il n'est pas encore ouvert
-  // (optionnel UX : on laisse l'utilisateur cliquer, on n'auto-expand pas ici)
 
   function getSlotIcon() {
     const pt = (slot.port_type || '').toLowerCase();
@@ -768,7 +523,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
         expanded ? 'border-blue-200 shadow-md' : 'border-gray-200 hover:border-gray-300',
       )}
     >
-      {/* Header slot */}
       <button
         onClick={handleToggle}
         className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-gray-50 transition-colors"
@@ -804,15 +558,11 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
 
       {expanded && (
         <div className="border-t border-gray-200">
-          {/* Barre filtres */}
           {!isTrulyEmpty && (
             <div className="bg-gray-50 border-b border-gray-200 px-4 py-3">
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative flex-1 min-w-[200px]">
-                  <Search
-                    size={16}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-                  />
+                  <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                   <input
                     type="text"
                     placeholder="Search port ID or serial..."
@@ -896,11 +646,7 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
                       'bg-cyan-600 text-white border-cyan-600 hover:bg-cyan-700 disabled:opacity-50',
                     )}
                   >
-                    {sfpSyncing ? (
-                      <Loader2 size={12} className="animate-spin" />
-                    ) : (
-                      <Signal size={12} />
-                    )}
+                    {sfpSyncing ? <Loader2 size={12} className="animate-spin" /> : <Signal size={12} />}
                     {sfpSyncing ? 'Syncing…' : 'Sync SFP'}
                   </button>
                 )}
@@ -916,17 +662,13 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
 
                 {hasLoaded && (
                   <span className="text-xs text-gray-500 ml-auto bg-white px-2 py-1 rounded border border-gray-200">
-                    {hasFilters
-                      ? `${visiblePorts.length} / ${totalCount}`
-                      : visiblePorts.length}{' '}
-                    ports
+                    {hasFilters ? `${visiblePorts.length} / ${totalCount}` : visiblePorts.length} ports
                   </span>
                 )}
               </div>
             </div>
           )}
 
-          {/* Corps */}
           <div className="p-4 bg-white">
             {loading && (
               <div className="flex flex-col items-center justify-center py-8 gap-2">
@@ -966,13 +708,8 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
 
             {!loading && !error && (visiblePorts.length > 0 || ponGroups.length > 0) && (
               <div className="space-y-3">
-                {/* XDSL */}
                 {xdslPorts.length > 0 && (
-                  <PortSection
-                    title="XDSL Lines"
-                    count={xdslPorts.length}
-                    icon={<Zap size={14} />}
-                  >
+                  <PortSection title="XDSL Lines" count={xdslPorts.length} icon={<Zap size={14} />}>
                     <div className="space-y-2">
                       {xdslPorts.map((p) => (
                         <LTPortItem
@@ -990,7 +727,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
                   </PortSection>
                 )}
 
-                {/* Ethernet */}
                 {effectiveEthPorts.length > 0 && (
                   <PortSection
                     title="Ethernet Lines"
@@ -1014,7 +750,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
                   </PortSection>
                 )}
 
-                {/* PON / ONT */}
                 {ponGroups.length > 0 && (
                   <PortSection
                     title="PON / ONT"
@@ -1032,7 +767,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
                           accessToken={accessToken}
                           isAdmin={isAdmin}
                           onLockToggle={handleLockToggle}
-                          // ✅ auto-expand si filtre sernum actif
                           forceExpand={!!ontSernumFilter}
                         />
                       ))}
@@ -1047,8 +781,6 @@ export default function LTSlotExpander({ slot, instanceId, accessToken, isAdmin 
     </div>
   );
 }
-
-// ── PonGroupExpander — header PON propre, sans LTPortItem pour le PON ───────
 
 function PonGroupExpander({
   group,
@@ -1070,8 +802,6 @@ function PonGroupExpander({
   forceExpand?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
-
-  // ✅ Auto-expand quand forceExpand passe à true
   const isOpen = expanded || !!forceExpand;
 
   const parentSfp = resolveSFP(sfpMap, group.pon.port_id);
@@ -1080,7 +810,6 @@ function PonGroupExpander({
 
   return (
     <div className="rounded-lg border border-purple-100 overflow-hidden bg-white">
-      {/* ✅ Header PON : badge Radio + port_id + SFP chip + états */}
       <button
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-purple-50 transition-colors"
@@ -1090,29 +819,23 @@ function PonGroupExpander({
           className={cn('text-gray-400 transition-transform shrink-0', isOpen && 'rotate-90')}
         />
 
-        {/* Icône PON */}
         <div className="flex items-center justify-center w-7 h-7 rounded bg-purple-100 border border-purple-200 shrink-0">
           <Radio size={13} className="text-purple-600" />
         </div>
 
-        {/* Port ID */}
         <span className="text-xs font-semibold text-gray-800 font-mono">{group.pon.port_id}</span>
 
-        {/* Badge type */}
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-50 border border-purple-200 text-purple-600 font-medium">
           PON
         </span>
 
-        {/* ✅ SFP chip inline */}
         {parentSfp && <SFPChip sfp={parentSfp} />}
 
-        {/* États */}
         <div className="flex items-center gap-1.5 ml-1">
           <StatePill label="Admin" value={group.pon.admin_state} up={adminUp} />
           <StatePill label="Port" value={group.pon.port_state} up={portUp} />
         </div>
 
-        {/* Compteur ONT */}
         <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded ml-auto shrink-0">
           {group.onts.length} ONT{group.onts.length !== 1 ? 's' : ''}
         </span>
@@ -1120,10 +843,8 @@ function PonGroupExpander({
 
       {isOpen && (
         <div className="border-t border-purple-100 bg-purple-50/40 p-3 space-y-3">
-          {/* ✅ Bloc SFP détaillé affiché directement (pas de toggle) */}
           {parentSfp && !parentSfp.is_empty && <SFPInfoBlock sfp={parentSfp} />}
 
-          {/* Liste ONT */}
           {group.onts.length === 0 ? (
             <p className="text-xs text-gray-400 text-center py-2">No ONTs</p>
           ) : (

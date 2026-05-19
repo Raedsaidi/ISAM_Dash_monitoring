@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   Loader2,
   AlertCircle,
@@ -60,12 +60,20 @@ interface SFPInfo {
   last_refresh_at: string | null;
 }
 
-// ── Résultat de recherche ONT ─────────────────────────────────────────────────
 interface OntSearchResult {
   ont: any;
   slotId: string;
   ponPortId: string;
   sfp: SFPInfo | null;
+}
+
+function looksLikeOntSerial(q: string) {
+  const s = q.trim().toLowerCase();
+  if (s.length < 4) return false;
+  if (s.includes('lt:') || s.includes('/')) return false; // slot / port patterns
+  const hasLetter = /[a-z]/.test(s);
+  const hasDigit = /\d/.test(s);
+  return hasLetter && hasDigit;
 }
 
 function getSlotCategory(portType: string): string {
@@ -157,7 +165,6 @@ function SlotCategoryGroup({
   );
 }
 
-// ── Vue résultats ONT sernum ──────────────────────────────────────────────────
 function OntSernumResults({
   results,
   instanceId,
@@ -186,7 +193,6 @@ function OntSernumResults({
 
   return (
     <div className="space-y-2">
-      {/* Titre résultats */}
       <div className="flex items-center gap-2 mb-3">
         <Radio size={14} className="text-purple-600" />
         <span className="text-sm font-medium text-gray-700">
@@ -197,14 +203,12 @@ function OntSernumResults({
 
       {results.map((r) => (
         <div key={r.ont.port_id} className="rounded-lg border border-purple-100 overflow-hidden">
-          {/* Breadcrumb : slot → PON */}
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 border-b border-purple-100 text-[11px] text-purple-500">
             <span className="font-mono">{r.slotId}</span>
             <ChevronRight size={10} />
             <span className="font-mono">{r.ponPortId}</span>
           </div>
 
-          {/* Port ONT */}
           <div className="p-2 bg-white">
             <LTPortItem
               port={r.ont}
@@ -234,15 +238,19 @@ export default function LTSlotsPanel({
   const [syncingLT, setSyncingLT] = useState(false);
   const [syncingVLAN, setSyncingVLAN] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [searchSlot, setSearchSlot] = useState('');
 
-  // ── ONT sernum search ─────────────────────────────────────────────────────
-  const [searchOntSernum, setSearchOntSernum] = useState('');
-  // Cache : slotId → { ports, sfpMap } chargés à la demande
-  const [slotDataCache, setSlotDataCache] = useState<
-    Record<string, { ports: any[]; sfpMap: Record<string, SFPInfo> }>
-  >({});
+  // ✅ Recherche unique (slot/board OU serial ONT)
+  const [search, setSearch] = useState('');
+
+  // ONT serial results
+  const [computedResults, setComputedResults] = useState<OntSearchResult[]>([]);
   const [sernumSearching, setSernumSearching] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cache en ref (pas en state → pas de re-render / pas de boucles)
+  const slotDataCacheRef = useRef<Record<string, { ports: any[]; sfpMap: Record<string, SFPInfo> }>>(
+    {},
+  );
 
   const ISAM_BASE_URL = import.meta.env.VITE_ISAM_BASE_URL;
 
@@ -255,17 +263,16 @@ export default function LTSlotsPanel({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots`,
-        { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
-      );
+      const res = await fetch(`${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots`, {
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      });
       let data: any = null;
       try {
         data = await res.json();
       } catch {}
       if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`);
       setSlots(data.slots || []);
-    } catch (err: any) {
+    } catch {
       const errorMsg = 'Failed to load LT slots. Please try again.';
       setError(errorMsg);
       toast.error('Failed to load slots', { description: errorMsg });
@@ -274,46 +281,45 @@ export default function LTSlotsPanel({
     }
   }
 
-  // ── Charge ports + SFP d'un slot dans le cache ────────────────────────────
-  async function fetchSlotData(
-    slot: LTSlot,
-  ): Promise<{ ports: any[]; sfpMap: Record<string, SFPInfo> }> {
-    // Déjà en cache
-    if (slotDataCache[slot.slot_id]) return slotDataCache[slot.slot_id];
+  const fetchSlotData = useCallback(
+    async (slot: LTSlot): Promise<{ ports: any[]; sfpMap: Record<string, SFPInfo> }> => {
+      const cached = slotDataCacheRef.current[slot.slot_id];
+      if (cached) return cached;
 
-    const slotShort = slot.slot_id.replace('lt:', '').trim();
-    const encodedSlot = encodeURIComponent(slot.slot_id);
-    const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+      const slotShort = slot.slot_id.replace('lt:', '').trim();
+      const encodedSlot = encodeURIComponent(slot.slot_id);
+      const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
 
-    const [portsRes, sfpRes] = await Promise.allSettled([
-      fetch(
-        `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlot}/ports`,
-        { headers },
-      ),
-      fetch(
-        `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodeURIComponent(slotShort)}/sfp`,
-        { headers },
-      ),
-    ]);
+      const [portsRes, sfpRes] = await Promise.allSettled([
+        fetch(
+          `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodedSlot}/ports`,
+          { headers },
+        ),
+        fetch(
+          `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/${encodeURIComponent(slotShort)}/sfp`,
+          { headers },
+        ),
+      ]);
 
-    let ports: any[] = [];
-    if (portsRes.status === 'fulfilled' && portsRes.value.ok) {
-      const d = await portsRes.value.json().catch(() => ({}));
-      ports = d.ports || [];
-    }
+      let ports: any[] = [];
+      if (portsRes.status === 'fulfilled' && portsRes.value.ok) {
+        const d = await portsRes.value.json().catch(() => ({}));
+        ports = d.ports || [];
+      }
 
-    const sfpMap: Record<string, SFPInfo> = {};
-    if (sfpRes.status === 'fulfilled' && sfpRes.value.ok) {
-      const list: SFPInfo[] = await sfpRes.value.json().catch(() => []);
-      for (const sfp of list) sfpMap[sfp.port_id] = sfp;
-    }
+      const sfpMap: Record<string, SFPInfo> = {};
+      if (sfpRes.status === 'fulfilled' && sfpRes.value.ok) {
+        const list: SFPInfo[] = await sfpRes.value.json().catch(() => []);
+        for (const sfp of list) sfpMap[sfp.port_id] = sfp;
+      }
 
-    const result = { ports, sfpMap };
-    setSlotDataCache((prev) => ({ ...prev, [slot.slot_id]: result }));
-    return result;
-  }
+      const result = { ports, sfpMap };
+      slotDataCacheRef.current[slot.slot_id] = result;
+      return result;
+    },
+    [ISAM_BASE_URL, instanceId, accessToken],
+  );
 
-  // ── Résolution SFP (même logique que LTSlotExpander) ─────────────────────
   function resolveSFP(sfpMap: Record<string, SFPInfo>, portId: string): SFPInfo | null {
     if (sfpMap[portId]) return sfpMap[portId];
     const parts = portId.split('/');
@@ -324,7 +330,6 @@ export default function LTSlotsPanel({
     return null;
   }
 
-  // ── Extrait sernum depuis config ──────────────────────────────────────────
   function getOntSernum(port: any): string {
     const cfg = port?.config;
     if (!cfg) return '';
@@ -338,81 +343,85 @@ export default function LTSlotsPanel({
     return String(cfg?.ont_sernum || '');
   }
 
-  // ── Recherche ONT sernum : charge tous les slots et filtre ────────────────
-  const ontSearchResults = useMemo<OntSearchResult[]>(() => {
-    return [];
-    // Sera calculé dans useEffect ci-dessous et stocké dans state
-  }, []);
+  const isSerialMode = useMemo(() => looksLikeOntSerial(search), [search]);
 
-  const [computedResults, setComputedResults] = useState<OntSearchResult[]>([]);
-
+  // ✅ Recherche ONT serial via le même champ `search` (avec debounce)
   useEffect(() => {
-    const q = searchOntSernum.trim().toLowerCase();
-    if (!q) {
+    const q = search.trim().toLowerCase();
+
+    // si pas en mode serial → pas de résultats ONT
+    if (!q || !isSerialMode) {
       setComputedResults([]);
+      setSernumSearching(false);
+      if (debounceRef.current) clearTimeout(debounceRef.current);
       return;
     }
 
+    if (slots.length === 0) return;
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     setSernumSearching(true);
 
-    // Charge tous les slots en parallèle puis filtre
-    Promise.all(slots.map((slot) => fetchSlotData(slot)))
-      .then((slotDataList) => {
-        const results: OntSearchResult[] = [];
+    let cancelled = false;
 
-        slots.forEach((slot, i) => {
-          const { ports, sfpMap } = slotDataList[i];
+    debounceRef.current = setTimeout(() => {
+      Promise.all(slots.map((slot) => fetchSlotData(slot)))
+        .then((slotDataList) => {
+          if (cancelled) return;
 
-          // Tous les ONT de ce slot
-          const ontPorts = ports.filter((p) => p.port_type === 'ont');
+          const results: OntSearchResult[] = [];
 
-          ontPorts.forEach((ont) => {
-            const sn = getOntSernum(ont).toLowerCase();
-            if (!sn.includes(q)) return;
+          slots.forEach((slot, i) => {
+            const { ports, sfpMap } = slotDataList[i];
+            const ontPorts = ports.filter((p) => p.port_type === 'ont');
 
-            // Retrouve le PON parent
-            const parts = (ont.port_id || '').split('/');
-            const ponPortId =
-              parts.length >= 4 ? parts.slice(0, 4).join('/') : ont.port_id;
+            ontPorts.forEach((ont) => {
+              const sn = getOntSernum(ont).toLowerCase();
+              if (!sn.includes(q)) return;
 
-            results.push({
-              ont,
-              slotId: slot.slot_id,
-              ponPortId,
-              sfp: resolveSFP(sfpMap, ont.port_id),
+              const parts = (ont.port_id || '').split('/');
+              const ponPortId = parts.length >= 4 ? parts.slice(0, 4).join('/') : ont.port_id;
+
+              results.push({
+                ont,
+                slotId: slot.slot_id,
+                ponPortId,
+                sfp: resolveSFP(sfpMap, ont.port_id),
+              });
             });
           });
+
+          setComputedResults(results);
+        })
+        .finally(() => {
+          if (!cancelled) setSernumSearching(false);
         });
+    }, 400);
 
-        setComputedResults(results);
-      })
-      .finally(() => setSernumSearching(false));
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchOntSernum, slots]);
-
-  const isOntSearch = searchOntSernum.trim().length > 0;
+    return () => {
+      cancelled = true;
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [search, isSerialMode, slots, fetchSlotData]);
 
   async function handleForceSyncLT() {
     setSyncingLT(true);
     try {
-      const res = await fetch(
-        `${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/sync`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(accessToken && { Authorization: `Bearer ${accessToken}` }),
-          },
+      const res = await fetch(`${ISAM_BASE_URL}/api/v1/isam/instances/${instanceId}/lt-slots/sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken && { Authorization: `Bearer ${accessToken}` }),
         },
-      );
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.detail || 'Sync failed');
       toast.success('LT sync completed', {
         description: 'Slots and ports have been synchronized from the equipment.',
       });
-      // Vider le cache après sync
-      setSlotDataCache({});
+
+      // ✅ vider cache
+      slotDataCacheRef.current = {};
       await loadSlots();
     } catch (err: any) {
       toast.error('LT sync failed', { description: err?.message });
@@ -446,13 +455,16 @@ export default function LTSlotsPanel({
     }
   }
 
+  // Filtrage slots/board avec le même champ search (quand ce n’est pas un serial)
   const filteredSlots = useMemo(() => {
-    if (!searchSlot) return slots;
-    const q = searchSlot.toLowerCase();
+    const q = search.trim().toLowerCase();
+    if (!q) return slots;
+    if (isSerialMode) return slots; // en mode serial, on ne filtre pas les slots (on affiche la vue ONT)
+
     return slots.filter(
       (s) => s.slot_id.toLowerCase().includes(q) || s.board.toLowerCase().includes(q),
     );
-  }, [slots, searchSlot]);
+  }, [slots, search, isSerialMode]);
 
   const grouped = useMemo(() => {
     const groups: Record<string, LTSlot[]> = {};
@@ -469,7 +481,6 @@ export default function LTSlotsPanel({
 
   return (
     <div className="space-y-4">
-      {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between pb-3 border-b border-gray-200 flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
@@ -486,53 +497,26 @@ export default function LTSlotsPanel({
             )}
           </div>
           {!loading && slots.length > 0 && (
-            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">
-              {slots.length}
-            </span>
+            <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded">{slots.length}</span>
           )}
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Recherche slot/board — masquée si recherche ONT active */}
-          {!isOntSearch && (
-            <div className="relative">
-              <Search
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
-                size={16}
-              />
-              <input
-                type="text"
-                placeholder="Search slot or board..."
-                value={searchSlot}
-                onChange={(e) => setSearchSlot(e.target.value)}
-                className="pl-9 pr-3 py-2 border border-gray-300 rounded-lg w-52 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-          )}
-
-          {/* ✅ Recherche ONT sernum */}
+          {/* ✅ Recherche unique */}
           <div className="relative">
-            <Radio
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400"
-              size={14}
-            />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
             <input
               type="text"
-              placeholder="Search ONT serial..."
-              value={searchOntSernum}
-              onChange={(e) => setSearchOntSernum(e.target.value)}
-              className={cn(
-                'pl-9 pr-8 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition-all',
-                isOntSearch
-                  ? 'w-64 border-purple-400 bg-purple-50 ring-2 ring-purple-300 focus:ring-purple-400'
-                  : 'w-48 border-purple-200 bg-purple-50 focus:ring-purple-400 placeholder:text-purple-300',
-              )}
+              placeholder="Search slot/board or ONT serial..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9 pr-8 py-2 border border-gray-300 rounded-lg w-64 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            {isOntSearch && (
+            {search && (
               <button
-                onClick={() => setSearchOntSernum('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-purple-400 hover:text-purple-700 transition-colors"
-                title="Clear ONT search"
+                onClick={() => setSearch('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                title="Clear search"
               >
                 <X size={14} />
               </button>
@@ -553,11 +537,7 @@ export default function LTSlotsPanel({
             disabled={syncingLT || loading || syncingVLAN}
             className="inline-flex items-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg disabled:opacity-50"
           >
-            {syncingLT ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <RefreshCw size={14} />
-            )}
+            {syncingLT ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {syncingLT ? 'Syncing LT…' : 'Sync from Equipment'}
           </button>
 
@@ -566,17 +546,12 @@ export default function LTSlotsPanel({
             disabled={syncingVLAN || loading || syncingLT}
             className="inline-flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg disabled:opacity-50"
           >
-            {syncingVLAN ? (
-              <Loader2 size={14} className="animate-spin" />
-            ) : (
-              <RefreshCw size={14} />
-            )}
+            {syncingVLAN ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
             {syncingVLAN ? 'Syncing VLAN…' : 'Sync VLAN info'}
           </button>
         </div>
       </div>
 
-      {/* ── Loading initial ────────────────────────────────────────────────── */}
       {loading && (
         <div className="flex items-center justify-center py-12 gap-2">
           <Loader2 size={20} className="animate-spin text-blue-600" />
@@ -591,8 +566,8 @@ export default function LTSlotsPanel({
         </div>
       )}
 
-      {/* ── Mode recherche ONT sernum ──────────────────────────────────────── */}
-      {!loading && !error && isOntSearch && (
+      {/* ✅ Mode serial ONT (automatique) */}
+      {!loading && !error && isSerialMode && (
         <div>
           {sernumSearching ? (
             <div className="flex items-center justify-center py-12 gap-2">
@@ -605,14 +580,14 @@ export default function LTSlotsPanel({
               instanceId={instanceId}
               accessToken={accessToken}
               isAdmin={isAdmin}
-              query={searchOntSernum.trim()}
+              query={search.trim()}
             />
           )}
         </div>
       )}
 
-      {/* ── Mode normal (slots groupés) ────────────────────────────────────── */}
-      {!loading && !error && !isOntSearch && (
+      {/* Mode normal slots */}
+      {!loading && !error && !isSerialMode && (
         <>
           {grouped.length === 0 ? (
             <div className="text-center py-12">
