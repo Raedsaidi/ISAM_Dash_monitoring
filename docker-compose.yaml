@@ -99,9 +99,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_AUTH_BASE_URL=http://10.255.25.77:9000
-        - VITE_CISCO_BASE_URL=http://10.255.25.77:8002
-        - VITE_ISAM_BASE_URL=http://10.255.25.77:8001
+        #- VITE_AUTH_BASE_URL=http://10.255.25.77:9000
+        #- VITE_ISAM_BASE_URL=http://10.255.25.77:8001
+        #- VITE_CISCO_BASE_URL=http://10.255.25.77:8002
+        - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
+        - VITE_CISCO_BASE_URL=http://127.0.0.1:8002
+        - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
     container_name: isam-frontend-container
     ports:
       - "5173:80"
@@ -110,26 +113,24 @@ services:
       - isam-service
       - cisco-services
     restart: on-failure
-
-  # ---------- Backup service ----------
+  # ---------- Backup service (NEW) ----------
   db-backup:
-    build:
-      context: ./backup
-    container_name: db-backup
-    environment:
-      DB_HOST: db
-      DB_PORT: "3306"
-      DB_USER: pfe_user
-      DB_PASSWORD: pfe_pass
-      DB_NAME: isam_dash
-      RETENTION_DAYS: "30"
-      BACKUP_PATH: "/backups"
-    volumes:
-      - /home/backups:/backups   # ← Debian host path (native, not WSL)
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
+      build:
+        context: ./backup
+      container_name: db-backup
+      environment:
+        DB_HOST: db
+        DB_PORT: "3306"
+        DB_USER: pfe_user
+        DB_PASSWORD: pfe_pass
+        DB_NAME: isam_dash
+        RETENTION_DAYS: "7"     
+      volumes:
+        - /opt/ISAM-CISCO-BACKUP:/backups
+      depends_on:
+        db:
+          condition: service_healthy
+      restart: unless-stopped
 
 volumes:
   db_data:
