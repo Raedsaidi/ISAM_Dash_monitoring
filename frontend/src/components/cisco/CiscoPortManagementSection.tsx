@@ -397,7 +397,10 @@ async function apiFetch<T>(
   });
   if (!res.ok) {
     const b = await res.json().catch(() => ({}));
-    throw new Error(b?.detail || b?.message || `HTTP ${res.status}`);
+    const detail = b?.detail ?? b?.message ?? `HTTP ${res.status}`;
+    throw new Error(
+      typeof detail === "string" ? detail : JSON.stringify(detail),
+    );
   }
   return res.json();
 }
@@ -605,6 +608,18 @@ function Pagination({
 
 // ─── Running Config Modal ─────────────────────────────────────────────────────
 
+// ─── REPLACE the entire RunningConfigModal function in CiscoPortManagementSection.tsx ───
+// Two bugs fixed:
+//   1. Error box was shown alongside config because `error` was never cleared when
+//      config loaded successfully from DB (the DB path set config but never called setError(null))
+//   2. "Sync from Switch" button now correctly calls the POST endpoint that was missing
+//      (endpoint added on backend side — see cisco_routes_sync_endpoint.py)
+//
+// Additionally: when a port is locked the table "Configure" button now shows
+// "Port is locked" tooltip and is visually disabled (this was already there),
+// but the toast now says "Port [label] is locked — unlock it first to configure."
+// ─────────────────────────────────────────────────────────────────────────────
+
 function RunningConfigModal({
   open,
   onClose,
@@ -627,6 +642,8 @@ function RunningConfigModal({
   const [savedBy, setSavedBy] = useState<string | null>(null);
   const [source, setSource] = useState<"db" | "live" | null>(null);
 
+  // ─── RunningConfigModal — replace the entire loadConfig function ──────────
+
   const loadConfig = useCallback(
     async (portLabel: string) => {
       setConfig(null);
@@ -638,27 +655,41 @@ function RunningConfigModal({
 
       try {
         const encodedLabel = encodeURIComponent(portLabel);
-        let dbData: PortConfigHistoryResponse | null = null;
 
+        // ── Step 1: Try the DB snapshot endpoint (GET port-config-db) ──────
+        let dbSuccess = false;
         try {
-          dbData = await apiFetch<PortConfigHistoryResponse>(
-            `${PREFIX}/switches/${switchId}/port-config-history` +
-              `?port_label=${encodedLabel}&limit=1`,
+          const dbData = await apiFetch<{
+            success: boolean;
+            config?: string;
+            port_label?: string;
+            error?: string;
+          }>(
+            `${PREFIX}/switches/${switchId}/port-config-db` +
+              `?port_label=${encodedLabel}`,
             token,
+            { method: "GET" },
           );
+
+          if (dbData.success && dbData.config) {
+            setError(null);
+            setConfig(dbData.config);
+            setSavedAt(new Date().toISOString());
+            setSavedBy("db");
+            setSource("db");
+            dbSuccess = true;
+          }
         } catch (dbErr: any) {
-          console.debug?.("DB fetch failed, will try live:", dbErr);
+          // 404 or no snapshot yet — fall through to live sync
+          console.debug(
+            "[RunningConfig] DB snapshot not found:",
+            dbErr.message,
+          );
         }
 
-        if (dbData?.success && dbData.history.length > 0) {
-          const entry = dbData.history[0];
-          setConfig(entry.config_text);
-          setSavedAt(entry.saved_at);
-          setSavedBy(entry.saved_by ?? null);
-          setSource("db");
-          return;
-        }
+        if (dbSuccess) return;
 
+        // ── Step 2: No DB snapshot — fetch live from switch via POST /sync ──
         toast.info(
           `No snapshot in DB for ${portLabel} — fetching live from switch…`,
           { duration: 3000 },
@@ -677,18 +708,21 @@ function RunningConfigModal({
         );
 
         if (liveData.success && liveData.config) {
+          setError(null);
           setConfig(liveData.config);
           setSavedAt(new Date().toISOString());
           setSavedBy("on-demand");
           setSource("live");
           toast.success(`Config fetched and saved for ${portLabel}`);
         } else {
+          setConfig(null);
           setError(
             liveData.error ||
               "Could not fetch config from switch. Check SSH connectivity.",
           );
         }
       } catch (err: any) {
+        setConfig(null);
         setError(err.message || "Unexpected error loading config.");
       } finally {
         setLoading(false);
@@ -700,7 +734,7 @@ function RunningConfigModal({
   const handleManualSync = useCallback(async () => {
     if (!port) return;
     setLoading(true);
-    setError(null);
+    setError(null); // ← clear before attempt
 
     try {
       const encodedLabel = encodeURIComponent(port.label);
@@ -716,15 +750,18 @@ function RunningConfigModal({
       );
 
       if (data.success && data.config) {
+        setError(null); // ← clear error on success
         setConfig(data.config);
         setSavedAt(new Date().toISOString());
         setSavedBy("manual-sync");
         setSource("live");
         toast.success("Config synced from switch and saved to DB");
       } else {
+        setConfig(null);
         setError(data.error || "Sync failed — no config returned.");
       }
     } catch (err: any) {
+      setConfig(null);
       setError(err.message || "Sync failed.");
     } finally {
       setLoading(false);
@@ -765,6 +802,7 @@ function RunningConfigModal({
                    overflow-hidden max-h-[85vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Header */}
         <div
           className="flex items-center justify-between px-6 py-4 border-b
                         border-slate-200 bg-slate-900 shrink-0"
@@ -841,6 +879,7 @@ function RunningConfigModal({
           </div>
         </div>
 
+        {/* Snapshot meta bar — only when we have config */}
         {config && !loading && savedAt && (
           <div
             className="flex items-center gap-2 px-6 py-2 bg-slate-800
@@ -895,6 +934,7 @@ function RunningConfigModal({
           </div>
         )}
 
+        {/* Body */}
         <div className="flex-1 overflow-y-auto bg-slate-950 p-6">
           {loading && (
             <div
@@ -915,7 +955,8 @@ function RunningConfigModal({
             </div>
           )}
 
-          {error && !loading && (
+          {/* ── BUG FIX: only show error when there is NO config loaded ── */}
+          {error && !loading && !config && (
             <div
               className="flex items-start gap-3 p-4 bg-red-900/30
                             border border-red-700/50 rounded-lg"
@@ -951,6 +992,7 @@ function RunningConfigModal({
           )}
         </div>
 
+        {/* Footer */}
         <div
           className="flex items-center justify-between px-6 py-3
                         border-t border-slate-200 bg-slate-50 shrink-0"
@@ -966,6 +1008,10 @@ function RunningConfigModal({
               source === "live" &&
               "Fetched live from switch and saved to database"}
             {!loading && !config && !error && "Preparing…"}
+            {!loading &&
+              !config &&
+              error &&
+              "Failed to load — try syncing from switch"}
           </p>
           <button
             onClick={onClose}
@@ -1465,8 +1511,11 @@ function ConfigurePortModal({
 
   if (!open || !port) return null;
 
+  // ─── Replace handleSubmit inside ConfigurePortModal ───────────────────────────
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (mode === "access" && !accessVlan) {
       setError("Please select an Access VLAN.");
       return;
@@ -1475,7 +1524,10 @@ function ConfigurePortModal({
       setError("Select at least one VLAN for the trunk.");
       return;
     }
+
+    setError("");
     setSubmitting(true);
+
     try {
       await onSave(port.label, {
         mode,
@@ -1488,9 +1540,19 @@ function ConfigurePortModal({
         trunk_native_vlan: mode === "trunk" ? (trunkNative ?? 1) : undefined,
         description,
       });
+
+      // Only close if onSave did NOT throw
       onClose();
     } catch (err: any) {
-      setError(err.message || "Failed to configure port.");
+      const msg =
+        typeof err === "string"
+          ? err
+          : typeof err?.message === "string" && err.message
+            ? err.message
+            : err
+              ? JSON.stringify(err)
+              : "Configuration failed. Check switch connectivity and try again.";
+      setError(msg);
     } finally {
       setSubmitting(false);
     }
@@ -1626,6 +1688,8 @@ function ConfigurePortModal({
     </button>
   );
 
+  if (!open || !port) return null;
+
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div
@@ -1666,10 +1730,32 @@ function ConfigurePortModal({
           className="flex flex-col flex-1 overflow-hidden"
         >
           <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+            {/* ─── Error Banner ────────────────────────────────────────────────────── */}
             {error && (
-              <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
-                <AlertCircle size={16} className="shrink-0" />
-                {error}
+              <div
+                className="flex items-start gap-3 p-3.5 bg-red-50 border border-red-300
+               rounded-xl text-sm animate-in fade-in duration-200"
+              >
+                <AlertCircle
+                  size={16}
+                  className="shrink-0 mt-0.5 text-red-500"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-red-700 mb-0.5">
+                    Configuration failed
+                  </p>
+                  <p className="text-xs text-red-600 font-mono break-all leading-relaxed">
+                    {error}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setError("")}
+                  className="shrink-0 p-0.5 rounded hover:bg-red-100 transition-colors"
+                  title="Dismiss"
+                >
+                  <X size={14} className="text-red-400" />
+                </button>
               </div>
             )}
 
@@ -3232,6 +3318,8 @@ export default function CiscoPortManagementSection() {
   );
 
   // ── Configure port ────────────────────────────────────────────────────────
+  // ─── Replace handleConfigure in the main component ───────────────────────────
+
   const handleConfigure = useCallback(
     async (
       portLabel: string,
@@ -3245,31 +3333,118 @@ export default function CiscoPortManagementSection() {
         description?: string;
       },
     ) => {
-      const newVlan =
-        data.mode === "trunk"
-          ? (data.trunk_allowed_vlans ?? []).join(",")
-          : String(data.access_vlan ?? 1);
+      const cleanLabel = portLabel.replace(/:\d+$/, "").trim();
 
-      await apiFetch(
-        `${PREFIX}/switches/${switchId}/change-vlan`,
-        accessToken,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            port_label: portLabel,
-            new_vlan: newVlan,
-            vlan_type: data.mode === "trunk" ? "trunk" : "Access",
-            description: data.description ?? "",
-            port_status: data.port_status,
-          }),
-        },
-      );
+      // ── Build correct request body ──────────────────────────────────────
+      const body: Record<string, unknown> = {
+        port_label: cleanLabel,
+        vlan_type: data.mode === "trunk" ? "trunk" : "access",
+        // Backend expects an integer for new_vlan
+        new_vlan: String(
+          data.mode === "access"
+            ? (data.access_vlan ?? 1)
+            : (data.trunk_native_vlan ?? 1),
+        ),
+        description: data.description ?? "",
+        port_status: data.port_status,
+      };
 
-      toast.success(
-        `Port ${portLabel} configured as ${data.mode} (VLAN ${newVlan}, ${data.port_status})`,
-      );
+      if (data.mode === "trunk") {
+        body.trunk_allowed_vlans = data.trunk_allowed_vlans ?? [];
+        body.trunk_native_vlan = data.trunk_native_vlan ?? 1;
+      }
 
+      // ── Call backend ────────────────────────────────────────────────────
+      let result: {
+        success: boolean;
+        error?: string;
+        output?: string;
+        current_vlan?: number | null;
+        protocol_used?: string | null;
+      };
+
+      try {
+        result = await apiFetch<typeof result>(
+          `${PREFIX}/switches/${switchId}/change-vlan`,
+          accessToken,
+          {
+            method: "POST",
+            body: JSON.stringify(body),
+          },
+        );
+        // catch block:
+      } catch (err: any) {
+        const msg =
+          typeof err === "string"
+            ? err
+            : typeof err?.message === "string" && err.message
+              ? err.message
+              : "Request failed";
+        toast.error(msg, { duration: 7000 });
+        throw new Error(msg);
+      }
+
+      // ── Backend returned success: false ─────────────────────────────────
+      // !result.success block:
+      if (!result.success) {
+        const errMsg =
+          typeof result.error === "string" && result.error
+            ? result.error
+            : "Switch rejected the configuration.";
+
+        toast.error(errMsg, { duration: 7000 });
+        throw new Error(errMsg);
+      }
+
+      // ── Success — check if port is locked ───────────────────────────────
       const currentCache = cacheMapRef.current[switchId];
+      const allCachedPorts = Object.values(currentCache?.pages ?? {}).flat();
+      const portObj = allCachedPorts.find((p) => p.label === cleanLabel);
+      const isLocked = portObj?.locked ?? false;
+
+      const vlanLabel =
+        data.mode === "access"
+          ? `VLAN ${data.access_vlan ?? 1}`
+          : `native ${data.trunk_native_vlan ?? 1}, ${(data.trunk_allowed_vlans ?? []).length} allowed`;
+
+      const statusLabel = data.port_status === "up" ? "up" : "down";
+
+      if (isLocked) {
+        // ── Port is locked — red warning toast ─────────────────────────
+        toast.error(
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <div className="h-5 w-5 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <Lock size={11} className="text-red-600" />
+              </div>
+              <span className="font-bold text-red-800 text-sm">
+                Port {cleanLabel} — Locked
+              </span>
+            </div>
+            <p className="text-xs text-red-700 leading-relaxed pl-7">
+              Applied as <strong>{data.mode}</strong> ({vlanLabel},{" "}
+              <strong>{statusLabel}</strong>), but this port is{" "}
+              <strong>locked</strong>. Unlock it to allow further changes.
+            </p>
+          </div>,
+          {
+            duration: 8000,
+            style: {
+              background: "#fef2f2",
+              border: "1px solid #fca5a5",
+              color: "#991b1b",
+            },
+          },
+        );
+      } else {
+        // ── Port is unlocked — normal green success toast ───────────────
+        toast.success(
+          `Port ${cleanLabel} configured as ${data.mode} (${vlanLabel}, ${statusLabel})`,
+          { duration: 4000 },
+        );
+      }
+
+      // ── Invalidate cache page and reload ────────────────────────────────
       const page = pageMap[switchId] ?? 1;
       setCacheMap((prev) => {
         const swCache = prev[switchId];
@@ -3287,11 +3462,13 @@ export default function CiscoPortManagementSection() {
     },
     [accessToken, pageMap, loadDbPage, setCacheMap],
   );
-
   const handleConfigureRequest = useCallback(
     (port: Port, switchId: number) => {
       if (!isSuperAdmin && port.locked) {
-        toast.error(`Port ${port.label} is locked. Unlock it first.`);
+        toast.error(
+          `Port ${port.label} is locked — unlock it first before configuring.`,
+          { duration: 4000 },
+        );
         return;
       }
       setConfigurePort({ port, switchId });

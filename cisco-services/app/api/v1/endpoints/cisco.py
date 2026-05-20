@@ -2178,3 +2178,68 @@ def get_port_config_db(
         port_label=port_label,
         config=row.config_text,
     )
+# ─── ADD THIS ENDPOINT to app/routes/cisco_routes.py ─────────────────────────
+# Place it right after the existing `get_port_config_db` GET endpoint
+# (the one at /switches/{switch_id}/port-config-db)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/switches/{switch_id}/port-config-db/sync",
+    response_model=PortConfigResponse,
+)
+def sync_port_config_to_db(
+    switch_id: int,
+    port_label: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """
+    Fetch the running config for a single port live from the switch,
+    save it as a new CiscoPortConfigHistory snapshot, and return it.
+    Used by the frontend "Sync from Switch" button in RunningConfigModal.
+    """
+    sw = get_switch_or_404(db, switch_id)
+    service = CiscoConnectionService(sw)
+
+    try:
+        ok, proto, output, error = service.get_port_running_config(
+            port_label, timeout=20
+        )
+    except Exception as e:
+        return PortConfigResponse(
+            success=False,
+            port_label=port_label,
+            error=f"{type(e).__name__}: {e}",
+        )
+
+    if not ok or not output:
+        return PortConfigResponse(
+            success=False,
+            port_label=port_label,
+            protocol_used=proto,
+            error=error or "No config returned from switch.",
+        )
+
+    # Save snapshot to history table
+    try:
+        _save_port_config_snapshot(
+            db=db,
+            switch_id=switch_id,
+            port_label=port_label,
+            config_text=output,
+            saved_by=current_user.username,
+        )
+    except Exception as e:
+        logger.warning(
+            "[CONFIG-SYNC] Failed to save snapshot for %s: %s", port_label, e
+        )
+
+    current_vlan = parse_running_config_vlan(output)
+
+    return PortConfigResponse(
+        success=True,
+        port_label=port_label,
+        config=output,
+        current_vlan=current_vlan,
+        protocol_used=proto,
+    )
