@@ -89,12 +89,12 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        - VITE_AUTH_BASE_URL=http://10.255.25.77:9000
-        - VITE_ISAM_BASE_URL=http://10.255.25.77:8001
-        - VITE_CISCO_BASE_URL=http://10.255.25.77:8002
-          #- VITE_AUTH_BASE_URL=http://127.0.0.1:9000
-          #- VITE_CISCO_BASE_URL=http://127.0.0.1:8002
-          #- VITE_ISAM_BASE_URL=http://127.0.0.1:8001
+        #- VITE_AUTH_BASE_URL=http://10.255.25.77:9000
+        #- VITE_ISAM_BASE_URL=http://10.255.25.77:8001
+        #- VITE_CISCO_BASE_URL=http://10.255.25.77:8002
+        - VITE_AUTH_BASE_URL=http://127.0.0.1:9000
+        - VITE_CISCO_BASE_URL=http://127.0.0.1:8002
+        - VITE_ISAM_BASE_URL=http://127.0.0.1:8001
     container_name: isam-frontend-container
     ports:
       - "5173:80"

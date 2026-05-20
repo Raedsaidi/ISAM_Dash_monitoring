@@ -19,7 +19,7 @@ from app.services.isam_connection import ISAMConnectionService, ISAMPersistentTe
 logger = logging.getLogger(__name__)
 
 # Keep ONLY VLAN lines that contain vlan-id AND vlan-scope
-VLAN_LINE_RE = re.compile(r"\bvlan-id\b.*\bvlan-scope\b", re.IGNORECASE)
+VLAN_LINE_RE = re.compile(r"(?is)(?=.*\bvlan-id\b)(?=.*\bvlan[- ]scope\b)")
 
 # sernum SMBS:02A3D26B
 ONT_SERNUM_RE = re.compile(r"\bsernum\s+([A-Za-z0-9]+:[A-Fa-f0-9]+)\b")
@@ -30,18 +30,22 @@ CLI_ERROR_PATTERNS = [
     re.compile(r"\bunknown command\b", re.IGNORECASE),
 ]
 
-
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 def _cleanup_output(text: str) -> str:
     """
     Normalize CLI output:
       - remove CR
-      - remove control chars (bell etc.)
+      - remove ANSI escape sequences
+      - remove control chars
+      - remove pagination markers
       - strip
     """
     if not text:
         return ""
     t = text.replace("\r", "")
+    t = ANSI_ESCAPE_RE.sub("", t)
     t = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", t)
+    t = t.replace("--More--", "")
     return t.strip()
 
 
@@ -51,21 +55,20 @@ def _looks_like_cli_error(output: str) -> bool:
 
 
 def extract_vlan_lines(text: str) -> list[str]:
-    """
-    Extract VLAN lines from output of:
-      configure bridge port X
-      info flat
-    We keep lines like:
-      configure bridge port ... vlan-id ... vlan-scope ...
-    """
     text = _cleanup_output(text)
     lines: list[str] = []
+
+    cfg_re = re.compile(r"(?i)\bconfigure\s+bridge\s+port\b")
 
     for raw in (text or "").splitlines():
         line = " ".join(raw.strip().split())
         if not line:
             continue
-        if line.lower().startswith("configure bridge port") and VLAN_LINE_RE.search(line):
+
+        if cfg_re.search(line) and VLAN_LINE_RE.search(line):
+            m = cfg_re.search(line)
+            if m:
+                line = line[m.start():]
             lines.append(line)
 
     lines.sort()

@@ -630,9 +630,11 @@ class ISAMLTSlotsService:
                 continue
 
             m = re.search(
-                r"(xdsl-line|ethernet-line|pon|ont):(\d+/\d+/\d+/\d+)\s+(\S+)(?:\s+(\S+))?",
-                 stripped
-    )
+                r"(xdsl-line|ethernet-line|pon|ont):"
+                r"(\d+(?:/\d+){3,5})\s+"
+                r"(\S+)(?:\s+(\S+))?",
+                stripped
+            )
             if not m:
                 continue
 
@@ -689,32 +691,49 @@ class ISAMLTSlotsService:
         raw_buffer: str,
         known_slot_short_ids: List[str],
     ) -> Dict[str, List[Dict[str, Any]]]:
-        ports_by_slot: Dict[str, List[Dict[str, Any]]] = {}
-        for slot_short in known_slot_short_ids:
-            ports_by_slot[slot_short] = []
+        ports_by_slot: Dict[str, List[Dict[str, Any]]] = {s: [] for s in known_slot_short_ids}
 
-        seen_full_ids: set = set()
+        # Supprime les vraies séquences ANSI (pas فقط le caractère ESC)
+        ansi_re = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+        # On cherche le port même si la ligne a un préfixe (prompt, --More--, etc.)
+        port_re = re.compile(
+            r"(xdsl-line|ethernet-line|pon|ont):"      # type
+            r"(\d+(?:/\d+){3,5})"                     # port_id: 4 à 6 segments (ex: 1/1/7/1 ou 1/1/7/1/1)
+            r"\s+(\S+)"                               # admin_state
+            r"(?:\s+(\S+))?"                          # oper_state (optionnel)
+        )
+
+        seen_full_ids: set[str] = set()
         unmatched_count = 0
         skipped_type_count = 0
-        total_parsed_lines = 0
+        total_matched_lines = 0
 
         for line_orig in raw_buffer.splitlines():
-            clean_line = line_orig.replace("\r", "")
-            clean_line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", clean_line)
-            stripped = clean_line.strip()
+            line = line_orig.replace("\r", "")
+
+            # 1) Nettoyage ANSI + contrôle chars
+            line = ansi_re.sub("", line)
+            line = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", line)
+
+            # 2) Nettoyage pagination (si présente)
+            line = line.replace("--More--", "")
+
+            stripped = line.strip()
             if not stripped:
                 continue
 
-            m = re.match(r"^(\S+):(\S+)\s+(\S+)(?:\s+(\S+))?", stripped)
+            # IMPORTANT: search() au lieu de match()
+            m = port_re.search(stripped)
             if not m:
                 continue
+
+            total_matched_lines += 1
 
             port_type = m.group(1)
             port_id = m.group(2)
             admin_state = m.group(3)
             oper_state = m.group(4) if m.group(4) else admin_state
-
-            total_parsed_lines += 1
 
             if port_type not in ALLOWED_PORT_TYPES:
                 skipped_type_count += 1
@@ -729,7 +748,6 @@ class ISAMLTSlotsService:
                 port_id,
                 known_slot_short_ids,
             )
-
             if owner_slot is None:
                 unmatched_count += 1
                 continue
@@ -757,9 +775,9 @@ class ISAMLTSlotsService:
 
         total_ports = sum(len(v) for v in ports_by_slot.values())
         logger.info(
-            "[LT_GLOBAL_PARSE] Parsing global terminé : %d lignes parsées, "
+            "[LT_GLOBAL_PARSE] Parsing global terminé : %d lignes matchées, "
             "%d ports retenus sur %d slots (%d non-matchés, %d types ignorés)",
-            total_parsed_lines,
+            total_matched_lines,
             total_ports,
             len(known_slot_short_ids),
             unmatched_count,
