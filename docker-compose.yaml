@@ -14,7 +14,6 @@ services:
     restart: on-failure
     networks:
       - shared_infra_network
-      - isam_network
 
   # ---------- ISAM-service ----------
   isam-service:
@@ -33,7 +32,6 @@ services:
     restart: on-failure
     networks:
       - shared_infra_network
-      - isam_network
 
   # ---------- Cisco-service ----------
   cisco-services:
@@ -55,7 +53,6 @@ services:
     restart: unless-stopped
     networks:
       - shared_infra_network
-      - isam_network
 
   # ---------- Frontend ----------
   frontend:
@@ -75,7 +72,7 @@ services:
       - cisco-services
     restart: on-failure
     networks:
-      - isam_network
+      - shared_infra_network
 
   # ---------- Backup service ----------
   db-backup:
@@ -97,9 +94,7 @@ services:
     networks:
       - shared_infra_network
 
-  # ---------- Healthcheck proxy ----------
-  # This service exits immediately after confirming shared-mysql is healthy.
-  # It lets the services above use depends_on without re-declaring the external container.
+  # ---------- MySQL healthcheck proxy ----------
   mysql-ready:
     image: mysql:8.0
     container_name: isam-mysql-ready
@@ -113,6 +108,3 @@ networks:
   shared_infra_network:
     external: true
     name: shared_infra_network
-  isam_network:
-    name: isam_network
-    driver: bridge
