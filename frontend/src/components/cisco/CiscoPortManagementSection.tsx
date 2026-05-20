@@ -1745,7 +1745,7 @@ function ConfigurePortModal({
                     Configuration failed
                   </p>
                   <p className="text-xs text-red-600 font-mono break-all leading-relaxed">
-                    "The Port is Locked! Try To Unlocked First."
+                    {error}
                   </p>
                 </div>
                 <button
@@ -3340,10 +3340,11 @@ export default function CiscoPortManagementSection() {
         port_label: cleanLabel,
         vlan_type: data.mode === "trunk" ? "trunk" : "access",
         // Backend expects an integer for new_vlan
-        new_vlan:
+        new_vlan: String(
           data.mode === "access"
             ? (data.access_vlan ?? 1)
             : (data.trunk_native_vlan ?? 1),
+        ),
         description: data.description ?? "",
         port_status: data.port_status,
       };
@@ -3371,6 +3372,7 @@ export default function CiscoPortManagementSection() {
             body: JSON.stringify(body),
           },
         );
+        // catch block:
       } catch (err: any) {
         const msg =
           typeof err === "string"
@@ -3378,49 +3380,19 @@ export default function CiscoPortManagementSection() {
             : typeof err?.message === "string" && err.message
               ? err.message
               : "Request failed";
-        toast.error(
-          <div className="flex flex-col gap-1">
-            <span className="font-semibold">Configuration failed</span>
-            <span className="text-xs font-mono break-all">
-              "The Port is Locked! Try To Unlocked First."
-            </span>
-          </div>,
-          { duration: 7000 },
-        );
+        toast.error(msg, { duration: 7000 });
         throw new Error(msg);
       }
 
       // ── Backend returned success: false ─────────────────────────────────
+      // !result.success block:
       if (!result.success) {
         const errMsg =
-          typeof result.error === "string"
+          typeof result.error === "string" && result.error
             ? result.error
-            : result.error
-              ? JSON.stringify(result.error)
-              : "Switch rejected the configuration. Check connectivity and VLAN validity.";
+            : "Switch rejected the configuration.";
 
-        toast.error(
-          <div className="flex flex-col gap-1.5">
-            <div className="flex items-center gap-2">
-              <XCircle size={14} className="text-red-500 shrink-0" />
-              <span className="font-semibold text-red-800">
-                Configuration failed
-              </span>
-            </div>
-            <span className="text-xs text-red-700 font-mono break-all leading-relaxed">
-              "The Port is Locked! Try To Unlocked First."
-            </span>
-          </div>,
-          {
-            duration: 9000,
-            style: {
-              background: "#fef2f2",
-              border: "1px solid #fca5a5",
-              color: "#991b1b",
-            },
-          },
-        );
-
+        toast.error(errMsg, { duration: 7000 });
         throw new Error(errMsg);
       }
 
