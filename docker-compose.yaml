@@ -1,36 +1,113 @@
 services:
+  # ---------- Auth-service ----------
   auth-service:
+    build: ./auth-service
+    container_name: auth-service-container
+    ports:
+      - "9000:9000"
     environment:
       - DB_URL=mysql+pymysql://pfe_user:pfe_pass@shared-mysql:3306/isam_dash
-      #                                           ↑ shared container name
+      - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
+      - JWT_ALGORITHM=HS256
+    depends_on:
+      - mysql-ready
+    restart: on-failure
     networks:
       - shared_infra_network
       - isam_network
 
+  # ---------- ISAM-service ----------
   isam-service:
+    build: ./isam-service
+    container_name: isam-service-container
+    ports:
+      - "8001:8001"
     environment:
       - DB_URL=mysql+pymysql://pfe_user:pfe_pass@shared-mysql:3306/isam_dash
+      - AUTH_SERVICE_URL=http://auth-service-container:9000
+      - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
+      - JWT_ALGORITHM=HS256
+    depends_on:
+      - mysql-ready
+      - auth-service
+    restart: on-failure
     networks:
       - shared_infra_network
       - isam_network
 
+  # ---------- Cisco-service ----------
   cisco-services:
+    build:
+      context: ./cisco-services
+      dockerfile: Dockerfile
+    container_name: cisco-services
+    ports:
+      - "8002:8002"
     environment:
       - DB_URL=mysql+pymysql://pfe_user:pfe_pass@shared-mysql:3306/isam_dash
+      - AUTH_SERVICE_URL=http://auth-service-container:9000
+      - JWT_SECRET_KEY=GfN4v8jKQyG8p0LpjJ7dYQH9q2sLAX7m0pW3sZrTn9uN3xCyBh3FgTzW9Lk5QsM2
+      - JWT_ALGORITHM=HS256
+      - CISCO_CONNECTION_TIMEOUT=15
+      - CISCO_COMMAND_TIMEOUT=30
+    depends_on:
+      - mysql-ready
+    restart: unless-stopped
     networks:
       - shared_infra_network
       - isam_network
 
+  # ---------- Frontend ----------
   frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_AUTH_BASE_URL=http://10.255.25.77:9000
+        - VITE_ISAM_BASE_URL=http://10.255.25.77:8001
+        - VITE_CISCO_BASE_URL=http://10.255.25.77:8002
+    container_name: isam-frontend-container
+    ports:
+      - "5173:80"
+    depends_on:
+      - auth-service
+      - isam-service
+      - cisco-services
+    restart: on-failure
     networks:
       - isam_network
 
+  # ---------- Backup service ----------
   db-backup:
+    build:
+      context: ./backup
+    container_name: isam-db-backup
     environment:
-      DB_HOST: shared-mysql    # ← shared container name
+      DB_HOST: shared-mysql
+      DB_PORT: "3306"
+      DB_USER: pfe_user
+      DB_PASSWORD: pfe_pass
+      DB_NAME: isam_dash
+      RETENTION_DAYS: "7"
+    volumes:
+      - /opt/ISAM-CISCO-BACKUP:/backups
+    depends_on:
+      - mysql-ready
+    restart: unless-stopped
     networks:
       - shared_infra_network
-      - isam_network
+
+  # ---------- Healthcheck proxy ----------
+  # This service exits immediately after confirming shared-mysql is healthy.
+  # It lets the services above use depends_on without re-declaring the external container.
+  mysql-ready:
+    image: mysql:8.0
+    container_name: isam-mysql-ready
+    entrypoint: >
+      sh -c "until mysqladmin ping -h shared-mysql -uroot -proot --silent; do sleep 2; done; echo 'MySQL ready'"
+    networks:
+      - shared_infra_network
+    restart: "no"
 
 networks:
   shared_infra_network:
