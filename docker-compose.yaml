@@ -87,7 +87,7 @@ services:
       DB_NAME: isam_dash
       RETENTION_DAYS: "7"
     volumes:
-      - /opt/ISAM-CISCO-BACKUP:/backups/ISAM-CISCO-BACKUP
+      - /opt/ISAM-CISCO-BACKUP:/backups
     depends_on:
       - mysql-ready
     restart: unless-stopped
